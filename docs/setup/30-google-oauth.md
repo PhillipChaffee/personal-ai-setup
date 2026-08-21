@@ -122,13 +122,37 @@ Nothing to invent here — follow the comments in those two files.
 
 ## 6. The first-run OAuth dance (Mac)
 
-1. Start a goose session and ask something that forces a Gmail tool call:
-   *"list the subjects of my 3 most recent emails"*.
-2. A browser window opens: pick your account → the **unverified-app
-   interstitial** (§3 — Advanced → continue) → review scopes → **Allow**.
-3. The tool call completes. Done — this was the one-time user consent;
-   workspace-mcp now holds a long-lived refresh token (because the app is in
-   production) and refreshes access tokens silently from here on.
+**The race to know about first** (hit live, 2026-08-21): workspace-mcp runs
+the `localhost:8000` OAuth callback listener, and workspace-mcp lives only as
+long as the goose session that spawned it. A one-shot `goose run` prints
+"authentication is required" and **exits — killing the listener — before you
+can click Allow**; your consent then lands on a dead port ("Unable to
+connect" at localhost:8000). The consent must complete **while a session is
+alive**. Two ways:
+
+- **Interactive** (Desktop or `goose session`): ask *"list the subjects of my
+  3 most recent emails"*, and complete the browser consent while the session
+  sits there. The session's next tool call succeeds.
+- **Headless one-liner** — a run that holds the session open by retrying
+  until consent lands:
+
+  ```bash
+  GOOSE_MODE=auto GOOSE_MAX_TURNS=40 goose run --no-session --quiet \
+    --provider zen-openai --model minimax-m2.7 \
+    -t "Call the Gmail search tool for my 3 most recent inbox subjects. The
+  first call will say authentication is required and open a browser — I am
+  consenting in parallel. Do not stop: re-call the tool, running 'sleep 20'
+  between attempts, at least 15 times, until it returns real messages. Then
+  output only the 3 subject lines."
+  ```
+
+In the browser: pick your account → the **unverified-app interstitial** (§3 —
+Advanced → continue) → review scopes (only Gmail/Calendar/Tasks, thanks to
+`--tools`) → **Allow** → a localhost "you can close this window" page means
+the token was written. Expect Google's "Security alert" email about the new
+grant — that's normal. This was the one-time consent; workspace-mcp now holds
+a long-lived refresh token (because the app is in production) and refreshes
+access tokens silently from here on.
 
 **Where the tokens live:** workspace-mcp writes its token files to its
 default state dir — `~/.google_workspace_mcp/` (documented upstream as of

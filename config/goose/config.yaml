@@ -93,6 +93,10 @@ extensions:
   # https://github.com/taylorwilsdon/google_workspace_mcp
   # --tool-tier core keeps the tool count (and per-request context cost) down;
   # raise to `extended` only if a workflow needs it.
+  # --tools restricts SERVICES — and, critically, the OAuth scopes requested
+  # at consent (verified live: without it, workspace-mcp asks for Drive,
+  # Docs, Sheets, Chat, Apps Script, contacts, and more). Keep it to what
+  # the setup actually uses.
   # env_keys are resolved from goose's secret store / process environment —
   # values never live in this file. See config/mcp/workspace-mcp.env.example
   # and docs/setup/30-google-oauth.md (publish the OAuth app "In production"
@@ -107,7 +111,12 @@ extensions:
       - workspace-mcp
       - --tool-tier
       - core
+      - --tools
+      - gmail
+      - calendar
+      - tasks
     envs:
+      # Replace with your Gmail address — the account whose consent you grant.
       USER_GOOGLE_EMAIL: you@example.com
     env_keys:
       - GOOGLE_OAUTH_CLIENT_ID

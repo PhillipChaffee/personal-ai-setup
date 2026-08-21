@@ -59,7 +59,19 @@ run_check() {
     -t "$prompt" \
     --provider "$PROVIDER" --model "$MODEL" \
     >"$OUT_FILE" 2>&1 || rc=$?
-  if [ "$rc" -eq 0 ]; then
+  if [ "$rc" -eq 0 ] && grep -qiE 'authentication is required|complete the (sign-in|authorization)' "$OUT_FILE"; then
+    # The tool answered with an auth prompt, not data — and this one-shot run
+    # has already exited, taking the localhost OAuth callback listener with
+    # it, so consent clicked NOW lands on a dead port. The consent must
+    # complete while a session is alive; see docs/setup/30-google-oauth.md §6
+    # for the retry-loop one-liner that holds the session open.
+    echo "    AUTH PENDING — consent flow triggered but not completed."
+    echo "    Do NOT just re-click the browser tab: run the §6 retry-loop"
+    echo "    command from docs/setup/30-google-oauth.md, consent while it"
+    echo "    runs, then re-run this script."
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    SUMMARY="$SUMMARY  AUTH PENDING  $name"$'\n'
+  elif [ "$rc" -eq 0 ]; then
     echo "    PASS — output (verify it matches reality):"
     tail -n 8 "$OUT_FILE" | sed 's/^/      | /'
     PASS_COUNT=$((PASS_COUNT + 1))
