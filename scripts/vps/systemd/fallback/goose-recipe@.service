@@ -1,0 +1,33 @@
+# goose-recipe@.service — DISABLED FALLBACK. Not used in normal operation.
+#
+# The primary scheduler is goose's own (`goose serve --enable-scheduler`,
+# roster registered by scripts/vps/register-schedules.sh). This template unit
+# plus its sibling *.timer files exist only for the day the native scheduler
+# misbehaves (known upstream bugs: block/goose#3882 background runs blocking
+# tool execution, #5045 Scheduler UI timing/session-loading). deploy-vps.sh
+# installs them but never enables them. The flip procedure — remove the
+# native schedule, then `systemctl enable --now goose-recipe@<id>.timer` —
+# and the flip-back are in docs/automations.md.
+#
+# Instance name %i = recipe id: goose-recipe@morning-brief.service runs
+# recipes/morning-brief.yaml through scripts/common/run-recipe.sh (headless
+# goose run + one 60s-delayed retry + high-priority failure alert if the
+# retry also fails). Delivery of successful results comes from the recipe
+# itself — its explicit final notify.sh step — same as on the native path.
+
+[Unit]
+Description=Fallback headless goose recipe run: %i
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/data
+
+[Service]
+Type=oneshot
+User=agent
+EnvironmentFile=/data/secrets.env
+WorkingDirectory=/home/agent/personal-ai-setup
+# Same runtime environment as goose-serve.service: goose + uvx in
+# ~/.local/bin, npx in /usr/bin, and no keyring on a headless box.
+Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=GOOSE_DISABLE_KEYRING=1
+ExecStart=/home/agent/personal-ai-setup/scripts/common/run-recipe.sh %i

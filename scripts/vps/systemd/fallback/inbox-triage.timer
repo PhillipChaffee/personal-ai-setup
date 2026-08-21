@@ -1,0 +1,23 @@
+# DISABLED FALLBACK — see goose-recipe@.service in this directory and
+# docs/automations.md. deploy-vps.sh installs this file as
+# /etc/systemd/system/goose-recipe@inbox-triage.timer (renamed so
+# `systemctl enable --now goose-recipe@inbox-triage.timer` matches the
+# docs) but never enables it; enabling is the deliberate, manual flip when
+# the native goose scheduler misbehaves.
+#
+# Mirrors the native cron "0 0 9,13,17 * * MON-FRI" — weekdays 09:00,
+# 13:00, 17:00, server-local time (the timezone set in infra/terraform).
+
+[Unit]
+Description=Fallback timer: inbox-triage (weekdays 09:00/13:00/17:00)
+
+[Timer]
+Unit=goose-recipe@inbox-triage.service
+OnCalendar=Mon..Fri *-*-* 09,13,17:00:00
+# Deliberately NOT persistent: a missed triage slot is superseded by the
+# next one — re-running stale triage at boot would only double-label and
+# double-draft.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

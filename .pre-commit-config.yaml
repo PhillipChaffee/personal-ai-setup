@@ -1,0 +1,15 @@
+# Secret scanning on every commit — this repo is public by design.
+#
+# One-time setup:
+#   pipx install pre-commit   (or: brew install pre-commit)
+#   pre-commit install
+#
+# Manual full run: pre-commit run --all-files
+# See docs/public-repo.md for the full go-public checklist.
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    # Pinned for reproducibility. Bump periodically with `pre-commit autoupdate`
+    # or check https://github.com/gitleaks/gitleaks/releases for the latest tag.
+    rev: v8.28.0
+    hooks:
+      - id: gitleaks

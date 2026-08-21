@@ -1,0 +1,22 @@
+# DISABLED FALLBACK — see goose-recipe@.service in this directory and
+# docs/automations.md. deploy-vps.sh installs this file as
+# /etc/systemd/system/goose-recipe@morning-brief.timer (renamed so
+# `systemctl enable --now goose-recipe@morning-brief.timer` matches the
+# docs) but never enables it; enabling is the deliberate, manual flip when
+# the native goose scheduler misbehaves.
+#
+# Mirrors the native cron "0 0 7 * * *" — daily 07:00, server-local time
+# (the timezone set in infra/terraform).
+
+[Unit]
+Description=Fallback timer: morning-brief (daily 07:00)
+
+[Timer]
+Unit=goose-recipe@morning-brief.service
+OnCalendar=*-*-* 07:00:00
+# If 07:00 is missed (server down, mid-reboot), still deliver the brief as
+# soon as the timer is next able to run — a late brief beats no brief.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

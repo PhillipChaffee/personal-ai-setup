@@ -1,0 +1,101 @@
+# Health follow-ups — reconciles the health vault with the calendar and
+# records follow-ups owed. Runs ONLY on Together AI (ZDR / HIPAA posture);
+# never route this recipe through Zen.
+# Scheduled on the brain: goose schedule add --schedule-id health-followups \
+#   --cron "0 30 18 * * SUN" --recipe-source recipes/health-followups.yaml
+# This is the ONLY recipe that syncs the vault: it pulls at the start and
+# commits + pushes its own change at the end (docs/setup/60-vault-setup.md).
+# It also delivers its own push as the explicit final step, via
+# scripts/common/notify.sh — and that push must be PHI-free: the count line
+# "Health review ready: N items", nothing else.
+version: 1.0.0
+title: Health Follow-ups
+description: Reviews vault appointment notes against the calendar, records follow-ups owed, and reports only a PHI-free count.
+
+instructions: |
+  You are running unattended as a scheduled job. Nobody can answer questions,
+  so never ask any.
+
+  Work through this sequence:
+
+  1. git -C /data/life-vault pull --ff-only
+     (developer extension shell) — sync the vault first so edits pushed
+     from the Mac are present before you read anything. If the pull fails,
+     continue with the local copy and note the failure only in your session
+     output, never in the push.
+  2. Read /data/life-vault/health/appointments.md (developer extension:
+     shell/file tools).
+  3. Read the calendar (via workspace-mcp): medical-looking events from the
+     past 30 days and the next 60 days (appointments, labs, procedures,
+     follow-up visits).
+  4. Determine what follow-up is owed. Examples: a past appointment whose
+     notes say a follow-up/lab/referral was expected but nothing is on the
+     calendar or in the file; an upcoming appointment that needs preparation
+     noted in the file; a recorded follow-up whose due date has passed.
+  5. Update /data/life-vault/health/appointments.md:
+     - Maintain a "## Follow-ups" section; create it if it does not exist.
+     - Each open item is one checkbox line: "- [ ] YYYY-MM-DD — <what is
+       owed and why>".
+     - Never delete or rewrite existing items; add new ones, and tick an
+       item ("- [x]") only when the calendar/file clearly shows it happened.
+  6. If you changed the file, commit and push so the private remote keeps
+     mirroring the brain:
+       git -C /data/life-vault add health/appointments.md
+       git -C /data/life-vault commit -m "health-followups: weekly update"
+       git -C /data/life-vault push
+     Use exactly that commit message — it travels to the git host, so it
+     must stay generic. If nothing changed, skip the commit and push.
+  7. Count N = the number of OPEN (unticked) items in "## Follow-ups" after
+     your update.
+  8. Deliver the PHI-free count as the explicit final step:
+       /home/agent/personal-ai-setup/scripts/common/notify.sh -t "Health follow-ups" "Health review ready: N items"
+     (with N replaced by the count).
+
+  Hard rules:
+  - The calendar is read-only for this job; the only file you may modify is
+    /data/life-vault/health/appointments.md, and the only git repo you may
+    touch is /data/life-vault — exactly the pull/add/commit/push commands
+    above, nothing more.
+  - The notify.sh push and your final message must contain NO protected
+    health information — no names, providers, conditions, dates, or file
+    contents. Both must be exactly one line, in exactly this form:
+    Health review ready: N items
+    (with N replaced by the count). Even when N is 0, send and print that
+    line and nothing else. If something failed, still send/print only a
+    single generic line such as "Health review failed: see brain logs" —
+    never details.
+
+prompt: |
+  Run the weekly health follow-up review now. Remember: pull first, commit
+  and push your change, deliver via notify.sh, and both the push and the
+  final message are the single PHI-free count line only.
+
+extensions:
+  - type: builtin
+    name: developer
+    timeout: 300
+  - type: stdio
+    name: workspace-mcp
+    description: Google Workspace MCP (Calendar only, read-only use here)
+    cmd: uvx
+    args:
+      - workspace-mcp
+      - --tools
+      - calendar
+    timeout: 300
+    env_keys:
+      - GOOGLE_OAUTH_CLIENT_ID
+      - GOOGLE_OAUTH_CLIENT_SECRET
+
+settings:
+  goose_provider: together
+  # model id verified as of 2026-08-20
+  goose_model: Qwen/Qwen3.5-397B-A17B
+  temperature: 0.1
+
+retry:
+  max_retries: 1
+  checks:
+    - type: shell
+      # Success = the vault file exists and has the maintained section.
+      command: grep -q '^## Follow-ups' /data/life-vault/health/appointments.md

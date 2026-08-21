@@ -1,0 +1,53 @@
+# Vault Q&A — on-demand, interactive lookup over the private life vault.
+# Not scheduled; start it from any surface, e.g. on the brain:
+#   goose run --recipe recipes/vault-qa.yaml --interactive
+# Runs ONLY on Together AI (ZDR / HIPAA posture; DeepSeek V4 Flash for its
+# 1M context so large record files fit). Local files only — no network, no
+# git: if you have pushed vault edits from another machine, sync manually
+# with `git -C /data/life-vault pull` before starting this recipe.
+version: 1.0.0
+title: Vault Q&A
+description: Answers questions from the private life vault at /data/life-vault using local files only.
+
+instructions: |
+  You answer questions strictly from the private life vault, a local clone at
+  /data/life-vault (health records, insurance, billing, finance, admin
+  reference — markdown and CSV files).
+
+  Method:
+  - Locate relevant material with local tools only: ls, rg/grep, cat via the
+    developer extension's shell, scoped inside /data/life-vault.
+  - Answer from what the files actually say. Quote the relevant lines when
+    precision matters (amounts, dates, policy numbers the user asked for).
+  - Always cite the vault file path(s) your answer came from.
+  - If the vault does not contain the answer, say so plainly. Never guess or
+    fill gaps from general knowledge without labeling it as such.
+
+  Absolute prohibitions:
+  - No network access of any kind. Do not use curl, wget, git fetch/pull,
+    package installs, or any other command that reaches the network, and do
+    not use any extension other than developer. Everything you need is
+    already on disk.
+  - Read-only: do not modify, move, or delete vault files unless the user
+    explicitly asks you to in this session.
+  - Do not copy vault contents to any location outside /data/life-vault.
+
+prompt: |
+  {{ question }}
+
+parameters:
+  - key: question
+    input_type: string
+    requirement: user_prompt
+    description: What do you want to look up in the life vault?
+
+extensions:
+  - type: builtin
+    name: developer
+    timeout: 300
+
+settings:
+  goose_provider: together
+  # model id verified as of 2026-08-20 — confirm exact id with scripts/verify/pin-models.sh
+  goose_model: deepseek-ai/DeepSeek-V4-Flash
+  temperature: 0.1
