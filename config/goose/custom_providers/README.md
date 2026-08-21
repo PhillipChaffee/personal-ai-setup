@@ -18,10 +18,9 @@ Upstream reference:
 The API key is read from the env var named by `api_key_env`, never from the
 file.
 
-## `base_url` semantics (verified against goose v1.46.0)
+## `base_url` semantics (as of goose v1.46.0)
 
-Tested against goose v1.46.0 with a local mock server (2026-08-21), the two
-engines treat `base_url` differently:
+As of goose v1.46.0, the two engines treat `base_url` differently:
 
 - **`engine: openai`** — goose appends `/chat/completions` only when the URL
   doesn't already end with it, so **both** the full path and the bare base
@@ -48,8 +47,7 @@ shipped provider with one goose run and prints swap instructions on failure.
 (Symptom of a wrong variant: HTTP 404, or a doubled path like
 `/chat/completions/chat/completions` in goose's error output.)
 
-The `zen-anthropic` auth question is settled (verified against the live
-endpoint, 2026-08-21): Zen's `/messages` accepts `x-api-key` (HTTP 200) and
+Zen `/messages` auth, as of 2026-08-21: it accepts `x-api-key` (HTTP 200) and
 rejects `Authorization: Bearer` (401) — and `x-api-key` is exactly what
 goose's anthropic engine sends, so `zen-anthropic` works as shipped.
 `scripts/verify/check-providers.sh` re-probes both headers on every run in
@@ -58,7 +56,7 @@ case this ever changes.
 ## Adding or updating models
 
 There is **no model auto-discovery** — goose only offers what `models[]`
-lists. The shipped lists are broad (compiled from the catalogs verified
+lists. The shipped lists are broad (compiled from the catalogs as of
 2026-08-20), and the primary way to keep them broad is the sync script:
 
 ```bash
@@ -83,9 +81,9 @@ To add a single model by hand instead: append
 `{ "name": "<exact-id>", "context_limit": <tokens> }` to the right file,
 keeping IDs byte-exact (Together IDs are namespaced and case-sensitive).
 
-All shipped IDs are live-confirmed as of 2026-08-21 (first full
-`sync-models.sh --write` run against both catalogs; the one correction it
-surfaced was `DeepSeek-V4-Flash` → the dated `DeepSeek-V4-Flash-0731`).
+All shipped IDs match the live catalogs as of 2026-08-21. Watch for dated
+variants — Together publishes some models under dated IDs (e.g.
+`DeepSeek-V4-Flash-0731`), and the dated form is the one that resolves.
 Re-run `scripts/verify/pin-models.sh` monthly — it exits non-zero and names
 any pinned ID the providers have since renamed or retired.
 

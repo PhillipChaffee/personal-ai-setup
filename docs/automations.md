@@ -79,7 +79,7 @@ its first fire would otherwise be the 1st of the month at 09:00.
    the schedule, hit run-now in the Desktop Scheduler UI, and check that the email
    arrives in your inbox and the run's session looks right. CLI equivalent:
    `scripts/common/run-recipe.sh my-job` (NOT `goose schedule run-now` from a shell —
-   run-now detaches into the CLI process and dies with it, verified on 1.46.0), then
+   as of goose 1.46.0, run-now detaches into the CLI process and dies with it), then
    `goose schedule sessions --schedule-id my-job`.
 
 Day-to-day management: `goose schedule list` / `run-now` / `sessions` / `remove` on the
@@ -89,8 +89,8 @@ brain, or the Desktop Scheduler UI for pause/resume and history. Reference:
 ## Delivery: recipes email their own results, plus a failure watchdog
 
 Everything lands in your email inbox. There is no phone push app anywhere in the
-system — the ntfy iOS app is gone; ntfy survives only as the failure-alert transport
-below. Two distinct channels, deliberately kept apart:
+system — ntfy is only the failure-alert transport below, with no app subscribed to
+it. Two distinct channels, deliberately kept apart:
 
 - **Content: each scheduled recipe sends ONE self-addressed email via the Gmail send
   tool as its explicit final step.** Sender and recipient are both the owner's

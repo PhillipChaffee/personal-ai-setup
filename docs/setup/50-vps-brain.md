@@ -166,14 +166,31 @@ The script is idempotent — it's also the upgrade path later. It:
   CLI; pause it in the Desktop Scheduler UI or remove it until you have a
   budgeting source) — see [`docs/automations.md`](../automations.md).
 
-Confirm it's alive, and note the TLS certificate fingerprint (clients pin it
-in the next two steps):
+Then give the brain a **real TLS certificate** for its tailnet name — iOS
+and every stock client trust it natively, and it's a one-liner because
+Tailscale mints Let's Encrypt certs for `ts.net` names (this is why
+[10-accounts.md §3](10-accounts.md) enabled MagicDNS **and HTTPS
+Certificates**):
+
+```bash
+agent@brain$ sudo ~/personal-ai-setup/scripts/vps/renew-tls-cert.sh
+```
+
+That issues the cert to `/data/tls/` and restarts goose-serve with it; the
+weekly `tls-cert-renew.timer` (installed by deploy) keeps it renewed — LE
+certs expire in ~90 days, so don't skip the timer. Confirm everything:
 
 ```bash
 agent@brain$ systemctl status goose-serve
-agent@brain$ journalctl -u goose-serve -n 50 | grep -iE 'listen|fingerprint'
 agent@brain$ goose schedule list
+# from the Mac — strict TLS must validate with NO -k:
+mac$ curl -s -o /dev/null -w '%{http_code}\n' https://<your-brain>.<your-tailnet>.ts.net:3284/status
 ```
+
+(If you skip the real cert, serve falls back to its self-signed one — then
+Desktop must pin the fingerprint from
+`journalctl -u goose-serve | grep -i fingerprint`, and iOS clients will
+refuse the connection outright.)
 
 ## 7. Connect Goose Desktop to the brain
 
@@ -182,9 +199,13 @@ On the Mac, in Goose Desktop: Settings → the remote/server connection pane
 [remote goose server](https://github.com/aaif-goose/goose/blob/main/documentation/docs/guides/remote-goose-server.md)):
 
 - Address: `https://<your-brain>.<your-tailnet>.ts.net:3284`
+- Remote working directory: `/home/agent` (blank sends your Mac's local
+  path, which doesn't exist on the brain)
 - Secret key: the `GOOSE_SERVER__SECRET_KEY` from step 4
-- Certificate fingerprint: the SHA-256 fingerprint from step 6 — pinning it
-  means a swapped endpoint fails loudly instead of silently
+- Certificate fingerprint: **leave empty** when using the real LE cert from
+  step 6 — CA validation covers it, and a pinned fingerprint would break at
+  the cert's automatic ~60-day renewal. Pin the fingerprint ONLY on the
+  self-signed fallback path.
 
 Desktop now shows the **brain's** sessions and the Scheduler UI for the
 brain's automations. Sessions you start here execute on the brain and land in
@@ -223,7 +244,7 @@ Then, by hand:
 1. **Cross-device session visibility** — start a session in Desktop
    (connected to the brain), send one message; open the phone surface and
    find that session; reply from the phone; see the reply on Desktop. This is
-   the v2 milestone: one history, every surface.
+   the milestone that matters: one history, every surface.
 2. **Automation fires and delivers** — on the brain:
    `goose schedule run-now --schedule-id morning-brief` → the digest email
    (`Morning brief — <date>`, self-addressed) arrives in your inbox within

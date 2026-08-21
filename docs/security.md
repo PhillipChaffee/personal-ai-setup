@@ -6,7 +6,7 @@ Companion to [privacy.md](privacy.md) (which providers may see what) and
 
 ## Threat model
 
-**We defend against:**
+**Defended against:**
 
 | Threat | Defense |
 |---|---|
@@ -15,7 +15,7 @@ Companion to [privacy.md](privacy.md) (which providers may see what) and
 | This repo leaking (it's meant to go public) | No secrets by construction; gitleaks pre-commit + CI; go-public checklist |
 | Token/key theft in transit or from casual host access | HTTPS/WireGuard everywhere; keys in macOS Keychain / `/data/secrets.env` (0600, on the encrypted volume); goose serve TLS + shared secret + cert pinning |
 
-**We accept (documented, deliberate):**
+**Accepted (documented, deliberate):**
 
 - **A live-compromised hypervisor.** While `/data` is unlocked, Hetzner (or an attacker
   with hypervisor access) could read memory. No cloud VPS defends against this; accepted

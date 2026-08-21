@@ -122,7 +122,7 @@ Nothing to invent here — follow the comments in those two files.
 
 ## 6. The first-run OAuth dance (Mac)
 
-**The race to know about first** (hit live, 2026-08-21): workspace-mcp runs
+**The race to know about first**: workspace-mcp runs
 the `localhost:8000` OAuth callback listener, and workspace-mcp lives only as
 long as the goose session that spawned it. A one-shot `goose run` prints
 "authentication is required" and **exits — killing the listener — before you

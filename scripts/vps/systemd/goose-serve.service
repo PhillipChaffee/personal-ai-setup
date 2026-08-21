@@ -38,7 +38,7 @@ Environment=GOOSE_DISABLE_KEYRING=1
 # Belt and braces with RequiresMountsFor: refuse to start over a stale,
 # unmounted /data directory.
 ExecStartPre=/usr/bin/mountpoint -q /data
-ExecStart=/bin/bash -o pipefail -c 'TS_IP="$$(/usr/bin/tailscale ip -4 | head -n1)"; [ -n "$$TS_IP" ] || { echo "goose-serve: no Tailscale IPv4 yet, retrying" >&2; exit 1; }; exec /home/agent/.local/bin/goose serve --host "$$TS_IP" --port 3284 --tls --enable-scheduler'
+ExecStart=/bin/bash -o pipefail -c 'TS_IP="$$(/usr/bin/tailscale ip -4 | head -n1)"; [ -n "$$TS_IP" ] || { echo "goose-serve: no Tailscale IPv4 yet, retrying" >&2; exit 1; }; TLS_ARGS=""; [ -f /data/tls/cert.pem ] && TLS_ARGS="--tls-cert-path /data/tls/cert.pem --tls-key-path /data/tls/key.pem"; exec /home/agent/.local/bin/goose serve --host "$$TS_IP" --port 3284 --platform desktop --tls $$TLS_ARGS --enable-scheduler'
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
