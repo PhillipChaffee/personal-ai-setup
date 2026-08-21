@@ -1,0 +1,160 @@
+# Goose configuration template — personal-ai-setup
+# copy to ~/.config/goose/config.yaml (Mac) / copied no-clobber by deploy-vps.sh (brain)
+#
+# Schema (goose 1.4x): top-level `active_provider` + `providers:` map +
+# `extensions:` map. Reference:
+# https://github.com/aaif-goose/goose/blob/main/documentation/docs/guides/config-files.md
+# Env vars GOOSE_PROVIDER / GOOSE_MODEL override this file per-process.
+#
+# API keys are NOT read from this file. Each custom provider names its key env
+# var in config/goose/custom_providers/*.json (`api_key_env`):
+#   OPENCODE_ZEN_API_KEY  -> zen-openai, zen-anthropic, zen-free
+#   TOGETHER_API_KEY      -> together
+#   OPENAI_API_KEY        -> openai (built-in provider, optional — see below)
+# Mac: keys live in the Keychain (scripts/mac/keychain-secrets.sh exports them).
+# Brain: keys come from /data/secrets.env via the systemd unit's EnvironmentFile.
+#
+# Model lists: the provider JSONs ship with broad catalogs (verified as of
+# 2026-08-20); scripts/sync-models.sh refreshes them from the live Zen and
+# Together /models endpoints whenever you want the full, current roster.
+#
+# NOTE (unverified upstream): the documented `providers:` map examples use
+# built-in provider names; custom providers are documented via
+# `goose session --provider <name>` and `goose configure`. If your goose
+# version ignores a custom name in this map, run `goose configure` once,
+# pick zen-anthropic, and let it rewrite this block in the shape it expects.
+# scripts/verify/check-goose.sh exercises all three providers.
+
+active_provider: together
+
+providers:
+  # DEFAULT / hub daily driver. Together's ZDR posture also makes this the
+  # sensitive tier, so the default is the most private option.
+  # Qwen3.5-397B is Together's flagship open model with verified function
+  # calling; drop to openai/gpt-oss-120b when you want cheaper.
+  together:
+    enabled: true
+    configured: true
+    model: Qwen/Qwen3.5-397B-A17B
+
+  # Premium alternative for non-sensitive work when you want Claude.
+  # Anthropic-billed via Zen => 30-day retention, so NON-SENSITIVE work only
+  # (docs/model-routing.md, hard rule 2).
+  zen-anthropic:
+    enabled: true
+    configured: true
+    model: claude-sonnet-5
+
+  # Cost-saver + scheduled-automation tier (Zen zero-retention open models).
+  zen-openai:
+    enabled: true
+    configured: true
+    model: kimi-k2.6
+
+  # Zen's FREE models — $0, but they TRAIN ON YOUR DATA (docs/privacy.md).
+  # Tier-1 throwaway, non-personal work only; the provider name keeps the
+  # boundary visible in the model picker.
+  zen-free:
+    enabled: true
+    configured: true
+    model: big-pickle
+
+  # OPTIONAL: OpenAI's own API via goose's built-in provider. Uncomment and
+  # add OPENAI_API_KEY (Keychain / secrets.env) if you create an OpenAI
+  # account. Note: Zen's GPT-5.x models are NOT reachable from goose (they
+  # live behind Zen's Responses endpoint) — this direct route is how you get
+  # GPT models in goose; OpenCode reaches Zen's GPT models natively either
+  # way, and OpenAI's open-weight gpt-oss models are already on `together`.
+  # OpenAI API retention is ~30 days => non-sensitive work only, same as
+  # hard rule 2.
+  # openai:
+  #   enabled: true
+  #   configured: true
+  #   model: gpt-5.2
+
+extensions:
+  # Shell, file edits, etc. Built-in, on by default upstream; kept explicit.
+  developer:
+    name: developer
+    type: builtin
+    enabled: true
+    timeout: 300
+
+  # Built-in memory extension (off by default upstream — we enable it).
+  # Stores facts under ~/.config/goose/memory/; all saved memories are loaded
+  # into every prompt, so prune categories now and then to keep token cost down.
+  memory:
+    name: memory
+    type: builtin
+    enabled: true
+    timeout: 300
+
+  # Gmail + Google Calendar (+ Drive/Docs/Tasks) via taylorwilsdon/google_workspace_mcp.
+  # https://github.com/taylorwilsdon/google_workspace_mcp
+  # --tool-tier core keeps the tool count (and per-request context cost) down;
+  # raise to `extended` only if a workflow needs it.
+  # env_keys are resolved from goose's secret store / process environment —
+  # values never live in this file. See config/mcp/workspace-mcp.env.example
+  # and docs/setup/30-google-oauth.md (publish the OAuth app "In production"
+  # or refresh tokens die every 7 days).
+  workspace-mcp:
+    name: workspace-mcp
+    display_name: Google Workspace
+    type: stdio
+    enabled: true
+    cmd: uvx
+    args:
+      - workspace-mcp
+      - --tool-tier
+      - core
+    envs:
+      USER_GOOGLE_EMAIL: you@example.com
+    env_keys:
+      - GOOGLE_OAUTH_CLIENT_ID
+      - GOOGLE_OAUTH_CLIENT_SECRET
+    timeout: 300
+
+  # Todoist first-party remote MCP — initiates OAuth on first connect,
+  # no API key. https://github.com/Doist/todoist-mcp
+  todoist:
+    name: todoist
+    display_name: Todoist
+    type: streamable_http
+    enabled: true
+    uri: https://ai.todoist.net/mcp
+    envs: {}
+    headers: {}
+    timeout: 300
+
+  # Browser automation (microsoft/playwright-mcp). Disabled by default:
+  # it is heavyweight (downloads browsers on first run) and only needed for
+  # workflows that actually drive the web — flip enabled: true when one does.
+  playwright:
+    name: playwright
+    display_name: Playwright
+    type: stdio
+    enabled: false
+    cmd: npx
+    args:
+      - -y
+      - "@playwright/mcp@latest"
+    envs: {}
+    env_keys: []
+    timeout: 300
+
+  # Web search via Tavily (1,000 free credits/mo as of 2026-08-20).
+  # Disabled by default — enable after putting TAVILY_API_KEY in your secret
+  # store (Keychain on Mac, /data/secrets.env on the brain).
+  tavily:
+    name: tavily
+    display_name: Tavily Search
+    type: stdio
+    enabled: false
+    cmd: npx
+    args:
+      - -y
+      - tavily-mcp
+    envs: {}
+    env_keys:
+      - TAVILY_API_KEY
+    timeout: 300

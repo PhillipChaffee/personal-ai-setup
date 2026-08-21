@@ -1,0 +1,46 @@
+# ============================================================================
+# This repository is PUBLIC (or is meant to become public).
+#
+# It must only ever contain templates, scripts, and docs with placeholders.
+# Real secrets live in untracked files (secrets.env, terraform.tfvars, OAuth
+# token JSONs) and are injected at runtime. This file is the first guardrail;
+# gitleaks (pre-commit + CI) is the second; docs/public-repo.md is the
+# checklist before flipping the repo public.
+#
+# If you find yourself editing this file to commit something it blocks,
+# stop — that file almost certainly belongs in /data/secrets.env on the
+# brain, in the macOS Keychain, or in the separate PRIVATE life-vault repo.
+# ============================================================================
+
+# --- Secrets & credentials (never committed) --------------------------------
+secrets.env
+secrets.yaml
+.env
+.env.*
+*token*.json
+gcp-oauth*.json
+credentials*.json
+auth.json
+# Whole credential-store directories, whatever the files inside are named
+# (e.g. workspace-mcp's per-account token dir) — defense in depth.
+credentials/
+**/workspace-mcp/**
+
+# ...but the placeholder templates are the whole point of this repo — keep them.
+!*.example
+
+# --- Terraform (state and tfvars contain secrets in cleartext) --------------
+*.tfstate
+*.tfstate.*
+*.tfvars
+!terraform.tfvars.example
+.terraform/
+# .terraform.lock.hcl is intentionally NOT ignored: it holds only provider
+# checksums (no secrets) and committing it pins provider versions.
+# Uncomment the next line only if you prefer not to track it:
+# .terraform.lock.hcl
+
+# --- OS / tooling junk ------------------------------------------------------
+.DS_Store
+node_modules/
+__pycache__/

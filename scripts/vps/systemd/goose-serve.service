@@ -1,0 +1,48 @@
+# goose-serve.service — the always-on brain: `goose serve` (ACP server for
+# Desktop/phone clients + the native recipe scheduler).
+# Installed to /etc/systemd/system/ by scripts/vps/deploy-vps.sh.
+#
+# Binding mechanism: docs/security.md requires the listener to exist on the
+# tailnet interface ONLY — never 0.0.0.0 — so even a misconfigured firewall
+# cannot expose it. systemd cannot resolve the Tailscale IP in a plain
+# ExecStart=, so a one-line bash wrapper asks tailscaled for it at start time
+# (`tailscale ip -4` is read-only and works unprivileged). If tailscaled has
+# no IPv4 yet, the wrapper exits nonzero and Restart=always/RestartSec=5
+# retries every 5 s — that IS the "wait for the tailnet" logic; no extra
+# helper needed. (Binding 0.0.0.0 behind ufw + the Hetzner firewall would
+# also work, but was rejected: it makes safety depend on two firewalls
+# staying correct instead of on the socket never existing publicly.)
+
+[Unit]
+Description=goose serve (personal AI brain: ACP server + scheduler)
+Wants=network-online.target
+After=network-online.target tailscaled.service
+# /data (LUKS volume) holds secrets.env and the goose data dir. After a
+# reboot it is deliberately absent until scripts/vps/luks-unlock.sh runs —
+# this line keeps the unit down rather than starting against an empty /data.
+RequiresMountsFor=/data
+
+[Service]
+User=agent
+# The brain's entire secret store: GOOSE_SERVER__SECRET_KEY, provider API
+# keys, NTFY_TOPIC — all injected from the encrypted volume, nowhere else.
+EnvironmentFile=/data/secrets.env
+WorkingDirectory=/home/agent
+# goose spawns MCP servers as children: uvx (workspace-mcp) lives in
+# ~/.local/bin, npx (todoist/playwright-style servers) in /usr/bin.
+Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Headless server — no Secret Service keyring. Every key arrives via
+# EnvironmentFile above, so goose must never try to store one (a keyring
+# fallback would write plaintext secrets.yaml on the UNencrypted root disk).
+Environment=GOOSE_DISABLE_KEYRING=1
+# Belt and braces with RequiresMountsFor: refuse to start over a stale,
+# unmounted /data directory.
+ExecStartPre=/usr/bin/mountpoint -q /data
+ExecStart=/bin/bash -o pipefail -c 'TS_IP="$$(/usr/bin/tailscale ip -4 | head -n1)"; [ -n "$$TS_IP" ] || { echo "goose-serve: no Tailscale IPv4 yet, retrying" >&2; exit 1; }; exec /home/agent/.local/bin/goose serve --host "$$TS_IP" --port 3284 --tls --enable-scheduler'
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

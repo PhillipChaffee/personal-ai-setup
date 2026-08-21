@@ -1,0 +1,79 @@
+# Morning brief — daily digest of calendar + important unread email + due tasks.
+# Scheduled on the brain: goose schedule add --schedule-id morning-brief \
+#   --cron "0 0 7 * * *" --recipe-source recipes/morning-brief.yaml
+# The recipe delivers its own push: its explicit final step runs
+# scripts/common/notify.sh (via the developer extension's shell) with the
+# digest, then prints the digest as the final message for the session record.
+version: 1.0.0
+title: Morning Brief
+description: Daily digest of today's calendar, unread important email, and due tasks.
+
+instructions: |
+  You are running unattended as a scheduled job. Nobody can answer questions,
+  so never ask any. If a tool call fails, retry it once; if it still fails,
+  continue with what you have and note the gap in the digest.
+
+  Gather, in this order:
+  1. Today's calendar events (Google Calendar via workspace-mcp): start time,
+     title, and location or video link if present.
+  2. Unread email in the inbox that looks important (Gmail via workspace-mcp):
+     sender and subject only. Skip newsletters, promotions, and automated
+     notifications.
+  3. Tasks due today or overdue (Todoist).
+
+  Then compose ONE compact plain-text digest (no markdown tables):
+  - one headline line: today's date and how busy the day looks
+  - "Calendar:" — one line per event, chronological
+  - "Email:" — one line per message, at most 5
+  - "Tasks:" — one line per task, overdue first
+  - omit any section that is empty
+
+  Delivery (explicit final step — this run delivers its own push):
+  - Send the finished digest with notify.sh via the developer extension's
+    shell, passing the digest on stdin:
+      /home/agent/personal-ai-setup/scripts/common/notify.sh -t "Morning brief" <<'DIGEST'
+      <the digest>
+      DIGEST
+  - Then END by printing the same digest as your final message (it becomes
+    the run's session record), with no commentary before or after it.
+
+  Hard rules:
+  - Gmail, Calendar, and Todoist are read-only in this run: do not modify,
+    send, archive, or label anything.
+  - The ONLY shell command you may run is
+    /home/agent/personal-ai-setup/scripts/common/notify.sh, exactly once,
+    for the delivery step above. Never hand-roll a curl or any other
+    delivery path.
+
+prompt: |
+  Prepare my morning brief for today. Deliver it via notify.sh as your final
+  step, then end by printing the digest itself as your final message.
+
+extensions:
+  - type: builtin
+    name: developer
+    timeout: 300
+  - type: stdio
+    name: workspace-mcp
+    description: Google Workspace MCP (Gmail + Calendar, read-only use here)
+    cmd: uvx
+    args:
+      - workspace-mcp
+      - --tools
+      - gmail
+      - calendar
+    timeout: 300
+    env_keys:
+      - GOOGLE_OAUTH_CLIENT_ID
+      - GOOGLE_OAUTH_CLIENT_SECRET
+  - type: streamable_http
+    name: todoist
+    description: Todoist first-party remote MCP
+    uri: https://ai.todoist.net/mcp
+    timeout: 300
+
+settings:
+  goose_provider: zen-openai
+  # model id verified as of 2026-08-20
+  goose_model: minimax-m2.7
+  temperature: 0.1
