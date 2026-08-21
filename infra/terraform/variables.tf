@@ -16,9 +16,9 @@ variable "tailscale_authkey" {
 }
 
 variable "server_type" {
-  description = "Hetzner server type. Default cx22 (2 vCPU / 4 GB / 40 GB) is enough for goose serve + MCP servers. NOTE: the cx (shared Intel) line is not offered in every location — US locations typically carry cpx/ccx types instead; pick e.g. cpx21 if you choose ash/hil and cx22 is rejected."
+  description = "Hetzner server type. Default cpx21 (2 vCPU AMD / 4 GB / 80 GB) is enough for goose serve + MCP servers and is offered in the US locations that the default location targets. The cheaper cx line (e.g. cx22) is Intel and typically EU-only — switch to it if you pick fsn1/nbg1/hel1."
   type        = string
-  default     = "cx22"
+  default     = "cpx21"
 }
 
 variable "location" {

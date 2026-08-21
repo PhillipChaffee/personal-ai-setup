@@ -86,7 +86,7 @@ Siri Shortcut ─────┤            OpenCode CLI (coding, local)      �
 │   ├── weekly-review.yaml              # Sunday 17:00 review, emailed to self
 │   ├── health-followups.yaml           # Sunday 18:30, Together-only, PHI-free push (counts only)
 │   ├── vault-qa.yaml                   # on-demand sensitive doc Q&A (Together, long-context)
-│   └── budget-checkin.yaml             # monthly vs budget.md — ships paused
+│   └── budget-checkin.yaml             # monthly vs budget.md — disable after deploy until you pick a budget source
 ├── scripts/
 │   ├── mac/
 │   │   ├── bootstrap-mac.sh            # brew installs (pinned), config templates, Keychain prompts

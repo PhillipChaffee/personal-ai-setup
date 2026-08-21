@@ -50,7 +50,7 @@ stable (`health-followups` appends to `health/appointments.md` by path):
 | `admin/reference.md` | Everything-else reference: policy numbers, provider contact details, important dates. Reference data, not secrets |
 
 Name documents date-first so listings sort chronologically and the agent can
-reason about recency: `2026-03-12-cardiology-visit.md`.
+reason about recency: `2026-03-12-dental-visit.md`.
 
 ## 3. Ingesting documents (PDF → markdown)
 
@@ -64,10 +64,10 @@ leaves the machine during ingestion):
 ```bash
 # pdftotext (poppler) — fast, fine for text-first documents
 brew install poppler
-pdftotext -layout 2026-03-12-cardiology-visit.pdf 2026-03-12-cardiology-visit.md
+pdftotext -layout 2026-03-12-dental-visit.pdf 2026-03-12-dental-visit.md
 
 # markitdown — better structure preservation (tables, headings)
-uvx markitdown 2026-03-12-cardiology-visit.pdf > 2026-03-12-cardiology-visit.md
+uvx markitdown 2026-03-12-dental-visit.pdf > 2026-03-12-dental-visit.md
 ```
 
 After converting, skim the markdown once — scanned/image-only PDFs can come

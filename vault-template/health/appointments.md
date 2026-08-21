@@ -11,7 +11,7 @@ count toward the automation's weekly "N items" push).
 
 | Date | Time | Provider | Purpose | Prep needed |
 |---|---|---|---|---|
-| 2026-09-15 | 10:30 | Dr. Example, Cardiology | Annual check-up (EXAMPLE — delete) | Fasting from midnight; bring med list |
+| 2026-09-15 | 10:30 | Dr. Example, Dentistry | Annual check-up (EXAMPLE — delete) | Fasting from midnight; bring med list |
 
 ## Follow-ups
 

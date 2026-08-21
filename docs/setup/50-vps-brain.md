@@ -161,8 +161,9 @@ The script is idempotent — it's also the upgrade path later. It:
   **Tailscale IP**, port **3284**, `--tls`, shared-secret auth,
   `--enable-scheduler`, `Restart=always`, `RequiresMountsFor=/data`;
 - runs `scripts/vps/register-schedules.sh` to register the full automation
-  roster (`budget-checkin` stays paused) — see
-  [`docs/automations.md`](../automations.md).
+  roster (note: `budget-checkin` registers **active** — goose 1.x has no pause
+  CLI; pause it in the Desktop Scheduler UI or remove it until you have a
+  budgeting source) — see [`docs/automations.md`](../automations.md).
 
 Confirm it's alive, and note the TLS certificate fingerprint (clients pin it
 in the next two steps):
