@@ -3,8 +3,10 @@
 #
 # Installs (via Homebrew): goose CLI + Goose Desktop, OpenCode, uv, node, jq,
 # Tailscale; pins the goose CLI formula; lays down the repo's config templates
-# into ~/.config (never overwriting existing files). Idempotent — safe to
-# re-run after a failed step. See docs/setup/20-mac-setup.md.
+# into ~/.config plus the ported skills (~/.agents/skills — read by both
+# OpenCode and goose), OpenCode agents, and global AGENTS.md rules (never
+# overwriting existing files). Idempotent — safe to re-run after a failed
+# step. See docs/setup/20-mac-setup.md and docs/cursor-port.md.
 set -euo pipefail
 
 usage() {
@@ -115,6 +117,35 @@ copy_no_clobber "$REPO_ROOT/config/opencode/opencode.json" "$HOME/.config/openco
 
 echo "    (edit ~/.config/goose/.goosehints — replace the <placeholders> with"
 echo "     your name, email, and timezone)"
+
+# ------------------------------------------- Skills, agents, global rules ---
+# Ported from PhillipChaffee/.cursor (docs/cursor-port.md). One skills target
+# serves both tools: ~/.agents/skills/ is read by OpenCode ("agent-compatible"
+# global dir) AND by goose >= 1.16's built-in skills support. OpenCode agents
+# and the global AGENTS.md are OpenCode-only. Same no-clobber rule: a skill
+# directory or agent file you've edited locally is never overwritten.
+echo "==> Installing skills, OpenCode agents, and global rules (no-clobber)"
+mkdir -p "$HOME/.agents/skills" "$HOME/.config/opencode/agents"
+
+for skill_dir in "$REPO_ROOT"/config/skills/*/; do
+  [ -d "$skill_dir" ] || continue
+  skill_name="$(basename "$skill_dir")"
+  if [ -e "$HOME/.agents/skills/$skill_name" ]; then
+    echo "    kept existing ~/.agents/skills/$skill_name"
+  else
+    cp -R "$skill_dir" "$HOME/.agents/skills/$skill_name"
+    echo "    installed ~/.agents/skills/$skill_name"
+  fi
+done
+
+for agent_md in "$REPO_ROOT"/config/opencode/agents/*.md; do
+  [ -f "$agent_md" ] || continue
+  copy_no_clobber "$agent_md" "$HOME/.config/opencode/agents/$(basename "$agent_md")"
+done
+
+copy_no_clobber "$REPO_ROOT/config/opencode/AGENTS.md" "$HOME/.config/opencode/AGENTS.md"
+echo "    (project-specific rule snippets stay in the repo:"
+echo "     config/opencode/project-rules/ — see docs/cursor-port.md)"
 
 # -------------------------------------------------------------- Next steps --
 cat <<EOF
