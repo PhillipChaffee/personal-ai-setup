@@ -116,11 +116,13 @@ extensions:
 
   # Todoist first-party remote MCP — initiates OAuth on first connect,
   # no API key. https://github.com/Doist/todoist-mcp
+  # DISABLED: no todo app chosen yet. Flip enabled: true to adopt Todoist,
+  # or swap the uri for your chosen app's MCP server (docs/roadmap.md).
   todoist:
     name: todoist
     display_name: Todoist
     type: streamable_http
-    enabled: true
+    enabled: false
     uri: https://ai.todoist.net/mcp
     envs: {}
     headers: {}

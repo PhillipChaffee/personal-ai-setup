@@ -20,7 +20,7 @@ This repo is the complete, reproducible blueprint: Terraform for the server, con
 | Comfort with a terminal | You'll run scripts, `terraform apply`, and paste commands over SSH. Every step is written out; no improvisation required. |
 | ~$15–35/month | Breakdown in [Budget](#budget). The two inference accounts are pay-as-you-go with hard caps. |
 | A free weekend, roughly | Phase 1 gets you working AI in 1–2 hours; the full build is ~8–10 hours spread over the five phases. |
-| Accounts you'll create | OpenCode Zen, Together AI, Hetzner (VPS), Tailscale, Todoist, a Google Cloud OAuth app for your own Gmail/Calendar. Each has a runbook with the gotchas called out. |
+| Accounts you'll create | OpenCode Zen, Together AI, Hetzner (VPS), Tailscale, a Google Cloud OAuth app for your own Gmail/Calendar (a todo app like Todoist is optional). Each has a runbook with the gotchas called out. |
 
 ## Quickstart
 
@@ -110,7 +110,7 @@ The repo is a template; your identity and choices live outside it or in a handfu
 - **Identity**: `config/goose/goosehints.example` has `<placeholders>` for your name/email/timezone; `infra/terraform/terraform.tfvars.example` for your SSH key, Tailscale auth key, region. Secrets go in your Keychain (Mac) and `/data/secrets.env` (brain) — never in the repo.
 - **Different VPS host**: everything host-specific is confined to `infra/terraform/`. Porting to DigitalOcean/Vultr means rewriting that one directory; nothing else cares.
 - **Different models/providers**: providers are JSON files in `config/goose/custom_providers/`; the job→model routing (and the privacy rules that constrain it) is `docs/model-routing.md`. Any OpenAI- or Anthropic-compatible endpoint slots in.
-- **Different apps**: Todoist and Gmail/Calendar are MCP servers declared in `config/goose/config.yaml` — swap for your own. The budgeting source is deliberately undecided (see `docs/roadmap.md`).
+- **Different apps**: Gmail/Calendar (and an optional todo app — a disabled Todoist entry ships as the worked example) are MCP servers declared in `config/goose/config.yaml` — swap for your own. The todo and budgeting choices are deliberately undecided (see `docs/roadmap.md`).
 - **Your data**: real life data lives in a **separate private repo** you create from `vault-template/`. This repo stays publishable; that one never is.
 
 ## Principles
@@ -130,7 +130,7 @@ All figures verified as of 2026-08-20 — re-verify at signup (`scripts/verify/p
 | Hetzner cpx21-class VPS + encrypted volume | ~€6–9/mo |
 | OpenCode Zen inference (PAYG — **disable auto-reload, set a cap**) | ~$5–20/mo typical |
 | Together AI inference (min $5 top-up; sensitive tier + default hub) | ~$5–10/mo |
-| Tailscale (personal plan), ntfy public topic, Todoist free tier | $0 |
+| Tailscale (personal plan), ntfy public topic | $0 |
 | Pal Chat (backup phone client) | ~$7 one-time |
 | **Total** | **~$15–35/mo** |
 

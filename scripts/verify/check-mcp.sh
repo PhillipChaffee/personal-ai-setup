@@ -88,14 +88,23 @@ if [ "$FAIL_COUNT" -gt 0 ]; then
   echo "    — a 'Testing' app expires refresh tokens every 7 days.)"
 fi
 
-# ---- 2. Todoist remote MCP --------------------------------------------------
-GMAIL_FAILS=$FAIL_COUNT
-run_check "Todoist (ai.todoist.net)" \
-  "Using the Todoist tools, list my tasks due today, titles only, one per line. If there are none, output exactly: no tasks due today. Do not create or modify any task."
+# ---- 2. Todoist remote MCP (only if enabled) --------------------------------
+TODOIST_ON="no"
+if [ -f "$CONFIG" ] && awk '/^  todoist:/{f=1; next} f && /^  [A-Za-z_#]/{f=0} f && /enabled: true/{found=1} END{exit !found}' "$CONFIG"; then
+  TODOIST_ON="yes"
+fi
 
-if [ "$FAIL_COUNT" -gt "$GMAIL_FAILS" ]; then
-  echo "    Hints: is the todoist extension enabled in $CONFIG? The first"
-  echo "    connect triggers Todoist's OAuth — approve it and re-run."
+if [ "$TODOIST_ON" = "yes" ]; then
+  GMAIL_FAILS=$FAIL_COUNT
+  run_check "Todoist (ai.todoist.net)" \
+    "Using the Todoist tools, list my tasks due today, titles only, one per line. If there are none, output exactly: no tasks due today. Do not create or modify any task."
+
+  if [ "$FAIL_COUNT" -gt "$GMAIL_FAILS" ]; then
+    echo "    Hints: the first connect triggers Todoist's OAuth — approve it"
+    echo "    and re-run."
+  fi
+else
+  echo "SKIP  Todoist — extension disabled in $CONFIG (no todo app adopted yet)"
 fi
 
 # ---- 3. Playwright (only if enabled) ----------------------------------------

@@ -7,8 +7,9 @@ it goes. Prices, tiers, and console defaults verified as of 2026-08-20 —
 consoles move buttons around, but the gotchas themselves are policy, not UI.
 
 Do the first two (Zen + Together) now — they're all Phase 1 needs. Tailscale
-and Todoist can wait until Phase 2, Hetzner until Phase 3; they're included
-here so all account work lives in one doc.
+can wait until Phase 2, Hetzner until Phase 3, and Todoist is **optional**
+(only if you adopt it as your todo app); they're included here so all account
+work lives in one doc.
 
 ## 1. OpenCode Zen
 
@@ -88,7 +89,11 @@ The only network path to the brain. Free personal plan.
    into `infra/terraform/terraform.tfvars`, and
    [50-vps-brain.md](50-vps-brain.md) tells you when.
 
-## 4. Todoist
+## 4. Todoist (optional — skip unless you've adopted it)
+
+No todo app is wired in by default: the `todoist` extension ships
+`enabled: false` in `config/goose/config.yaml`, and no recipe depends on
+tasks. If you later pick Todoist as your todo app:
 
 1. Create an account at <https://todoist.com>. Free tier is fine.
 2. That's it — **no API key**. Todoist's first-party MCP server at
@@ -182,7 +187,7 @@ means stored via `scripts/mac/keychain-secrets.sh`; "secrets.env" means
 | goose serve shared secret | `GOOSE_SERVER__SECRET_KEY` | yes (Desktop connects with it) | yes | Goose iOS app (pairing) | Phase 3 |
 | Google OAuth client | `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` | yes | yes | — | Phase 2 ([30-google-oauth.md](30-google-oauth.md)) |
 | LUKS passphrase | (passphrase) | no | no | password manager **only** | Phase 3 |
-| Todoist | none — browser OAuth on first MCP connect | — | — | — | §4 |
+| Todoist (optional) | none — browser OAuth on first MCP connect | — | — | — | §4 |
 
 Cross-check before moving on: everything in the "now" rows exists, the two Zen
 cost-control settings are flipped, the Together privacy toggles are verified

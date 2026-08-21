@@ -37,6 +37,17 @@ when the Memory extension's contents stop fitting in a screenful, or when you
 notice memory tokens dominating small requests. Migration is low-risk: keep the
 built-in extension for standing preferences, move facts/notes into the vault.
 
+## Pick a todo app (none wired in yet)
+
+No task manager is part of the stack yet — the `todoist` extension in
+`config/goose/config.yaml` ships `enabled: false` as a worked example, and the
+morning-brief/weekly-review recipes deliberately have no Tasks section.
+Criteria when choosing: a real API or first-party MCP server (Todoist has
+`https://ai.todoist.net/mcp`, OAuth, zero key management — still the
+lowest-friction option), export path, and no-training data posture. To adopt
+one: flip the extension on (or swap its `uri`), add a Tasks step back to the
+two recipes, and re-run `scripts/verify/check-mcp.sh`.
+
 ## Budgeting app with a real API (replace the ledger.csv flow)
 
 Phase 4 starts finance tracking deliberately simple: `finance/ledger.csv` +

@@ -19,13 +19,11 @@ instructions: |
   2. Unread email in the inbox that looks important (Gmail via workspace-mcp):
      sender and subject only. Skip newsletters, promotions, and automated
      notifications.
-  3. Tasks due today or overdue (Todoist).
 
   Then compose ONE compact plain-text digest (no markdown tables):
   - one headline line: today's date and how busy the day looks
   - "Calendar:" — one line per event, chronological
   - "Email:" — one line per message, at most 5
-  - "Tasks:" — one line per task, overdue first
   - omit any section that is empty
 
   Delivery (explicit final step — this run delivers its own push):
@@ -38,8 +36,8 @@ instructions: |
     the run's session record), with no commentary before or after it.
 
   Hard rules:
-  - Gmail, Calendar, and Todoist are read-only in this run: do not modify,
-    send, archive, or label anything.
+  - Gmail and Calendar are read-only in this run: do not modify, send,
+    archive, or label anything.
   - The ONLY shell command you may run is
     /home/agent/personal-ai-setup/scripts/common/notify.sh, exactly once,
     for the delivery step above. Never hand-roll a curl or any other
@@ -66,12 +64,6 @@ extensions:
     env_keys:
       - GOOGLE_OAUTH_CLIENT_ID
       - GOOGLE_OAUTH_CLIENT_SECRET
-  - type: streamable_http
-    name: todoist
-    description: Todoist first-party remote MCP
-    uri: https://ai.todoist.net/mcp
-    timeout: 300
-
 settings:
   goose_provider: zen-openai
   # model id verified as of 2026-08-20
