@@ -1,7 +1,10 @@
 # Goose custom providers
 
-These JSON files define the three named providers the whole setup routes
-through (`zen-openai`, `zen-anthropic`, `together`). Install them by copying
+These JSON files define the four named providers the whole setup routes
+through (`together` — the default, `zen-openai`, `zen-anthropic`, and
+`zen-free` — Zen's $0 models split out because they train on your data;
+the separate provider keeps that boundary visible in every model picker).
+Install them by copying
 into `~/.config/goose/custom_providers/` (`deploy-vps.sh` copies them
 no-clobber on the brain — it never overwrites an existing copy, so after
 editing a template re-copy it, or merge by hand using the diff hint the
@@ -55,25 +58,36 @@ via OpenCode only (see docs/troubleshooting.md).
 ## Adding or updating models
 
 There is **no model auto-discovery** — goose only offers what `models[]`
-lists, so new or renamed upstream models must be added here by hand:
+lists. The shipped lists are broad (compiled from the catalogs verified
+2026-08-20), and the primary way to keep them broad is the sync script:
 
-1. Find the exact live ID:
-   - Zen: `https://opencode.ai/zen/v1/models` (or <https://opencode.ai/docs/zen>)
-   - Together: `https://api.together.xyz/v1/models`
-   - or just run `scripts/verify/pin-models.sh`, which diffs everything pinned
-     in this repo against both catalogs.
-2. Append `{ "name": "<exact-id>", "context_limit": <tokens> }` to the right
-   file. Keep IDs byte-exact (Together IDs are namespaced and case-sensitive,
-   e.g. `Qwen/Qwen3.5-397B-A17B`).
-3. Re-copy into `~/.config/goose/custom_providers/` and restart goose
-   (on the brain: `systemctl restart goose-serve`).
-4. If the model appears in `docs/model-routing.md` or a recipe, update those
-   in the same commit.
+```bash
+scripts/sync-models.sh          # dry run: fetch live catalogs, show diffs
+scripts/sync-models.sh --write  # rewrite these files from the live catalogs
+```
 
-One shipped ID needs confirming before you rely on it:
-`deepseek-ai/DeepSeek-V4-Flash` in `together.json` — Together publishes dated
-variants of this model (e.g. a `-0731` release), so confirm the exact live ID
-with `scripts/verify/pin-models.sh` and correct the file if it differs.
+It pulls `https://opencode.ai/zen/v1/models` and
+`https://api.together.xyz/v1/models` (using your keys), buckets Zen models by
+wire format (claude/qwen3.5+ → `zen-anthropic`; $0/`-free`/big-pickle →
+`zen-free`; gpt/grok/gemini/muse excluded — Responses/Google formats goose
+cannot speak; everything else → `zen-openai`), keeps Together's chat-type
+models, and refuses to write an empty list. Run it on first setup with real
+keys — it corrects any shipped ID the providers have since renamed — and
+whenever `scripts/verify/pin-models.sh` (the read-only drift checker) warns.
+After `--write`: re-copy the changed files into
+`~/.config/goose/custom_providers/`, restart goose (brain:
+`systemctl restart goose-serve`), and update any renamed ID pinned in
+`recipes/` or `docs/model-routing.md`.
+
+To add a single model by hand instead: append
+`{ "name": "<exact-id>", "context_limit": <tokens> }` to the right file,
+keeping IDs byte-exact (Together IDs are namespaced and case-sensitive).
+
+A few shipped IDs are best-effort until your first live sync confirms them:
+`deepseek-ai/DeepSeek-V4-Flash`, `deepseek-ai/DeepSeek-V3.1`, and the Llama 4
+IDs in `together.json` (Together publishes dated/suffixed variants), and
+`kimi-k2.7-code`, `claude-opus-4-8`, `claude-sonnet-4-6` on Zen (IDs inferred
+from Zen's naming pattern). `sync-models.sh --write` settles all of them.
 
 Mind the routing rules when adding models: only ZDR/no-training endpoints
 belong in `together` and the Zen open-model set; never add a Zen free model

@@ -8,10 +8,15 @@
 #
 # API keys are NOT read from this file. Each custom provider names its key env
 # var in config/goose/custom_providers/*.json (`api_key_env`):
-#   OPENCODE_ZEN_API_KEY  -> zen-openai, zen-anthropic
+#   OPENCODE_ZEN_API_KEY  -> zen-openai, zen-anthropic, zen-free
 #   TOGETHER_API_KEY      -> together
+#   OPENAI_API_KEY        -> openai (built-in provider, optional — see below)
 # Mac: keys live in the Keychain (scripts/mac/keychain-secrets.sh exports them).
 # Brain: keys come from /data/secrets.env via the systemd unit's EnvironmentFile.
+#
+# Model lists: the provider JSONs ship with broad catalogs (verified as of
+# 2026-08-20); scripts/sync-models.sh refreshes them from the live Zen and
+# Together /models endpoints whenever you want the full, current roster.
 #
 # NOTE (unverified upstream): the documented `providers:` map examples use
 # built-in provider names; custom providers are documented via
@@ -20,11 +25,21 @@
 # pick zen-anthropic, and let it rewrite this block in the shape it expects.
 # scripts/verify/check-goose.sh exercises all three providers.
 
-active_provider: zen-anthropic
+active_provider: together
 
 providers:
-  # Hub daily driver. Anthropic-billed via Zen => 30-day retention, so
-  # NON-SENSITIVE work only (docs/model-routing.md, hard rule 2).
+  # DEFAULT / hub daily driver. Together's ZDR posture also makes this the
+  # sensitive tier, so the default is the most private option.
+  # Qwen3.5-397B is Together's flagship open model with verified function
+  # calling; drop to openai/gpt-oss-120b when you want cheaper.
+  together:
+    enabled: true
+    configured: true
+    model: Qwen/Qwen3.5-397B-A17B
+
+  # Premium alternative for non-sensitive work when you want Claude.
+  # Anthropic-billed via Zen => 30-day retention, so NON-SENSITIVE work only
+  # (docs/model-routing.md, hard rule 2).
   zen-anthropic:
     enabled: true
     configured: true
@@ -36,11 +51,26 @@ providers:
     configured: true
     model: kimi-k2.6
 
-  # Sensitive tier (ZDR default, HIPAA/BAA posture) + automation fallback.
-  together:
+  # Zen's FREE models — $0, but they TRAIN ON YOUR DATA (docs/privacy.md).
+  # Tier-1 throwaway, non-personal work only; the provider name keeps the
+  # boundary visible in the model picker.
+  zen-free:
     enabled: true
     configured: true
-    model: openai/gpt-oss-120b
+    model: big-pickle
+
+  # OPTIONAL: OpenAI's own API via goose's built-in provider. Uncomment and
+  # add OPENAI_API_KEY (Keychain / secrets.env) if you create an OpenAI
+  # account. Note: Zen's GPT-5.x models are NOT reachable from goose (they
+  # live behind Zen's Responses endpoint) — this direct route is how you get
+  # GPT models in goose; OpenCode reaches Zen's GPT models natively either
+  # way, and OpenAI's open-weight gpt-oss models are already on `together`.
+  # OpenAI API retention is ~30 days => non-sensitive work only, same as
+  # hard rule 2.
+  # openai:
+  #   enabled: true
+  #   configured: true
+  #   model: gpt-5.2
 
 extensions:
   # Shell, file edits, etc. Built-in, on by default upstream; kept explicit.

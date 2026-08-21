@@ -5,8 +5,14 @@
   "api_key_env": "OPENCODE_ZEN_API_KEY",
   "base_url": "https://opencode.ai/zen",
   "models": [
-    { "name": "claude-sonnet-5", "context_limit": 200000 },
     { "name": "claude-haiku-4-5", "context_limit": 200000 },
+    { "name": "claude-opus-4-8", "context_limit": 200000 },
+    { "name": "claude-opus-5", "context_limit": 200000 },
+    { "name": "claude-sonnet-4-6", "context_limit": 200000 },
+    { "name": "claude-sonnet-5", "context_limit": 200000 },
+    { "name": "qwen3.5-plus", "context_limit": 262144 },
+    { "name": "qwen3.6-plus", "context_limit": 262144 },
+    { "name": "qwen3.7-max", "context_limit": 262144 },
     { "name": "qwen3.7-plus", "context_limit": 262144 }
   ],
   "supports_streaming": true,
