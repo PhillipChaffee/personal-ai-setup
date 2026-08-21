@@ -49,3 +49,7 @@ running on a non-sensitive provider.
 - Calendar and Todoist writes are fine; deletions need confirmation.
 - When a scheduled run fails or a tool errors, say so plainly in the session
   log — never fabricate a result so the notification looks successful.
+
+- Chats with attached images need a vision model: google/gemma-4-31B-it
+  (together). Text-only models fail multimodal requests with a 400 — if that
+  happens, tell the user to switch the picker to the vision model.
