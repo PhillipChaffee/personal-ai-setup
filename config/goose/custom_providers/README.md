@@ -15,32 +15,41 @@ Upstream reference:
 The API key is read from the env var named by `api_key_env`, never from the
 file.
 
-## The `base_url` A/B caveat
+## `base_url` semantics (verified against goose v1.46.0)
 
-Goose's docs example uses a **full** completions URL
-(`.../v1/chat/completions`), but whether goose wants the full path or the bare
-API base (`.../v1`) is not pinned down upstream — the docs themselves flag it,
-and it may differ between goose versions. These files ship with the full-path
-variant:
+Tested against goose v1.46.0 with a local mock server (2026-08-21), the two
+engines treat `base_url` differently:
 
-| Provider | Shipped (variant A, full path) | Variant B (bare base) |
+- **`engine: openai`** — goose appends `/chat/completions` only when the URL
+  doesn't already end with it, so **both** the full path and the bare base
+  work (`…/zen/v1/chat/completions` and `…/zen/v1` produce the same request;
+  no double-append). These files ship the full-path form. Auth is sent as
+  `Authorization: Bearer <key>`.
+- **`engine: anthropic`** — goose **always appends `/v1/messages`** to
+  `base_url`, so the base_url must NOT include it. That's why
+  `zen-anthropic.json` ships `https://opencode.ai/zen` (goose requests
+  `https://opencode.ai/zen/v1/messages`, exactly Zen's documented endpoint).
+  A base_url ending in `/v1/messages` produces a doubled
+  `…/v1/messages/v1/messages` path and 404s. Auth is sent as `x-api-key:
+  <key>` plus `anthropic-version: 2023-06-01` — no Bearer header.
+
+| Provider | Shipped base_url | Also valid |
 |---|---|---|
 | zen-openai | `https://opencode.ai/zen/v1/chat/completions` | `https://opencode.ai/zen/v1` |
-| zen-anthropic | `https://opencode.ai/zen/v1/messages` | `https://opencode.ai/zen/v1` |
+| zen-anthropic | `https://opencode.ai/zen` | — (must not include `/v1/messages`) |
 | together | `https://api.together.xyz/v1/chat/completions` | `https://api.together.xyz/v1` |
 
-If a provider 404s or errors on first use, run `scripts/verify/check-goose.sh`
-— it tests the shipped variant with one goose run per provider and, on a
-failure, prints the swap instructions (both URL forms, per the table above).
-The A/B is guided-manual: swap the `base_url` here to the other variant,
-re-copy into `~/.config/goose/custom_providers/`, and re-run the script until
-it passes. (Symptom of the wrong variant: HTTP 404, or a path like
+If a provider still 404s on first use (a future goose version could change
+the append behavior), run `scripts/verify/check-goose.sh` — it tests each
+shipped provider with one goose run and prints swap instructions on failure.
+(Symptom of a wrong variant: HTTP 404, or a doubled path like
 `/chat/completions/chat/completions` in goose's error output.)
 
-A second uncertainty applies to `zen-anthropic` only: Zen does not document
-the auth header for direct `/messages` calls (Bearer vs `x-api-key`).
-`scripts/verify/check-providers.sh` settles it; if goose's anthropic engine
-sends the wrong one, the fallback is to drop `zen-anthropic` and reach Claude
+One uncertainty remains for `zen-anthropic`: Zen does not document whether
+its `/messages` endpoint accepts `x-api-key` (which goose sends) or only
+`Authorization: Bearer`. `scripts/verify/check-providers.sh` probes the real
+endpoint with both headers; if Zen turns out to be Bearer-only, goose's
+anthropic engine cannot authenticate — drop `zen-anthropic` and reach Claude
 via OpenCode only (see docs/troubleshooting.md).
 
 ## Adding or updating models

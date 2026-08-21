@@ -10,6 +10,8 @@
 #
 # Requires NTFY_TOPIC in the environment (see config/env/secrets.env.example).
 # The topic name is a secret: anyone who knows it can read and send on it.
+# NTFY_SERVER overrides the ntfy server base URL (default https://ntfy.sh) —
+# for a self-hosted ntfy, or a local mock in tests.
 set -euo pipefail
 
 TITLE="personal-ai"
@@ -57,7 +59,7 @@ if ! curl -fsS --max-time 15 -o /dev/null \
     -H "Title: $TITLE" \
     -H "Priority: $PRIORITY" \
     --data-binary "$MESSAGE" \
-    "https://ntfy.sh/${NTFY_TOPIC}"; then
+    "${NTFY_SERVER:-https://ntfy.sh}/${NTFY_TOPIC}"; then
   echo "notify.sh: ERROR: POST to ntfy failed — notification lost." >&2
 fi
 
