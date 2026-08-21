@@ -24,7 +24,7 @@ Gather the diff and changed file paths before launching subagents.
 Before launching reviewers, run exactly one **cr-planner** subagent.
 
 `cr-planner` runs on `opencode/claude-sonnet-5` — planning reviewer dispatch is a
-deep-reasoning role (see `docs/model-routing.md`), and the model is pinned in the agent's
+deep-reasoning role (see the personal-ai-setup repo's `docs/model-routing.md`), and the model is pinned in the agent's
 frontmatter. Do not downgrade it for simple diffs; a cheap plan that picks the wrong
 reviewers costs more than it saves.
 
@@ -61,9 +61,10 @@ Each reviewer:
 - Is read-only (its agent `permission` denies edits — it cannot modify files)
 - Returns structured findings or an exact "no issues" string
 
-Reviewers run on the models pinned in their agent frontmatter (see `docs/model-routing.md`):
-`opencode/kimi-k2.6` for the standard reviewers, `opencode/claude-sonnet-5` for
-`cr-architecture` (a deep-reasoning domain). When the changeset is clearly high stakes —
+Reviewers run on the models pinned in their agent frontmatter (see the personal-ai-setup
+repo's `docs/model-routing.md`): `opencode/kimi-k2.6` for every reviewer — diff-reading
+review work stays on the daily tier; the deep tier (`opencode/claude-sonnet-5`) belongs to
+`cr-planner` and `cr-verifier`. When the changeset is clearly high stakes —
 cross-service contracts, schema/deploy sequencing, auth or security boundaries,
 concurrency/state-machine behavior, or a large heterogeneous changeset with ambiguous
 intent — make sure the planner selected the reviewers matching those stakes rather than

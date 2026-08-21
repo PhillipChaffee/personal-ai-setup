@@ -12,7 +12,7 @@ Follow these conventions when creating or updating Linear issues on an ENG team 
 
 - Write a short, direct title that describes the concrete task.
 - Easy to scan in a list — avoid filler words like "Implement", "We should", or "As a user".
-- Prefix with the area or service when it reduces ambiguity (e.g. `service-a: retry on your telephony provider 503`, `service-b: deduplicate webhook delivery`).
+- Prefix with the area or service when it reduces ambiguity (e.g. `service-a: retry on telephony-provider 503`, `service-b: deduplicate webhook delivery`).
 
 ```
 # ✅ Good
@@ -88,7 +88,7 @@ If there are no notes, write "None" — don't remove the section.
 
 The outbound call endpoint (`/api/v1/calls/outbound`) has no rate limiting.
 A misconfigured automation at Acme Corp fired 400 calls in under a minute,
-which saturated our your telephony provider pool and degraded call quality for other companies.
+which saturated our telephony-provider pool and degraded call quality for other companies.
 See Slack thread: https://slack.com/archives/C0123/p1234567890
 
 ## Acceptance Criteria
@@ -101,7 +101,7 @@ See Slack thread: https://slack.com/archives/C0123/p1234567890
 ## Resources
 
 - Project spec: https://linear.app/docs/outbound-rate-limiting
-- your telephony provider rate limit docs: https://docs.telephony provider.ai/rate-limits
+- Telephony provider rate-limit docs: https://docs.example-telephony.com/rate-limits
 - Related ticket: TICKET-892 (inbound rate limiting — same pattern)
 
 ## Notes

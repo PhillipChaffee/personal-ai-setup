@@ -240,7 +240,7 @@ These are stricter or different from generic best practice and are documented as
 
 ## Output format (executor-ready plan)
 
-Produce the plan as markdown with the following sections, in order. Return the markdown inline and offer to save it to `plans/refactor_<target>_<hash>.plan.md`.
+Produce the plan as markdown with the following sections, in order. Return the markdown inline and offer to save it to `.agents/plans/refactor_<target>_<hash>.plan.md`.
 
 ```markdown
 # Refactor plan: <target>

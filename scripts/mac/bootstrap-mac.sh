@@ -127,13 +127,18 @@ echo "     your name, email, and timezone)"
 echo "==> Installing skills, OpenCode agents, and global rules (no-clobber)"
 mkdir -p "$HOME/.agents/skills" "$HOME/.config/opencode/agents"
 
+# Copy each skill atomically (temp dir + mv): an interrupted cp -R must not
+# leave a partial skill dir that the no-clobber rule would then keep forever.
+rm -rf "$HOME/.agents/skills"/.personal-ai-tmp.* 2>/dev/null || true
 for skill_dir in "$REPO_ROOT"/config/skills/*/; do
   [ -d "$skill_dir" ] || continue
   skill_name="$(basename "$skill_dir")"
   if [ -e "$HOME/.agents/skills/$skill_name" ]; then
     echo "    kept existing ~/.agents/skills/$skill_name"
   else
-    cp -R "$skill_dir" "$HOME/.agents/skills/$skill_name"
+    tmp_dir="$HOME/.agents/skills/.personal-ai-tmp.$skill_name"
+    cp -R "$skill_dir" "$tmp_dir"
+    mv "$tmp_dir" "$HOME/.agents/skills/$skill_name"
     echo "    installed ~/.agents/skills/$skill_name"
   fi
 done

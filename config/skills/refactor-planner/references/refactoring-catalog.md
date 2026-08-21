@@ -184,7 +184,7 @@ Rename a persistent field on an ORM model. **Generates a database migration.**
   2. Migrate code to use the new column.
   3. Defer the old column from default reads.
   4. Drop the old column in a follow-up release.
-- Codified locally in [`engineering`](../../../rules/engineering/RULE.mdc) "safe column removal sequence."
+- Codified locally in the Engineering Guidelines of your global rules (`~/.config/opencode/AGENTS.md`) — "safe column removal sequence."
 
 ### Rename Class
 

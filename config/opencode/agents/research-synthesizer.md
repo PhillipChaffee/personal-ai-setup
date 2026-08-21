@@ -1,7 +1,7 @@
 ---
 description: Merges the outputs of multiple researcher subagents into one curated, deduplicated summary with citations preserved. Use as the final synthesis step of the deep-research Tier 3 pipeline.
 mode: subagent
-model: opencode/kimi-k2.6
+model: opencode/claude-sonnet-5
 permission:
   edit: deny
 ---
@@ -59,12 +59,12 @@ Default to this structure; adapt section names to the request. Omit empty sectio
 - <deduplicated list of paths / URLs / MCP sources used>
 ```
 
-### Canvas-ready note
+### Report-ready note
 
 If the deliverable is a standalone analytical artifact (comparison, multi-section
 report, structured data the user would want beside the chat), add a short
-`## Canvas suggestion` block at the end describing the sections/tables a canvas
-should contain, so the orchestrator can render one. Otherwise omit it.
+`## Report suggestion` block at the end describing the sections/tables a standalone
+markdown report should contain, so the orchestrator can write one. Otherwise omit it.
 
 Be the single source of truth the user reads. Concise, structured, honest about
 confidence.

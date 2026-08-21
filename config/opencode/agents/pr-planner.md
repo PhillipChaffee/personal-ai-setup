@@ -1,5 +1,5 @@
 ---
-description: Use as the mandatory first step of multi-agent plan review. Selects reviewers, focus briefs, and optional model-upgrade candidates before findings are gathered.
+description: Use as the mandatory first step of multi-agent plan review. Selects reviewers and writes their focus briefs and the verifier's instructions before findings are gathered.
 mode: subagent
 model: opencode/claude-sonnet-5
 permission:
@@ -46,12 +46,12 @@ Return:
 2. **Review scope**: the behavior, services, and design decisions under review.
 3. **Selected reviewers**: the full roster or a focused subset, with a reason for every inclusion
    and omission.
-4. **Reviewer models**: assign every selected reviewer `opencode/kimi-k2.6`. Optionally
-   list upgrade candidates (reviewer + reason) for the orchestrator to apply when launching
-   subagents — use `opencode/claude-sonnet-5` as the candidate slug. Do not treat those as
-   launches you perform yourself.
+4. **Stakes flags**: reviewer models are pinned in their agent frontmatter, so do not
+   assign models. Instead, flag any domain where this plan is high stakes (with the
+   reason) so the orchestrator makes sure the matching reviewers — especially the
+   deep-tier `pr-adversarial` and `pr-architecture` — are in the selected set.
 5. **Focus briefs**: exact risks and questions each selected reviewer should investigate.
 6. **Verifier instructions**: claims, interactions, and scope boundaries the verifier must check.
 
-Use only reviewers from the roster above. A review domain alone does not justify an upgrade; the
-plan's complexity must justify any upgrade candidate.
+Use only reviewers from the roster above. A review domain alone does not make a plan high
+stakes; the plan's actual complexity must justify every stakes flag.

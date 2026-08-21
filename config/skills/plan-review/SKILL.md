@@ -39,17 +39,18 @@ when something is actually wrong, not when a section header is absent.
 
 Before launching reviewers, run exactly one **Plan Review Planner** subagent.
 
-Use `opencode/kimi-k2.6` by default. Upgrade to `opencode/claude-sonnet-5` when
-the plan is clearly complex or high stakes: cross-service contracts, irreversible schema/deploy
-sequencing, auth or security boundaries, or a strategic rethink where premises are ambiguous.
-When unsure, stay on kimi. The main chat applies any upgrade when launching the subagent; this
-skill does not switch models itself.
+The planner runs on `opencode/claude-sonnet-5` — reviewer dispatch is a deep-reasoning
+call, and the model is pinned in `pr-planner`'s frontmatter. Launching agents by name is
+all the model selection this skill ever does; every reviewer's model is pinned the same
+way.
 
 Pass the planner the full plan text, change purpose, user priorities, scope constraints, prior
 verifier findings when re-reviewing, and any mode hint (`architecture-alignment` or full
-review). It returns the selected reviewer set, focus briefs, verifier instructions, and optional
-model upgrade candidates (reviewer + reason) for the main chat to apply when launching
-subagents.
+review). It returns the selected reviewer set, focus briefs, verifier instructions, and flags
+for domains that need extra depth on this plan — which reads as: make sure the deep-tier
+reviewers (`pr-adversarial`, `pr-architecture`) are in the selected set. Cross-service
+contracts, irreversible schema/deploy sequencing, auth or security boundaries, or a strategic
+rethink where premises are ambiguous all point that way.
 
 Selection hints for the planner:
 
@@ -61,7 +62,7 @@ Selection hints for the planner:
   Scope, Adversarial, and Simplification (see planner agent).
 
 Dispatch the planner via the task tool as the `pr-planner` agent. If unavailable, use `general`
-with `~/.config/opencode/agents/pr-planner.md` inlined and the selected planner model.
+with `~/.config/opencode/agents/pr-planner.md` inlined.
 
 ## Reviewers
 
@@ -88,15 +89,15 @@ Each reviewer:
 - Returns structured findings or a clean verdict
 - The Feasibility agent may read codebase files to verify plan assumptions
 
-Launch reviewers on `opencode/kimi-k2.6` by default. Upgrade an individual reviewer to
-`opencode/claude-sonnet-5` when that reviewer's domain needs deeper reasoning on this plan,
-or when the planner listed that reviewer as an upgrade candidate with a reason. A review
-domain alone does not justify the upgrade. When unsure, stay on kimi. The main chat applies any upgrade
-when launching the subagent; this skill does not switch models itself. Pass each model
-explicitly and keep prompts self-contained.
+Reviewers run on the models pinned in their agent frontmatter — `opencode/kimi-k2.6` for
+the seven structural reviewers (Problem & Scope, Feasibility, Risk & Rollback,
+Completeness, Organization, Naming, Simplification), `opencode/claude-sonnet-5` for
+`pr-adversarial` and `pr-architecture`. Escalating on a high-stakes plan means making sure
+those deep-tier reviewers are in the selected set — never switching an agent's model at
+launch. Keep prompts self-contained.
 
 If a named reviewer is unavailable, use `general` with the matching agent file from
-`~/.config/opencode/agents/` inlined and the same model. Never skip a selected reviewer.
+`~/.config/opencode/agents/` inlined. Never skip a selected reviewer.
 
 ### When the task tool is unavailable
 
@@ -109,7 +110,7 @@ on the current agent:
    `architecture-alignment` preference set when that mode is active.
 2. Read each selected agent file under `~/.config/opencode/agents/` and run those roles **in order**,
    writing a distinct artifact for each under
-   `plans/<TICKET-OR-PLAN-STEM>.plan-review-fanout/`, then `pr-verifier`.
+   `.agents/plans/<TICKET-OR-PLAN-STEM>.plan-review-fanout/`, then `pr-verifier`.
    If the planner artifact cannot be produced, fall back to the mode default only:
    - **architecture-alignment**: `pr-architecture`, `pr-organization`, `pr-naming`,
      `pr-problem-scope`, `pr-adversarial`, `pr-simplification`, then `pr-verifier`.
@@ -119,7 +120,7 @@ on the current agent:
      `pr-simplification`, then `pr-verifier`).
 3. Do **not** run `pr-implementer` in this fallback path (implementer remains opt-in after the
    curated summary, same as the Task path).
-4. Synthesize `plans/<TICKET-OR-PLAN-STEM>.plan-review.md` with the same output contract
+4. Synthesize `.agents/plans/<TICKET-OR-PLAN-STEM>.plan-review.md` with the same output contract
    as the parallel Task path (verdict, tiers, curated findings).
 5. Hard-stop only if the required agent files are missing or per-role artifacts cannot be
    produced.
@@ -142,11 +143,9 @@ After the selected reviewers complete (but before synthesis), launch the **Plan 
 as a single subagent to filter the reviewer findings. The verifier tags each finding as
 `confirmed`, `false_positive`, or `needs_rephrase`. Deduplicate near-duplicate findings in the parent chat **before** launching the verifier (merge same root cause; keep source tags). The verifier filters and rephrases; it does not own cross-reviewer deduplication.
 
-Use the **pr-verifier** agent on `opencode/kimi-k2.6` by default. Upgrade
-to `opencode/claude-sonnet-5` when verifying a large, conflicting, or high-stakes finding
-set where false-positive filtering needs deeper judgment. When unsure, stay on kimi. The main
-chat applies any upgrade when launching the subagent; this skill does not switch models itself.
-If the agent is unavailable, use `general` with `pr-verifier.md` inlined and the same model.
+Use the **pr-verifier** agent — false-positive filtering across a conflicting finding set
+is a deep-reasoning role, and its model (`opencode/claude-sonnet-5`) is pinned in its
+frontmatter. If the agent is unavailable, use `general` with `pr-verifier.md` inlined.
 
 **Input to pass**: the full plan text, the planner's verifier instructions, and all selected
 reviewer outputs concatenated with source attribution (e.g. `[Problem & Scope]`,
@@ -251,8 +250,8 @@ Apply 3 approved fixes now via the implementer subagent? [yes / no / edit list]
 
 After fixes apply, suggest: "If you want to verify nothing regressed, re-invoke `plan-review`."
 
-Use the **pr-implementer** agent on `opencode/kimi-k2.6`. If the agent is
-unavailable, use `general` with `pr-implementer.md` inlined and the same model.
+Use the **pr-implementer** agent (its model, `opencode/kimi-k2.6`, is pinned in its
+frontmatter). If the agent is unavailable, use `general` with `pr-implementer.md` inlined.
 
 ## Review-only mode
 

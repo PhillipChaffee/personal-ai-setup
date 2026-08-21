@@ -1,7 +1,7 @@
 # The Cursor port: skills, rules, and agents in Goose + OpenCode
 
 [PhillipChaffee/.cursor](https://github.com/PhillipChaffee/.cursor) is a mature
-Cursor setup — 11 skills, 20 rules, 31 subagent prompts. This stack ports it
+Cursor setup — 11 skills, 20 rules, 30 subagent prompts. This stack ports it
 (issue #12): the artifacts live in this repo as the single source,
 `scripts/mac/bootstrap-mac.sh` installs them no-clobber, and this document
 records every porting decision so nothing was dropped silently.
@@ -13,7 +13,7 @@ records every porting decision so nothing was dropped silently.
 | `skills/*/SKILL.md` (11 skills + reference libraries) | `config/skills/` | `~/.agents/skills/` | **Both**: OpenCode ("agent-compatible" global dir) and goose ≥ 1.16 (built-in skills support, enabled by default; repo pins 1.4x) |
 | `rules/*.mdc` — global-worthy (9) | merged into `config/opencode/AGENTS.md` | `~/.config/opencode/AGENTS.md` | OpenCode (all sessions) |
 | `rules/*.mdc` — stack-specific (8) | `config/opencode/project-rules/*.md` | not installed — per-project | Paste into a project's `AGENTS.md`, or list in the project's `opencode.json` `"instructions"` array |
-| `agents/*.md` (30 of 31) | `config/opencode/agents/` | `~/.config/opencode/agents/` | OpenCode (agent name = filename; dispatched via the task tool / `@`-mention) |
+| `agents/*.md` (all 30) | `config/opencode/agents/` | `~/.config/opencode/agents/` | OpenCode (agent name = filename; dispatched via the task tool / `@`-mention) |
 
 Facts this layout relies on (verified against the OpenCode and goose docs and
 the workspace-mcp/goose sources, 2026-08-21): OpenCode reads global skills
@@ -34,8 +34,8 @@ each agent's frontmatter:
 | Role | Agents | Model |
 |---|---|---|
 | Fast/mechanical | `researcher-lite` | `opencode/minimax-m2.7` |
-| Standard reviewers & workers | all `cr-*` reviewers, `cr-implementer`, 7 structural `pr-*` reviewers, `pr-implementer`, `researcher-mid`, `research-synthesizer`, both `refactor-*-scout`s | `opencode/kimi-k2.6` |
-| Deep reasoning | `cr-planner`, `cr-verifier`, `pr-planner`, `pr-verifier`, `pr-adversarial`, `pr-architecture`, `researcher-deep`, `research-planner` | `opencode/claude-sonnet-5` |
+| Standard reviewers & workers | all `cr-*` reviewers, `cr-implementer`, 7 structural `pr-*` reviewers, `pr-implementer`, `researcher-mid`, both `refactor-*-scout`s | `opencode/kimi-k2.6` |
+| Deep reasoning | `cr-planner`, `cr-verifier`, `pr-planner`, `pr-verifier`, `pr-adversarial`, `pr-architecture`, `researcher-deep`, `research-planner`, `research-synthesizer` | `opencode/claude-sonnet-5` |
 
 Because models are now **pinned per agent**, the skills' old "upgrade this
 reviewer to the thinking model" machinery collapsed: the escalation criteria
@@ -97,7 +97,7 @@ uses both at work; the review/planning workflows are tool-agnostic.
 All 30 ported to `config/opencode/agents/` (11 `cr-*` + 12 `pr-*` + 2
 refactor scouts + 5 research agents — the issue's "31" was a miscount),
 filenames (= agent names) unchanged so every cross-reference in the skills
-resolves. 8 `cr-*` and 7 `pr-*` bodies are byte-identical to source; the
+resolves. 8 `cr-*` and 9 `pr-*` bodies are byte-identical to source; the
 adapted ones swap Cursor tool names (`StrReplace` → `edit`), Cursor read-only
 phrasing (→ the `permission` mechanism), and Cursor model-routing prose
 (→ the pinned tiers). Every read-only agent (all reviewers, verifiers,
