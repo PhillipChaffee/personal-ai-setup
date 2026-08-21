@@ -38,13 +38,13 @@ visibility, open ports).
 
 ## Monthly budget
 
-Approved budget is $50+/mo; expected spend sits well under it. Figures verified
-as of 2026-08-20 — re-verify at signup, and run `scripts/verify/pin-models.sh`
-monthly to catch price/model drift.
+Plan for up to ~$50/mo of headroom; expected spend sits well under it. Figures
+verified as of 2026-08-20 — re-verify at signup, and run
+`scripts/verify/pin-models.sh` monthly to catch price/model drift.
 
 | Item | ~Cost/mo |
 |---|---|
-| Hetzner CX22-class VPS + LUKS-encrypted volume | ~$5 (≈€5–7) |
+| Hetzner cpx21-class VPS + LUKS-encrypted volume | ~€6–9 |
 | Inference at expected usage (Zen + Together combined) | ~$10–30 |
 | Tailscale personal plan, ntfy public topic, Todoist free tier | $0 |
 | Pal Chat backup client | ~$7 one-time |
