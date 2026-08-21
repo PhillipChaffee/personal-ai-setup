@@ -65,6 +65,7 @@ extensions:
     env_keys:
       - GOOGLE_OAUTH_CLIENT_ID
       - GOOGLE_OAUTH_CLIENT_SECRET
+      - USER_GOOGLE_EMAIL
 
 settings:
   goose_provider: zen-openai
