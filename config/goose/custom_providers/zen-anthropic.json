@@ -3,7 +3,7 @@
   "engine": "anthropic",
   "display_name": "OpenCode Zen (messages)",
   "api_key_env": "OPENCODE_ZEN_API_KEY",
-  "base_url": "https://opencode.ai/zen/v1/messages",
+  "base_url": "https://opencode.ai/zen",
   "models": [
     { "name": "claude-sonnet-5", "context_limit": 200000 },
     { "name": "claude-haiku-4-5", "context_limit": 200000 },

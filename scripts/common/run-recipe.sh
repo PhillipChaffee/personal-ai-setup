@@ -92,18 +92,57 @@ run_goose() {
     >"$OUT"
 }
 
+# goose exits 0 on provider failures (verified against v1.46.0: a dead
+# endpoint produces VALID JSON with metadata.status "completed", the error
+# text as the final assistant message, and total_tokens 0), so success needs
+# more than a zero exit. Two signals:
+#   - metadata.total_tokens == 0  → no model call ever succeeded (a real run
+#     always bills tokens; content-independent)
+#   - final assistant message is a goose error → the last turn died even if
+#     earlier turns billed tokens (mid-run provider outage)
+looks_failed() {
+  if command -v jq >/dev/null 2>&1; then
+    local tokens last
+    tokens="$(jq -r '.metadata.total_tokens // 0' "$OUT" 2>/dev/null || echo 0)"
+    case "$tokens" in
+      ''|0|null) return 0 ;;
+    esac
+    last="$(jq -r '[ .messages[]? | select(.role == "assistant") ] | last
+                   | .content[]? | select(.type == "text") | .text' \
+            "$OUT" 2>/dev/null || true)"
+    if printf '%s\n' "$last" \
+        | grep -qE '^(Network error|Server error|Request failed)|Please resend your message to try again'; then
+      return 0
+    fi
+    return 1
+  else
+    # No jq (shouldn't happen post-bootstrap): phrase check on the raw file.
+    grep -qE 'Network error:|Please resend your message' "$OUT"
+  fi
+}
+
+attempt() {
+  local rc=0
+  run_goose || rc=$?
+  if [ "$rc" -eq 0 ] && looks_failed; then
+    echo "run-recipe.sh: goose exited 0 but its output looks like a failed run" >&2
+    rc=1
+  fi
+  return "$rc"
+}
+
 rc=0
-run_goose || rc=$?
+attempt || rc=$?
 
 if [ "$rc" -ne 0 ]; then
   # One blind retry after a fixed pause: transient failures (Together's
   # dynamic rate limits especially) often clear within a minute, and the
   # x-ratelimit-reset header is not visible through goose's exit status.
-  echo "run-recipe.sh: '$NAME' exited $rc; retrying once in 60s" >&2
+  echo "run-recipe.sh: '$NAME' failed (rc=$rc); retrying once in 60s" >&2
   sleep 60
   : >"$OUT"
   rc=0
-  run_goose || rc=$?
+  attempt || rc=$?
 fi
 
 if [ "$rc" -ne 0 ]; then

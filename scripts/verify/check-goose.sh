@@ -52,11 +52,14 @@ trap 'rm -f "$OUT_FILE"' EXIT
 # provider:model pairs (model IDs verified as of 2026-08-20)
 PAIRS="zen-openai:minimax-m2.7 zen-anthropic:claude-haiku-4-5 together:openai/gpt-oss-120b"
 
-# Both base_url variants per provider, for the failure hint.
+# base_url variants per provider, for the failure hint. Verified against
+# goose v1.46.0: the openai engine accepts both forms (it appends
+# /chat/completions only when missing); the anthropic engine ALWAYS appends
+# /v1/messages, so its base_url must not include it.
 variants_for() {
   case "$1" in
     zen-openai)    echo "A: https://opencode.ai/zen/v1/chat/completions | B: https://opencode.ai/zen/v1" ;;
-    zen-anthropic) echo "A: https://opencode.ai/zen/v1/messages | B: https://opencode.ai/zen/v1" ;;
+    zen-anthropic) echo "shipped: https://opencode.ai/zen (goose appends /v1/messages — do NOT add it)" ;;
     together)      echo "A: https://api.together.xyz/v1/chat/completions | B: https://api.together.xyz/v1" ;;
   esac
 }
@@ -102,9 +105,23 @@ for pair in $PAIRS; do
     --provider "$provider" --model "$model" \
     >"$OUT_FILE" 2>&1 || rc=$?
 
-  if [ "$rc" -eq 0 ] && grep -q "OK" "$OUT_FILE"; then
+  # goose can exit 0 on provider failures (verified against v1.46.0: network
+  # and endpoint errors print an error message and exit clean), so a zero
+  # exit alone proves nothing — scan the output for failure signatures too.
+  failed_output=0
+  if grep -qEi 'Network error:|Please resend your message|invalid api key|unauthorized|rate ?limit' "$OUT_FILE"; then
+    failed_output=1
+  fi
+
+  if [ "$rc" -eq 0 ] && [ "$failed_output" -eq 0 ] && grep -q "OK" "$OUT_FILE"; then
     echo "    PASS"
     RESULTS="$RESULTS$provider|$model|PASS"$'\n'
+  elif [ "$rc" -eq 0 ] && [ "$failed_output" -eq 1 ]; then
+    echo "    FAIL (goose exited 0 but reported a provider error). Last output lines:"
+    tail -n 8 "$OUT_FILE" | sed 's/^/      | /'
+    echo "    Swap hint for $provider: $(variants_for "$provider")"
+    RESULTS="$RESULTS$provider|$model|FAIL (provider error, exit 0)"$'\n'
+    FAIL_COUNT=$((FAIL_COUNT + 1))
   elif [ "$rc" -eq 0 ]; then
     # Ran clean but didn't say OK — model reachable, output odd. Count as pass
     # with a note; the wire format evidently works.

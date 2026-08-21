@@ -27,21 +27,22 @@ Quick index:
 JSON "not found" — even though `curl` against the raw API works fine with the same
 key.
 
-**Cause.** Goose's custom-provider JSON has ambiguous `base_url` semantics: the
-documented example uses a **full** endpoint path
-(`https://opencode.ai/zen/v1/chat/completions`), but depending on version the
-engine may append the path itself, so a bare base
-(`https://opencode.ai/zen/v1`) is what actually works — or vice versa. Get it
-wrong and Goose calls `…/v1/chat/completions/chat/completions` (404) or `…/v1`
-(404). This is a known open question upstream. JSON can't carry comments, so the
-both-variants table lives in `config/goose/custom_providers/README.md`.
+**Cause.** The two engines treat `base_url` differently (verified against goose
+v1.46.0 with a local mock, 2026-08-21): the `openai` engine appends
+`/chat/completions` only when the URL doesn't already end with it, so both the
+full path and the bare `…/v1` base work; the `anthropic` engine **always
+appends `/v1/messages`**, so its base_url must not include it — a base_url
+ending in `/v1/messages` produces a doubled `…/v1/messages/v1/messages` path
+and 404s. A future goose version could change the append behavior, which is
+why this check exists. The semantics table lives in
+`config/goose/custom_providers/README.md` (JSON can't carry comments).
 
 **Fix** (guided-manual — the script tests the shipped variant and tells you how
 to swap; it doesn't flip anything itself):
 
-1. Run the check — one goose run per provider against the shipped variant
-   (A, full path); on a failure it prints the swap instructions, including
-   both URL forms, for that provider:
+1. Run the check — one goose run per provider against the shipped base_url;
+   on a failure it prints the swap instructions, including the valid URL
+   forms, for that provider:
 
    ```bash
    scripts/verify/check-goose.sh
@@ -66,9 +67,10 @@ while `zen-openai` models work with the same `OPENCODE_ZEN_API_KEY`.
 **Cause.** OpenCode Zen serves Claude/Qwen on the Anthropic Messages endpoint
 (`https://opencode.ai/zen/v1/messages`), and the exact auth header for direct
 calls is **not officially documented**. Community setups pass the Zen key as a
-Bearer token (`Authorization: Bearer …`), but Anthropic-native clients — which is
-what Goose's `anthropic` engine is — send `x-api-key` plus an `anthropic-version`
-header instead. One of the two shapes will be rejected.
+Bearer token (`Authorization: Bearer …`), but Goose's `anthropic` engine sends
+`x-api-key` plus `anthropic-version: 2023-06-01` and no Bearer header (verified
+against goose v1.46.0 with a local mock). If Zen only accepts one of the two
+shapes, the other will be rejected.
 
 **Fix.**
 

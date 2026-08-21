@@ -33,7 +33,8 @@ Notes on reading the table:
   defined in `config/goose/custom_providers/`. `zen-openai` speaks OpenAI
   chat-completions to `https://opencode.ai/zen/v1/chat/completions` (models:
   `minimax-m2.7`, `kimi-k2.6`, `glm-5.1`, `deepseek-v4-flash`); `zen-anthropic` speaks
-  Anthropic messages to `https://opencode.ai/zen/v1/messages` (models: `claude-sonnet-5`,
+  Anthropic messages to `https://opencode.ai/zen/v1/messages` (its `base_url` is
+  `https://opencode.ai/zen` — goose appends `/v1/messages` itself; models: `claude-sonnet-5`,
   `claude-haiku-4-5`, `qwen3.7-plus`); `together` speaks OpenAI chat-completions to
   `https://api.together.xyz/v1/chat/completions`.
 - "OpenCode → Zen" rows run in the OpenCode CLI (your coding driver), connected to Zen via
