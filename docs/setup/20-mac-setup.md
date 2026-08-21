@@ -106,7 +106,7 @@ defaults plus the `together` provider so they survive across machines; the
    the model picker changes this in two clicks. (`zen-free` is in the picker
    too; its display name reminds you those models train on your data.)
 3. Confirm the Developer extension is on (default) and leave the extension
-   list minimal for now — MCP wiring for Gmail/Calendar/Todoist happens in
+   list minimal for now — MCP wiring for Gmail/Calendar happens in
    Phase 2 ([30-google-oauth.md](30-google-oauth.md)).
 
 Desktop apps launched from Finder don't inherit your shell environment. The

@@ -83,11 +83,11 @@ To add a single model by hand instead: append
 `{ "name": "<exact-id>", "context_limit": <tokens> }` to the right file,
 keeping IDs byte-exact (Together IDs are namespaced and case-sensitive).
 
-A few shipped IDs are best-effort until your first live sync confirms them:
-`deepseek-ai/DeepSeek-V4-Flash`, `deepseek-ai/DeepSeek-V3.1`, and the Llama 4
-IDs in `together.json` (Together publishes dated/suffixed variants), and
-`kimi-k2.7-code`, `claude-opus-4-8`, `claude-sonnet-4-6` on Zen (IDs inferred
-from Zen's naming pattern). `sync-models.sh --write` settles all of them.
+All shipped IDs are live-confirmed as of 2026-08-21 (first full
+`sync-models.sh --write` run against both catalogs; the one correction it
+surfaced was `DeepSeek-V4-Flash` → the dated `DeepSeek-V4-Flash-0731`).
+Re-run `scripts/verify/pin-models.sh` monthly — it exits non-zero and names
+any pinned ID the providers have since renamed or retired.
 
 Mind the routing rules when adding models: only ZDR/no-training endpoints
 belong in `together` and the Zen open-model set; never add a Zen free model

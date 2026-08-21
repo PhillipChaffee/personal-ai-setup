@@ -7,9 +7,9 @@ small, hardened, Terraform-managed VPS holds your single chat history and runs
 all scheduled automations; your Mac and iPhone are thin clients to it over
 Tailscale; inference is pay-as-you-go against OpenCode Zen and Together AI with
 strict per-tier privacy rules; OpenCode is the dedicated coding agent on the
-Mac. It handles coding, writing/research, personal admin (Gmail, Calendar,
-Todoist), background automations, and — on a stricter tier — healthcare records
-Q&A and budgeting.
+Mac. It handles coding, writing/research, personal admin (Gmail and
+Calendar; a todo app is an optional add-on), background automations, and — on
+a stricter tier — healthcare records Q&A and budgeting.
 
 The architecture diagram and component map live in the
 [README](../../README.md). The privacy tiers and hard routing rules live in
@@ -46,7 +46,7 @@ verified as of 2026-08-20 — re-verify at signup, and run
 |---|---|
 | Hetzner cpx21-class VPS + LUKS-encrypted volume | ~€6–9 |
 | Inference at expected usage (Zen + Together combined) | ~$10–30 |
-| Tailscale personal plan, ntfy public topic, Todoist free tier | $0 |
+| Tailscale personal plan, ntfy public topic | $0 |
 | Pal Chat backup client | ~$7 one-time |
 | **Total** | **~$15–35/mo** |
 

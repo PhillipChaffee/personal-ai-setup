@@ -21,8 +21,6 @@ instructions: |
   2. Email (via workspace-mcp): notable threads from the past week — decisions
      made, threads still waiting on you, threads where you are waiting on
      someone else. Subjects and senders, not full bodies.
-  3. Tasks (Todoist): completed this week, slipped/overdue, and what is due
-     next week.
 
   Compose a plain-text report with these sections:
   - "The week": 3-5 sentence narrative summary
@@ -74,12 +72,6 @@ extensions:
     env_keys:
       - GOOGLE_OAUTH_CLIENT_ID
       - GOOGLE_OAUTH_CLIENT_SECRET
-  - type: streamable_http
-    name: todoist
-    description: Todoist first-party remote MCP
-    uri: https://ai.todoist.net/mcp
-    timeout: 300
-
 settings:
   goose_provider: zen-openai
   # model id verified as of 2026-08-20

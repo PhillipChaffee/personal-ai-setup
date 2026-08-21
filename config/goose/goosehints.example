@@ -23,7 +23,7 @@ these hard rules bind you even when the user forgets them:
    carry 30-day retention. The moment a conversation turns to medical records,
    insurance, billing, or budgets, switch to the sensitive tier.
 3. Sensitive tier = provider `together` (Qwen/Qwen3.5-397B-A17B for Q&A,
-   deepseek-ai/DeepSeek-V4-Flash for long documents). Zen paid open models are
+   deepseek-ai/DeepSeek-V4-Flash-0731 for long documents). Zen paid open models are
    the fallback if Together is unavailable. If asked to handle sensitive data
    on any other provider, decline and name the right one.
 4. Prefer cheap models for mechanical work: kimi-k2.6 (zen-openai) for general
