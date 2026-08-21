@@ -13,8 +13,9 @@ Usage: check-brain.sh [--insecure] [--run-now] [--local] [--help]
               is self-signed (clients pin its fingerprint instead of using a
               CA), so plain curl may refuse it; -k only skips verification
               for THIS smoke test — never weaken the clients.
-  --run-now   trigger `goose schedule run-now --schedule-id morning-brief`
-              without prompting (costs one recipe run; sends a real email).
+  --run-now   fire a real morning-brief run without prompting (synchronously,
+              via scripts/common/run-recipe.sh — costs one recipe run and
+              sends a real email).
   --local     force local mode (default: auto-detected via /data/goose-data).
 
 Remote mode needs BRAIN_HOST set to the brain's tailnet name, e.g.:
@@ -170,16 +171,21 @@ fi
 
 # ---- 4. live fire: run-now morning-brief (optional) -------------------------
 if [ "$RUN_NOW" = "ask" ] && [ -t 0 ]; then
-  read -r -p "Trigger 'goose schedule run-now --schedule-id morning-brief' now? (one real run + one real email) [y/N] " ANSWER
+  read -r -p "Fire a real morning-brief run now? (synchronous, ~2 min; one real email) [y/N] " ANSWER
   case "$ANSWER" in y|Y|yes|YES) RUN_NOW="yes" ;; *) RUN_NOW="no" ;; esac
 elif [ "$RUN_NOW" = "ask" ]; then
   RUN_NOW="no"
 fi
 if [ "$RUN_NOW" = "yes" ]; then
+  # Deliberately NOT `goose schedule run-now` (verified live, goose 1.46.0):
+  # run-now spawns the job inside the CLI process and returns immediately —
+  # the process (or SSH session) exiting kills the half-started run. The
+  # wrapper runs the same recipe synchronously with the secrets env loaded,
+  # which is also exactly the fallback-timer path.
   if [ "$MODE" = "local" ]; then
-    RC=0; "$GOOSE_BIN" schedule run-now --schedule-id morning-brief || RC=$?
+    RC=0; /home/agent/personal-ai-setup/scripts/common/run-recipe.sh morning-brief >/dev/null || RC=$?
   else
-    RC=0; brain_exec /home/agent/.local/bin/goose schedule run-now --schedule-id morning-brief || RC=$?
+    RC=0; brain_exec /home/agent/personal-ai-setup/scripts/common/run-recipe.sh morning-brief >/dev/null || RC=$?
   fi
   if [ "$RC" -eq 0 ]; then
     pass "run-now morning-brief triggered"
