@@ -48,16 +48,37 @@ fi
 # roster changes propagate the same way cron changes do.
 RENDER_DIR=/data/rendered-recipes
 
+# The convention everywhere in this setup: the roster's FIRST entry is the
+# primary account and must equal USER_GOOGLE_EMAIL. Warn on drift — recipes
+# would deliver from one account while workspace-mcp defaults to another.
+if [[ -n "${USER_GOOGLE_EMAILS:-}" && -n "${USER_GOOGLE_EMAIL:-}" \
+      && "${USER_GOOGLE_EMAILS%%,*}" != "$USER_GOOGLE_EMAIL" ]]; then
+  echo "WARNING: first USER_GOOGLE_EMAILS entry (${USER_GOOGLE_EMAILS%%,*}) does not" >&2
+  echo "         match USER_GOOGLE_EMAIL ($USER_GOOGLE_EMAIL) — the roster's first" >&2
+  echo "         entry must be the primary (docs/setup/30-google-oauth.md §8)." >&2
+fi
+
 # render_recipe <src> <dst>: bake the roster into the google_accounts
-# parameter default (the first `default: ""` after `key: google_accounts`).
+# parameter default (the `default: ""` line of that parameter's block).
+# Exits non-zero unless exactly one substitution happened — a formatting
+# drift in the recipe (e.g. '' instead of "", or reordered keys) must fail
+# loudly here, never silently register a copy with an empty roster. The
+# roster comes in via ENVIRON (no -v, so awk does no backslash processing)
+# and is escaped so sub() cannot expand '&'.
 render_recipe() {
-  awk -v roster="$USER_GOOGLE_EMAILS" '
-    /key: google_accounts/ { in_param = 1 }
-    in_param && /default: ""/ {
-      sub(/default: ""/, "default: \"" roster "\"")
+  awk '
+    BEGIN {
+      roster = ENVIRON["USER_GOOGLE_EMAILS"]
+      gsub(/\\/, "\\\\", roster)
+      gsub(/&/, "\\\\&", roster)
+    }
+    /- key: / { in_param = /key: google_accounts/ }
+    in_param && sub(/default: ""/, "default: \"" roster "\"") {
+      done++
       in_param = 0
     }
     { print }
+    END { exit done == 1 ? 0 : 1 }
   ' "$1" >"$2"
 }
 
@@ -100,7 +121,14 @@ for id in "${ORDER[@]}"; do
   if [[ -n "${USER_GOOGLE_EMAILS:-}" ]] && grep -q 'key: google_accounts' "$recipe"; then
     mkdir -p "$RENDER_DIR"
     rendered="$RENDER_DIR/$id.yaml"
-    render_recipe "$recipe" "$rendered"
+    export USER_GOOGLE_EMAILS
+    if ! render_recipe "$recipe" "$rendered" \
+        || ! grep -qF -- "default: \"$USER_GOOGLE_EMAILS\"" "$rendered"; then
+      echo "ERROR: $id: could not bake the USER_GOOGLE_EMAILS roster into $rendered" >&2
+      echo "       (has the google_accounts parameter block in $recipe drifted from" >&2
+      echo "       the literal 'default: \"\"' form this script rewrites?)" >&2
+      exit 1
+    fi
     source_recipe="$rendered"
     echo "==> $id: multi-account roster baked into rendered copy ($rendered)"
   fi

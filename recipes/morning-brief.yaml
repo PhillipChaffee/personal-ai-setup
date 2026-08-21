@@ -38,7 +38,8 @@ instructions: |
     user_google_email argument on every workspace-mcp tool call. The FIRST
     address in the roster is the PRIMARY account.
   - With more than one account, prefix digest lines with a short account tag
-    (the part before the @, e.g. "[phil]") so items are labeled by account.
+    (the part before the @, e.g. "[side-project]" for
+    side-project@example.com) so items are labeled by account.
 
   Gather, in this order (per account):
   1. Today's calendar events (Google Calendar via workspace-mcp): start time,

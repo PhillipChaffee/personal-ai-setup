@@ -261,7 +261,16 @@ the Google console.
    side-project@example.com — pass user_google_email=side-project@example.com
    on every call"*. The new account's token file lands next to the first
    one; nothing is overwritten.
-3. **Declare the roster.** Set in `/data/secrets.env` (brain) — and export in
+3. **Get the new token onto the brain.** A consent completed on the Mac
+   (§6) writes the token file only there — the brain's automations can't
+   use it until you repeat the §7a rsync so it reaches
+   `/data/workspace-mcp/`. The rsync never deletes anything; re-copying the
+   primary account's token alongside is harmless (same refresh token, same
+   client). Re-apply the §7a `chmod` afterwards. Alternatively run the
+   consent directly on the brain via the §7b tunnel — then it's the Mac
+   that's missing the token, which only matters if you use goose locally
+   with that account.
+4. **Declare the roster.** Set in `/data/secrets.env` (brain) — and export in
    your shell on the Mac if you want `check-mcp.sh` to sweep there too:
 
    ```bash
@@ -272,7 +281,12 @@ the Google console.
    `USER_GOOGLE_EMAIL` stays set to the primary — it remains workspace-mcp's
    default account and the only account recipes ever send the self-addressed
    delivery email from.
-4. **Propagate to the automations** (brain): re-run
+5. **Tell the interactive assistant too.** The scheduled sweeps get the
+   roster from step 4, but Desktop/Telegram sessions only know what the
+   hints file says: add the new account to the "Google accounts:" line of
+   `~/.config/goose/.goosehints` — on the Mac **and** on the brain (same
+   path on both; `config/goose/goosehints.example` has the wording).
+6. **Propagate to the automations** (brain): re-run
    `scripts/vps/register-schedules.sh`. The sweep recipes (morning-brief,
    inbox-triage, weekly-review) declare a `google_accounts` parameter; the
    native scheduler can't pass parameter values, so the script bakes the
@@ -282,10 +296,14 @@ the Google console.
    from the environment instead. Digest lines are tagged by account; drafts
    and labels stay inside the account that owns the message. The vault
    recipes (`health-followups`, `budget-checkin`) deliberately stay on the
-   primary account only.
-5. **Verify:** `scripts/verify/check-mcp.sh` now runs the Gmail smoke test
-   once per listed account. A failure naming one account means that
-   account's consent dance (step 2) never completed.
+   primary account only. Re-run the script whenever the roster changes or a
+   `git pull` updates the sweep recipes — the rendered copies don't update
+   themselves.
+7. **Verify:** `scripts/verify/check-mcp.sh` now runs the Gmail smoke test
+   once per listed account (on the brain it reads the roster from
+   `/data/secrets.env` by itself). A failure naming one account means that
+   account's consent dance (step 2) never completed — or, on the brain,
+   that step 3 was skipped and the token never left the Mac.
 
 Two things to know before you turn this on: every listed account's mail and
 calendar become Tier 2 data flowing through the same automations (see the
@@ -300,7 +318,7 @@ roster.
 |---|---|---|
 | GCP project + OAuth app | Google's console, status **In production** | — |
 | `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` | Mac Keychain; `/data/secrets.env` on the brain | **Never** (names only, in `config/env/secrets.env.example`) |
-| `USER_GOOGLE_EMAIL` (primary) / `USER_GOOGLE_EMAILS` (roster, §8) | `/data/secrets.env` on the brain; shell env / `config.yaml` on the Mac | **Never filled in** (names only; not secrets, but personal) |
+| `USER_GOOGLE_EMAIL` (primary) / `USER_GOOGLE_EMAILS` (roster, §8) | `/data/secrets.env` on the brain; on the Mac: `config.yaml` `envs:` (primary only) and shell env (roster) | **Never filled in** (names only; not secrets, but personal) |
 | Downloaded client JSON (optional) | Wherever you keep backups — not in a repo | **Never** (gitignored by pattern) |
 | Token files | `~/.google_workspace_mcp/` (Mac — the tool's default state dir); `/data/workspace-mcp/` (brain, LUKS volume, via the `~/.google_workspace_mcp` symlink) | **Never** |
 

@@ -26,12 +26,15 @@ parameters:
 
 instructions: |
   You are running unattended as a scheduled job. Nobody can answer questions,
-  so never ask any.
+  so never ask any. If a tool call fails, retry it once; if it still fails,
+  continue with the remaining accounts and report the gap as described in
+  the delivery rules below.
 
   Accounts:
   - Google accounts roster (comma-separated, may be empty): "{{ google_accounts }}"
   - If the roster is empty, triage the single default account the
-    workspace-mcp tools use when no account is specified.
+    workspace-mcp tools use when no account is specified — that default
+    account is the PRIMARY account.
   - If the roster lists accounts, triage EACH listed account's inbox by
     passing that account's address as the user_google_email argument on
     every workspace-mcp tool call. The FIRST address in the roster is the
@@ -63,24 +66,29 @@ instructions: |
   - No shell commands in this run.
 
   Delivery and final message rules (follow these exactly):
-  - If one or more messages are action-needed (across all accounts):
-    compose a SHORT plain-text summary listing ONLY the action-needed
-    items — one line each: sender — subject — what is needed (and whether a
-    draft was left). When more than one account was triaged, prefix each
-    line with a short account tag (the part before the @, e.g. "[phil]").
+  - An account whose inbox could not be read at all (after the one retry)
+    COUNTS AS an action-needed item: "[tag] inbox unreadable — could not
+    triage". It goes in the summary like any other action-needed item, so
+    a broken consent is surfaced by email, never silently dropped.
+  - If one or more items are action-needed (across all accounts, including
+    unreadable-inbox items): compose a SHORT plain-text summary listing
+    ONLY the action-needed items — one line each: sender — subject — what
+    is needed (and whether a draft was left). When more than one account
+    was in scope, prefix each line with a short account tag (the part
+    before the @, e.g. "[side-project]" for side-project@example.com).
     Do not list fyi or newsletter items. Deliver it as ONE email via the
     Gmail send tool, sent from the PRIMARY account and addressed to that
     same primary address (sender and recipient are the same — this
     self-addressed delivery email is the single exception to the
     drafts-only rule), subject "Inbox triage — action needed". Then end by
     printing the same summary as your final message.
-  - If nothing is action-needed: send NO email, and your final message must
-    be exactly:
+  - If nothing is action-needed and every inbox was readable: send NO
+    email, and your final message must be exactly:
     NO_ACTION_NEEDED
     with no other words, punctuation, or formatting.
-  - If you could not read an inbox at all: end with a final message that
-    briefly says so, naming the account only by its tag — the scheduler's
-    session record captures it.
+  - Only if NO inbox could be read at all (so there is no account to send
+    the summary from reliably): send no email and end with a final message
+    that briefly says so — the scheduler's session record captures it.
 
 prompt: |
   Triage my unread inbox now. Follow the delivery and final-message rules

@@ -58,7 +58,8 @@ its first fire would otherwise be the 1st of the month at 09:00.
    pinned model consistent with the routing table (sensitive data → `together`), keep the
    extension list minimal (each MCP server's tools cost context on every turn), and have
    the recipe's explicit final step deliver its result as ONE self-addressed email via
-   the Gmail send tool — sender and recipient are both the authenticated account, and
+   the Gmail send tool — sender and recipient are both the PRIMARY account
+   (`USER_GOOGLE_EMAIL`; the first roster entry when `USER_GOOGLE_EMAILS` is set), and
    the instructions must forbid emailing anyone else.
 
 2. **Test it headless once**, exactly the way unattended runs execute:
@@ -84,7 +85,11 @@ its first fire would otherwise be the 1st of the month at 09:00.
    ```
 
    Better: add the same line to `scripts/vps/register-schedules.sh` (it's idempotent) so
-   the roster stays reproducible, then re-run it.
+   the roster stays reproducible, then re-run it. If your recipe declares the
+   `google_accounts` parameter and you use `USER_GOOGLE_EMAILS`, don't register the repo
+   path directly — add the job to `register-schedules.sh` so it registers the rendered
+   copy with the account roster baked in (a directly-registered repo path would sweep
+   only the primary).
 
 4. **Confirm in the Scheduler UI** — open Goose Desktop (connected to the brain), find
    the schedule, hit run-now in the Desktop Scheduler UI, and check that the email

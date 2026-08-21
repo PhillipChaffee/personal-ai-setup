@@ -96,6 +96,17 @@ echo "      an auth URL (Todoist). Complete it, then re-run this script."
 # USER_GOOGLE_EMAIL, then to the extension's default account). Each account's
 # check passes its address as the tools' user_google_email argument, so a
 # missing consent for a secondary account fails ITS check, not the primary's.
+# On the brain the roster lives in /data/secrets.env — load it like the other
+# brain-side scripts (register-schedules.sh, check-brain.sh) so an SSH shell
+# without the exports still sweeps every account.
+if [ -z "${USER_GOOGLE_EMAILS:-}" ] && [ -r /data/secrets.env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . /data/secrets.env
+  set +a
+fi
+
+GMAIL_CHECKS=0
 ACCOUNTS="${USER_GOOGLE_EMAILS:-${USER_GOOGLE_EMAIL:-}}"
 if [ -n "$ACCOUNTS" ]; then
   OLD_IFS="$IFS"
@@ -104,12 +115,17 @@ if [ -n "$ACCOUNTS" ]; then
     IFS="$OLD_IFS"
     account="$(printf '%s' "$account" | tr -d '[:space:]')"
     [ -n "$account" ] || { IFS=','; continue; }
+    GMAIL_CHECKS=$((GMAIL_CHECKS + 1))
     run_check "Gmail ($account)" \
       "Using the Google Workspace tools, list the subject lines of the 3 most recent emails in the inbox of the Google account $account. Pass user_google_email=$account on every tool call. Output only the three subject lines, one per line. Do not modify, label, or send anything."
     IFS=','
   done
   IFS="$OLD_IFS"
-else
+fi
+if [ "$GMAIL_CHECKS" -eq 0 ]; then
+  # No (usable) roster — the pre-multi-account behavior: one check against
+  # the extension's default account. A roster of only commas/whitespace
+  # lands here too instead of silently skipping Gmail entirely.
   run_check "Gmail (workspace-mcp)" \
     "Using the Google Workspace tools, list the subject lines of the 3 most recent emails in my inbox. Output only the three subject lines, one per line. Do not modify, label, or send anything."
 fi

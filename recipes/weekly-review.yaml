@@ -36,7 +36,8 @@ instructions: |
     account's address as the user_google_email argument on every
     workspace-mcp tool call. The FIRST address in the roster is the PRIMARY
     account. When more than one account is covered, tag items with a short
-    account tag (the part before the @, e.g. "[phil]").
+    account tag (the part before the @, e.g. "[side-project]" for
+    side-project@example.com).
 
   Build a review of the past 7 days and a look at the next 7, across all
   accounts:
