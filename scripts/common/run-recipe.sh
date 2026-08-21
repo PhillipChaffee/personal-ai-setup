@@ -14,8 +14,8 @@
 #      via notify.sh (recipe name only — never model output, which could
 #      contain sensitive content)
 #   4. on success, logs the run's final text to stdout — it does NOT deliver
-#      it: every scheduled recipe delivers its own notification as an
-#      explicit final notify.sh step (docs/automations.md)
+#      it: every scheduled recipe emails its own result as an explicit final
+#      self-addressed Gmail send (docs/automations.md)
 #
 # Used by the systemd fallback timers and for manual headless tests; those
 # paths get this failure alert on top of the recipe's own delivery. The
@@ -186,7 +186,7 @@ TRIMMED="${TRIMMED%"${TRIMMED##*[![:space:]]}"}"
 # No delivery here: the recipe already sent (or deliberately withheld) its
 # own notification as its final step. Success output is simply logged to
 # stdout — journald keeps it on timer runs. NO_ACTION_NEEDED is inbox-
-# triage's documented "nothing worth a push" final text; it is logged like
+# triage's documented "nothing worth an email" final text; it is logged like
 # any other result.
 printf '%s\n' "$TRIMMED"
 exit 0

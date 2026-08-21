@@ -172,7 +172,7 @@ The vault is Tier 3 — the full policy is
    rules in `~/.config/goose/.goosehints` (from
    `config/goose/goosehints.example`) tell the agent to refuse/flag vault
    reads on a disallowed model, but hints are a seatbelt, not a wall.
-4. **Pushes about vault work carry counts and neutral titles only** — never
+4. **Messages about vault work carry counts and neutral titles only** — never
    a condition, medication, provider name, or dollar amount. Enforced at the
    `notify.sh` choke point; don't route around it.
 
@@ -188,7 +188,7 @@ The vault is Tier 3 — the full policy is
    `health/appointments.md` gained entries, the commit was pushed to the
    remote (`git -C /data/life-vault log origin/main -1` shows it — this
    push-verification applies to `health-followups` runs, the only recipe
-   that pushes), and the ntfy push is exactly
+   that pushes), and its delivery email is exactly
    `Health review ready: N items` — **no PHI**.
 3. **Separation is intact** — in the `personal-ai-setup` working tree:
    `git status` shows no vault files, and the gitleaks pre-commit hook /

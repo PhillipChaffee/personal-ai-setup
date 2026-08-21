@@ -114,7 +114,8 @@ agent@brain$ nano /data/secrets.env
 ```
 
 Fill every variable with the real values from your Keychain/notes:
-`OPENCODE_ZEN_API_KEY`, `TOGETHER_API_KEY`, `NTFY_TOPIC`, `TAVILY_API_KEY`
+`OPENCODE_ZEN_API_KEY`, `TOGETHER_API_KEY`, `NTFY_TOPIC`, `NTFY_EMAIL`
+(recommended — the address failure alerts are emailed to), `TAVILY_API_KEY`
 (optional), `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` — and
 generate the one new secret now:
 
@@ -224,16 +225,18 @@ Then, by hand:
    find that session; reply from the phone; see the reply on Desktop. This is
    the v2 milestone: one history, every surface.
 2. **Automation fires and delivers** — on the brain:
-   `goose schedule run-now --schedule-id morning-brief` → the ntfy push
-   arrives on the iPhone within a couple of minutes.
-3. **Triage is draft-only** — run-now `inbox-triage`, then check Gmail:
-   labels applied and **drafts** created, *nothing sent*. The recipe must
-   never auto-send; if anything left the outbox, stop and fix before
-   trusting it on a schedule.
+   `goose schedule run-now --schedule-id morning-brief` → the digest email
+   (`Morning brief — <date>`, self-addressed) arrives in your inbox within
+   a couple of minutes.
+3. **Triage never emails anyone but you** — run-now `inbox-triage`, then
+   check Gmail: labels applied and **drafts** created; the only send allowed
+   is the recipe's self-addressed "Inbox triage — action needed" summary
+   (absent when nothing needs action). If anything left the outbox to any
+   other recipient, stop and fix before trusting it on a schedule.
 4. **Failures are loud** — force one:
    `scripts/common/run-recipe.sh recipes/does-not-exist.yaml` → a failure
-   alert must reach ntfy. A silent failure path is the one thing this stack
-   isn't allowed to have.
+   alert must arrive (emailed to `NTFY_EMAIL` via ntfy's gateway). A silent
+   failure path is the one thing this stack isn't allowed to have.
 5. **Reboot drill** — step 10, now, while everything is fresh.
 
 ## 10. Reboot drill

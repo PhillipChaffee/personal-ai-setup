@@ -1,10 +1,11 @@
 # Phone setup — the iPhone as a thin client
 
-The iPhone never runs an agent. It's four small apps and a shortcut, each a
+The iPhone never runs an agent. It's three small apps and a shortcut, each a
 thin surface onto infrastructure you already run — in priority order: the
-**Goose iOS app** (primary, pairs to the brain), **ntfy** (push), **Tailscale**
-(network), **Pal Chat** (backup chat, works day one), and a **Siri Shortcut**
-(voice one-shots).
+**Goose iOS app** (primary, pairs to the brain), **Tailscale** (network),
+**Pal Chat** (backup chat, works day one), and a **Siri Shortcut** (voice
+one-shots). Automation results need nothing here at all — they arrive by
+email (§2).
 
 §2–§5 need no server and can be done in Phase 1. §1 needs the brain
 ([50-vps-brain.md](50-vps-brain.md)) — come back to it from there.
@@ -93,25 +94,22 @@ chat happens in Telegram's UI rather than the app's.
 **D. Pal Chat (§4).** Always works, needs nothing but a provider key — but
 it's plain BYOK chat: no tools, no brain, device-local history.
 
-## 2. ntfy — how the stack reaches you
+## 2. How the stack reaches you — email, no app
 
-Install the **ntfy** app
-(<https://apps.apple.com/us/app/ntfy/id1625396347>) and subscribe to your
-secret topic — you created it (and tested a push) in
-[10-accounts.md §6](10-accounts.md). Every automation on the brain delivers
-through this channel via `scripts/common/notify.sh`.
-
-Two rules worth re-reading in [`docs/privacy.md`](../privacy.md): the topic
-name is a password (never share or commit it), and pushes from sensitive
-jobs carry counts/titles only — never PHI.
+Nothing to set up here anymore: the ntfy phone app is no longer part of the
+system. Automation results arrive as ordinary email — each recipe on the
+brain sends its result to your own address via Gmail as its final step
+([`docs/automations.md`](../automations.md)) — and failure alerts reach the
+same inbox via ntfy's email gateway, configured back in
+[10-accounts.md §6](10-accounts.md).
 
 ## 3. Tailscale — put the phone on the tailnet
 
 Install the **Tailscale** iOS app, sign in with the same identity you used in
 [10-accounts.md §3](10-accounts.md), and allow the VPN configuration.
 
-Nothing in §1–2 strictly requires this today (the tunnel and ntfy are
-outbound/public paths) — but the tailnet is the only route to everything
+Nothing in §1–2 strictly requires this today (the tunnel is an outbound
+path, and email needs nothing) — but the tailnet is the only route to everything
 tailnet-bound on the brain: emergency SSH from the phone, any future
 self-hosted web surface, and the goose mobile roadmap's remote-ACP path,
 which will replace the Cloudflare tunnel with a direct connection over
@@ -190,7 +188,7 @@ to the Goose app or the Mac.
 |---|---|---|
 | Goose iOS app (§1) | Brain + a working pairing path | Full agent, shared history — primary |
 | Telegram gateway (§1C) | Brain | Full agent in Telegram — 24/7 fallback |
-| ntfy (§2) | Topic | Every automation's delivery channel |
+| Email inbox (§2) | Nothing new | Every automation's results and failure alerts |
 | Tailscale (§3) | Tailnet | Direct path to the brain, future-proofing |
 | Pal Chat (§4) | A provider key | Chat that survives everything being down |
 | Siri Shortcut (§5) | A provider key | Voice one-shots |

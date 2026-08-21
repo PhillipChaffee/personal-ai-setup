@@ -1,12 +1,11 @@
 # Weekly review — Sunday synthesis of the week's calendar, email, and tasks.
 # Scheduled on the brain: goose schedule add --schedule-id weekly-review \
 #   --cron "0 0 17 * * SUN" --recipe-source recipes/weekly-review.yaml
-# The report is left as a Gmail DRAFT to yourself (never sent). The recipe
-# delivers its own ntfy push as an explicit final step by running
-# scripts/common/notify.sh via the developer extension's shell.
+# The recipe emails the report to yourself (one self-addressed email via
+# the Gmail send tool) as its explicit final delivery step.
 version: 1.0.0
 title: Weekly Review
-description: Synthesizes the past week from calendar, email, and tasks; leaves a self-addressed draft email and reports the summary.
+description: Synthesizes the past week from calendar and email; emails the report to yourself.
 
 instructions: |
   You are running unattended as a scheduled job. Nobody can answer questions,
@@ -28,40 +27,28 @@ instructions: |
   - "Open loops": bullet list (waiting-on-you first)
   - "Next week": bullet list of commitments and suggested priorities
 
-  Then create a Gmail DRAFT addressed to your own address (the authenticated
-  account's email — look it up from the Gmail profile if needed) with subject
-  "Weekly review — <YYYY-MM-DD>" and the report as the body.
-
-  Delivery (explicit final step — this run delivers its own push):
-  - After the draft is saved, send the report with notify.sh via the
-    developer extension's shell, passing it on stdin:
-      /home/agent/personal-ai-setup/scripts/common/notify.sh -t "Weekly review" <<'REPORT'
-      <the report>
-      REPORT
+  Delivery (explicit final step — this run emails its own result):
+  - Send the report as ONE email via the Gmail send tool, addressed to your
+    own address (the authenticated account's email — sender and recipient
+    are the same; look it up from the Gmail profile if needed), subject
+    "Weekly review — <YYYY-MM-DD>", body: the full report as plain text.
   - Then END by printing the full report as your final message, with no
     commentary before or after it.
 
   Hard rules:
-  - NEVER send the email. Draft only. Do not use any tool that sends,
-    replies, or forwards.
+  - The single self-addressed delivery email above is the ONLY send. Never
+    email, reply, or forward to any other recipient.
   - No other writes: do not modify calendar events, labels, or tasks.
-  - The ONLY shell command you may run is
-    /home/agent/personal-ai-setup/scripts/common/notify.sh, exactly once,
-    for the delivery step above. Never hand-roll a curl or any other
-    delivery path.
+  - No shell commands in this run.
 
 prompt: |
-  Run my weekly review now. Leave the report as a draft email to myself,
-  deliver it via notify.sh as your final step, and end by printing the
-  report as your final message.
+  Run my weekly review now. Email the report to myself as the delivery
+  step, and end by printing the report as your final message.
 
 extensions:
-  - type: builtin
-    name: developer
-    timeout: 300
   - type: stdio
     name: workspace-mcp
-    description: Google Workspace MCP (Gmail + Calendar; only write is a draft)
+    description: Google Workspace MCP (Gmail + Calendar; only write is the self-addressed report email)
     cmd: uvx
     args:
       - workspace-mcp

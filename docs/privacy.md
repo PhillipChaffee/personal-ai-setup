@@ -85,7 +85,7 @@ Tailscale — does not have).
 If that's unacceptable to you, the alternatives, in order of preference:
 
 1. **Don't pair the iOS app.** Use Goose Desktop over Tailscale on the Mac as the only
-   interactive brain client, and rely on ntfy pushes for phone delivery.
+   interactive brain client; automation results arrive by email.
 2. **Telegram gateway** on the brain — moves the relay trust from Cloudflare to Telegram;
    different party, same shape of trade-off.
 3. **Pal Chat** direct to Together — bypasses the brain entirely (device-local history,
@@ -95,19 +95,21 @@ The tunnel is a pragmatic accepted trade for now; the Goose mobile roadmap (nati
 ACP over your own network) is the thing to watch for removing it — see
 [roadmap.md](roadmap.md).
 
-## Push notifications: never PHI, never account numbers
+## Delivery channels: never PHI, never account numbers
 
-Pushes go through ntfy (`https://ntfy.sh/$NTFY_TOPIC`). The public ntfy server sees every
-message, and the topic name is only a shared secret — treat push content as if it could
+Content delivery is a self-addressed email per recipe (your own Gmail, end to
+end). Failure alerts go through ntfy (`https://ntfy.sh/$NTFY_TOPIC`) and its
+email gateway. The public ntfy server sees every alert message, and the topic
+name is only a shared secret — treat alert content as if it could
 be read. The rule:
 
-- **Sensitive jobs push counts and neutral titles only.** Good: `health-followups: 3
+- **Sensitive jobs report counts and neutral titles only.** Good: `health-followups: 3
   items appended`. Bad: anything naming a condition, medication, provider, dollar amount,
-  or account. The detail lives in the vault on the encrypted volume; the push just tells
+  or account. The detail lives in the vault on the encrypted volume; the message just tells
   you to go look.
-- Non-sensitive jobs (morning brief, inbox triage) may push digests, but keep them to
+- Non-sensitive jobs (morning brief, inbox triage) may email digests, but keep them to
   subjects/summaries — no message bodies.
-- All pushes go through `scripts/common/notify.sh` — one choke point, so the rule is
+- All failure alerts go through `scripts/common/notify.sh` — one choke point, so the rule is
   enforced in one place. Recipes never assemble their own ntfy requests.
 
 The `NTFY_TOPIC` value itself is a secret: it lives in the Keychain (Mac) and

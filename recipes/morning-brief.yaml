@@ -1,9 +1,9 @@
 # Morning brief — daily digest of calendar + important unread email + due tasks.
 # Scheduled on the brain: goose schedule add --schedule-id morning-brief \
 #   --cron "0 0 7 * * *" --recipe-source recipes/morning-brief.yaml
-# The recipe delivers its own push: its explicit final step runs
-# scripts/common/notify.sh (via the developer extension's shell) with the
-# digest, then prints the digest as the final message for the session record.
+# The recipe delivers its own result: its explicit final step emails the
+# digest to the account owner via the Gmail send tool (self-addressed only),
+# then prints the digest as the final message for the session record.
 version: 1.0.0
 title: Morning Brief
 description: Daily digest of today's calendar, unread important email, and due tasks.
@@ -26,34 +26,28 @@ instructions: |
   - "Email:" — one line per message, at most 5
   - omit any section that is empty
 
-  Delivery (explicit final step — this run delivers its own push):
-  - Send the finished digest with notify.sh via the developer extension's
-    shell, passing the digest on stdin:
-      /home/agent/personal-ai-setup/scripts/common/notify.sh -t "Morning brief" <<'DIGEST'
-      <the digest>
-      DIGEST
+  Delivery (explicit final step — this run emails its own result):
+  - Send the finished digest as ONE email using the Gmail send tool,
+    addressed to your own account (the authenticated user's address —
+    sender and recipient are the same), subject:
+    "Morning brief — <today's date>", body: the digest as plain text.
   - Then END by printing the same digest as your final message (it becomes
     the run's session record), with no commentary before or after it.
 
   Hard rules:
-  - Gmail and Calendar are read-only in this run: do not modify, send,
-    archive, or label anything.
-  - The ONLY shell command you may run is
-    /home/agent/personal-ai-setup/scripts/common/notify.sh, exactly once,
-    for the delivery step above. Never hand-roll a curl or any other
-    delivery path.
+  - Gmail and Calendar are otherwise read-only in this run: the single
+    self-addressed delivery email above is the ONLY send, and you never
+    modify, archive, or label anything. Never email any other recipient.
+  - No shell commands in this run.
 
 prompt: |
-  Prepare my morning brief for today. Deliver it via notify.sh as your final
+  Prepare my morning brief for today. Email it to me as your final
   step, then end by printing the digest itself as your final message.
 
 extensions:
-  - type: builtin
-    name: developer
-    timeout: 300
   - type: stdio
     name: workspace-mcp
-    description: Google Workspace MCP (Gmail + Calendar, read-only use here)
+    description: Google Workspace MCP (Gmail + Calendar; one self-addressed delivery email)
     cmd: uvx
     args:
       - workspace-mcp
