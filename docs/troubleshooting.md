@@ -61,33 +61,31 @@ The same ambiguity exists independently per engine (`openai` vs `anthropic`), so
 ## Zen /messages auth failures (Bearer vs x-api-key)
 
 **Symptom.** Models on the `zen-anthropic` provider (`claude-sonnet-5`,
-`claude-haiku-4-5`, `qwen3.7-plus`) return 401/403 "invalid api key" or similar,
-while `zen-openai` models work with the same `OPENCODE_ZEN_API_KEY`.
+`claude-haiku-4-5`, …) return 401/403 "invalid api key" or similar, while
+`zen-openai` models work with the same `OPENCODE_ZEN_API_KEY`.
 
-**Cause.** OpenCode Zen serves Claude/Qwen on the Anthropic Messages endpoint
-(`https://opencode.ai/zen/v1/messages`), and the exact auth header for direct
-calls is **not officially documented**. Community setups pass the Zen key as a
-Bearer token (`Authorization: Bearer …`), but Goose's `anthropic` engine sends
-`x-api-key` plus `anthropic-version: 2023-06-01` and no Bearer header (verified
-against goose v1.46.0 with a local mock). If Zen only accepts one of the two
-shapes, the other will be rejected.
+**What's known (settled 2026-08-21 against the live endpoint).** Zen's
+`/messages` accepts `x-api-key` (200) and **rejects** `Authorization: Bearer`
+(401). Goose's `anthropic` engine sends `x-api-key` plus
+`anthropic-version: 2023-06-01` (verified against goose v1.46.0), so
+`zen-anthropic` authenticates correctly as shipped — a 401 here means the key
+itself is wrong, missing from the environment (are the Keychain exports in
+your shell? see `scripts/mac/keychain-secrets.sh`), or Zen changed its auth.
 
 **Fix.**
 
-1. Let the probe script settle it — it curls `…/zen/v1/messages` with **both**
-   header shapes and prints which one succeeds:
+1. Re-probe both header shapes — the script prints which one succeeds now:
 
    ```bash
    scripts/verify/check-providers.sh
    ```
 
-2. If Goose's `anthropic` engine sends the losing header, add the winning one
-   explicitly via the `headers` field in
-   `config/goose/custom_providers/zen-anthropic.json`.
-3. If neither shape works from Goose, use the documented fallback: **drop the
-   `zen-anthropic` provider entirely**. Claude stays available through OpenCode on
-   the Mac (Zen is its first-party gateway), and the hub's daily driver falls back
-   to `zen-openai`/`kimi-k2.6` — see `docs/model-routing.md`.
+2. If Zen ever flips to Bearer-only, goose's anthropic engine can't
+   authenticate natively — add the winning header explicitly via the
+   `headers` field in `config/goose/custom_providers/zen-anthropic.json`, or
+   use the fallback: **drop the `zen-anthropic` provider**. Claude stays
+   available through OpenCode on the Mac, and the hub's daily driver falls
+   back to `zen-openai`/`kimi-k2.6` — see `docs/model-routing.md`.
 
 ## Goose scheduler job didn't fire
 

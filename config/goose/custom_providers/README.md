@@ -48,12 +48,12 @@ shipped provider with one goose run and prints swap instructions on failure.
 (Symptom of a wrong variant: HTTP 404, or a doubled path like
 `/chat/completions/chat/completions` in goose's error output.)
 
-One uncertainty remains for `zen-anthropic`: Zen does not document whether
-its `/messages` endpoint accepts `x-api-key` (which goose sends) or only
-`Authorization: Bearer`. `scripts/verify/check-providers.sh` probes the real
-endpoint with both headers; if Zen turns out to be Bearer-only, goose's
-anthropic engine cannot authenticate — drop `zen-anthropic` and reach Claude
-via OpenCode only (see docs/troubleshooting.md).
+The `zen-anthropic` auth question is settled (verified against the live
+endpoint, 2026-08-21): Zen's `/messages` accepts `x-api-key` (HTTP 200) and
+rejects `Authorization: Bearer` (401) — and `x-api-key` is exactly what
+goose's anthropic engine sends, so `zen-anthropic` works as shipped.
+`scripts/verify/check-providers.sh` re-probes both headers on every run in
+case this ever changes.
 
 ## Adding or updating models
 
