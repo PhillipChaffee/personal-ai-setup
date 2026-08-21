@@ -29,6 +29,59 @@ esac
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+# Multi-account roster: pick up USER_GOOGLE_EMAILS from the brain's secrets
+# when it isn't already in the environment (manual SSH runs). Harmless when
+# the file is absent or the var unset — single-account behavior is unchanged.
+if [[ -z "${USER_GOOGLE_EMAILS:-}" ]] && [[ -r /data/secrets.env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  . /data/secrets.env
+  set +a
+fi
+
+# Where rendered recipe copies live (docs/setup/30-google-oauth.md §8). The
+# native scheduler runs recipes with their parameter DEFAULTS — it cannot
+# pass values — so when USER_GOOGLE_EMAILS is set, each recipe that declares
+# the google_accounts parameter is registered from a copy whose default IS
+# the roster. The copies sit on /data (encrypted, untracked): the personal
+# roster never lands in the repo. Re-running this script re-renders, so
+# roster changes propagate the same way cron changes do.
+RENDER_DIR=/data/rendered-recipes
+
+# The convention everywhere in this setup: the roster's FIRST entry is the
+# primary account and must equal USER_GOOGLE_EMAIL. Warn on drift — recipes
+# would deliver from one account while workspace-mcp defaults to another.
+if [[ -n "${USER_GOOGLE_EMAILS:-}" && -n "${USER_GOOGLE_EMAIL:-}" \
+      && "${USER_GOOGLE_EMAILS%%,*}" != "$USER_GOOGLE_EMAIL" ]]; then
+  echo "WARNING: first USER_GOOGLE_EMAILS entry (${USER_GOOGLE_EMAILS%%,*}) does not" >&2
+  echo "         match USER_GOOGLE_EMAIL ($USER_GOOGLE_EMAIL) — the roster's first" >&2
+  echo "         entry must be the primary (docs/setup/30-google-oauth.md §8)." >&2
+fi
+
+# render_recipe <src> <dst>: bake the roster into the google_accounts
+# parameter default (the `default: ""` line of that parameter's block).
+# Exits non-zero unless exactly one substitution happened — a formatting
+# drift in the recipe (e.g. '' instead of "", or reordered keys) must fail
+# loudly here, never silently register a copy with an empty roster. The
+# roster comes in via ENVIRON (no -v, so awk does no backslash processing)
+# and is escaped so sub() cannot expand '&'.
+render_recipe() {
+  awk '
+    BEGIN {
+      roster = ENVIRON["USER_GOOGLE_EMAILS"]
+      gsub(/\\/, "\\\\", roster)
+      gsub(/&/, "\\\\&", roster)
+    }
+    /- key: / { in_param = /key: google_accounts/ }
+    in_param && sub(/default: ""/, "default: \"" roster "\"") {
+      done++
+      in_param = 0
+    }
+    { print }
+    END { exit done == 1 ? 0 : 1 }
+  ' "$1" >"$2"
+}
+
 # Headless box: no Secret Service keyring, and schedule subcommands need no
 # secrets anyway.
 export GOOSE_DISABLE_KEYRING=1
@@ -64,6 +117,21 @@ for id in "${ORDER[@]}"; do
     echo "ERROR: recipe not found: $recipe" >&2
     exit 1
   fi
+  source_recipe="$recipe"
+  if [[ -n "${USER_GOOGLE_EMAILS:-}" ]] && grep -q 'key: google_accounts' "$recipe"; then
+    mkdir -p "$RENDER_DIR"
+    rendered="$RENDER_DIR/$id.yaml"
+    export USER_GOOGLE_EMAILS
+    if ! render_recipe "$recipe" "$rendered" \
+        || ! grep -qF -- "default: \"$USER_GOOGLE_EMAILS\"" "$rendered"; then
+      echo "ERROR: $id: could not bake the USER_GOOGLE_EMAILS roster into $rendered" >&2
+      echo "       (has the google_accounts parameter block in $recipe drifted from" >&2
+      echo "       the literal 'default: \"\"' form this script rewrites?)" >&2
+      exit 1
+    fi
+    source_recipe="$rendered"
+    echo "==> $id: multi-account roster baked into rendered copy ($rendered)"
+  fi
   if grep -q -- "$id" <<<"$EXISTING"; then
     echo "==> $id: already registered — removing and re-adding (no update subcommand)"
     "$GOOSE_BIN" schedule remove --schedule-id "$id"
@@ -73,7 +141,7 @@ for id in "${ORDER[@]}"; do
   "$GOOSE_BIN" schedule add \
     --schedule-id "$id" \
     --cron "${CRONS[$id]}" \
-    --recipe-source "$recipe"
+    --recipe-source "$source_recipe"
 done
 
 # budget-checkin ships paused until a budgeting source is picked. The 1.x CLI

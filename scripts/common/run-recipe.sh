@@ -84,11 +84,21 @@ export GOOSE_MAX_TURNS=50
 export GOOSE_CONTEXT_STRATEGY=summarize
 export GOOSE_DISABLE_SESSION_NAMING=true
 
+# Multi-account roster (docs/setup/30-google-oauth.md §8): when
+# USER_GOOGLE_EMAILS is set and the recipe declares the google_accounts
+# parameter, pass the roster through so the run sweeps every account. Recipes
+# without the parameter (and single-account setups) run exactly as before.
+PARAMS=()
+if [ -n "${USER_GOOGLE_EMAILS:-}" ] && grep -q 'key: google_accounts' "$RECIPE"; then
+  PARAMS=(--params "google_accounts=$USER_GOOGLE_EMAILS")
+fi
+
 OUT="$(mktemp "${TMPDIR:-/tmp}/run-recipe.$NAME.XXXXXX")"
 trap 'rm -f "$OUT"' EXIT
 
 run_goose() {
-  goose run --recipe "$RECIPE" --no-session --quiet --output-format json \
+  goose run --recipe "$RECIPE" ${PARAMS[@]+"${PARAMS[@]}"} \
+    --no-session --quiet --output-format json \
     >"$OUT"
 }
 

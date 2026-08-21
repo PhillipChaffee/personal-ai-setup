@@ -3,16 +3,44 @@
 #   --cron "0 0 17 * * SUN" --recipe-source recipes/weekly-review.yaml
 # The recipe emails the report to yourself (one self-addressed email via
 # the Gmail send tool) as its explicit final delivery step.
+#
+# Multi-account: the google_accounts parameter carries the USER_GOOGLE_EMAILS
+# roster (first entry = primary). run-recipe.sh passes it from the
+# environment; the native scheduler can't pass parameters, so
+# register-schedules.sh registers a rendered copy with the roster baked into
+# the default when USER_GOOGLE_EMAILS is set (docs/setup/30-google-oauth.md §8).
 version: 1.0.0
 title: Weekly Review
 description: Synthesizes the past week from calendar and email; emails the report to yourself.
+
+parameters:
+  - key: google_accounts
+    input_type: string
+    requirement: optional
+    default: ""
+    description: >-
+      Comma-separated Google account emails to sweep, first entry = the
+      primary (delivery) account. Empty means the single default account
+      workspace-mcp is configured with.
 
 instructions: |
   You are running unattended as a scheduled job. Nobody can answer questions,
   so never ask any. If a tool call fails, retry it once; if it still fails,
   continue and note the gap in the report.
 
-  Build a review of the past 7 days and a look at the next 7:
+  Accounts:
+  - Google accounts roster (comma-separated, may be empty): "{{ google_accounts }}"
+  - If the roster is empty, work with the single default account the
+    workspace-mcp tools use when no account is specified.
+  - If the roster lists accounts, review EACH listed account by passing that
+    account's address as the user_google_email argument on every
+    workspace-mcp tool call. The FIRST address in the roster is the PRIMARY
+    account. When more than one account is covered, tag items with a short
+    account tag (the part before the @, e.g. "[side-project]" for
+    side-project@example.com).
+
+  Build a review of the past 7 days and a look at the next 7, across all
+  accounts:
 
   1. Calendar (via workspace-mcp): meetings and events from the past week —
      what took the most time, anything notable. Then the coming week's
@@ -28,17 +56,21 @@ instructions: |
   - "Next week": bullet list of commitments and suggested priorities
 
   Delivery (explicit final step — this run emails its own result):
-  - Send the report as ONE email via the Gmail send tool, addressed to your
-    own address (the authenticated account's email — sender and recipient
-    are the same; look it up from the Gmail profile if needed), subject
-    "Weekly review — <YYYY-MM-DD>", body: the full report as plain text.
+  - Send the report as ONE email via the Gmail send tool, sent from the
+    PRIMARY account and addressed to that same primary address (the first
+    roster entry, or the authenticated account's email when the roster is
+    empty — sender and recipient are the same; look it up from the Gmail
+    profile if needed), subject "Weekly review — <YYYY-MM-DD>", body: the
+    full report as plain text.
   - Then END by printing the full report as your final message, with no
     commentary before or after it.
 
   Hard rules:
-  - The single self-addressed delivery email above is the ONLY send. Never
-    email, reply, or forward to any other recipient.
-  - No other writes: do not modify calendar events, labels, or tasks.
+  - The single self-addressed delivery email from the primary account above
+    is the ONLY send. Never email, reply, or forward to any other
+    recipient, and never send anything from a non-primary account.
+  - No other writes in ANY account: do not modify calendar events, labels,
+    or tasks.
   - No shell commands in this run.
 
 prompt: |

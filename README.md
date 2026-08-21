@@ -81,6 +81,7 @@ Siri Shortcut ─────┤            OpenCode CLI (coding, local)      �
 │   ├── model-routing.md                # which model for which job + hard privacy rules
 │   ├── privacy.md                      # data classification per provider tier; encryption model & residual risk
 │   ├── automations.md                  # add/manage scheduled workflows; scheduler-bug fallback flip
+│   ├── providers.md                    # email/calendar provider convention (multi-account today, more providers next)
 │   ├── security.md                     # threat model, LUKS design, Tailscale-only exposure, serve TLS/secret
 │   ├── public-repo.md                  # what may/may-not be committed; go-public checklist
 │   ├── troubleshooting.md              # base_url 404s, scheduler bugs, pairing, LUKS, rate limits

@@ -79,6 +79,22 @@ provider-classification work is needed (`docs/privacy.md` already covers it).
 This pairs naturally with Basic Memory above — same files, two access paths
 (graph traversal and vector similarity).
 
+## Non-Google email/calendar providers (Outlook, Fastmail/IMAP, Proton)
+
+Multi-account Google is done: a `USER_GOOGLE_EMAILS` roster sweeps N Gmail
+accounts through the one workspace-mcp instance
+([30-google-oauth.md §8](setup/30-google-oauth.md)). The remaining half of
+the "whole communication surface" goal is other providers — Outlook /
+Microsoft 365 via an MS Graph MCP server, Fastmail-style hosts via generic
+IMAP/SMTP + CalDAV servers, Proton via Bridge. The doorway is already built:
+[providers.md](providers.md) fixes the vetting bar (the one workspace-mcp
+passed), the extension/env naming conventions, the per-provider roster
+pattern, and the rule that delivery stays a single self-addressed email from
+the Google primary. What remains per provider is picking a server that clears
+the bar, a privacy.md policy row, a `docs/setup/3x-<provider>.md` runbook,
+and a check-mcp smoke test. Trigger: the day a real second provider joins
+your life (a work M365 tenant, a Fastmail migration) — not before.
+
 ## Watch the goose mobile roadmap (remote ACP + push)
 
 The iOS pairing fallback chain in `docs/setup/40-phone-setup.md` exists because

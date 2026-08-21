@@ -34,6 +34,17 @@ bursts.
 | `vault-qa` | on-demand, not scheduled | together / `deepseek-ai/DeepSeek-V4-Flash-0731` | interactive session on the brain; developer extension only |
 | `budget-checkin` | `0 0 9 1 * *` (1st of month, 09:00) | together / `openai/gpt-oss-120b` | self-addressed email `Budget check-in` vs `budget.md` — **disable after deploy** until you've picked a budgeting source |
 
+**Multiple Google accounts:** with `USER_GOOGLE_EMAILS` set
+([30-google-oauth.md §8](setup/30-google-oauth.md)), `morning-brief`,
+`inbox-triage`, and `weekly-review` sweep every listed account (items tagged
+by account; labels and drafts stay inside the account that owns the message)
+while delivery stays one self-addressed email from the primary. The recipes
+carry the roster as a `google_accounts` parameter: the native scheduler can't
+pass parameter values, so `register-schedules.sh` bakes the roster into
+rendered copies under `/data/rendered-recipes/` and registers those;
+`run-recipe.sh` passes it from the environment on manual and fallback-timer
+runs. The vault recipes stay primary-only by design.
+
 `scripts/vps/register-schedules.sh` registers this whole roster idempotently and prints
 `goose schedule list` when done. One caveat it announces loudly: goose 1.x has no
 `schedule pause` CLI, so on a headless deploy `budget-checkin` registers **active**.
@@ -47,7 +58,8 @@ its first fire would otherwise be the 1st of the month at 09:00.
    pinned model consistent with the routing table (sensitive data → `together`), keep the
    extension list minimal (each MCP server's tools cost context on every turn), and have
    the recipe's explicit final step deliver its result as ONE self-addressed email via
-   the Gmail send tool — sender and recipient are both the authenticated account, and
+   the Gmail send tool — sender and recipient are both the PRIMARY account
+   (`USER_GOOGLE_EMAIL`; the first roster entry when `USER_GOOGLE_EMAILS` is set), and
    the instructions must forbid emailing anyone else.
 
 2. **Test it headless once**, exactly the way unattended runs execute:
@@ -73,7 +85,11 @@ its first fire would otherwise be the 1st of the month at 09:00.
    ```
 
    Better: add the same line to `scripts/vps/register-schedules.sh` (it's idempotent) so
-   the roster stays reproducible, then re-run it.
+   the roster stays reproducible, then re-run it. If your recipe declares the
+   `google_accounts` parameter and you use `USER_GOOGLE_EMAILS`, don't register the repo
+   path directly — add the job to `register-schedules.sh` so it registers the rendered
+   copy with the account roster baked in (a directly-registered repo path would sweep
+   only the primary).
 
 4. **Confirm in the Scheduler UI** — open Goose Desktop (connected to the brain), find
    the schedule, hit run-now in the Desktop Scheduler UI, and check that the email
@@ -94,9 +110,9 @@ it. Two distinct channels, deliberately kept apart:
 
 - **Content: each scheduled recipe sends ONE self-addressed email via the Gmail send
   tool as its explicit final step.** Sender and recipient are both the owner's
-  authenticated address — the recipes' instructions make that single send the only
-  permitted Gmail write to any recipient, so delivery stays a fixed step, never model
-  improvisation. The subjects: `Morning brief — <date>` (daily),
+  **primary** account (`USER_GOOGLE_EMAIL`) — the recipes' instructions make that
+  single send the only permitted Gmail write to any recipient, so delivery stays a
+  fixed step, never model improvisation. The subjects: `Morning brief — <date>` (daily),
   `Inbox triage — action needed` (ONLY when action-needed items exist — otherwise
   no email at all and the final message is exactly `NO_ACTION_NEEDED`),
   `Weekly review — <date>` (the report is **sent**, not left as a draft),
