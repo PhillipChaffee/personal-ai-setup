@@ -182,7 +182,7 @@ The vault is Tier 3 — the full policy is
    app (or Desktop against the brain), run the `vault-qa` recipe with a
    question about an ingested document. Confirm the answer is grounded in the
    file *and* that the session shows provider `together` /
-   `deepseek-ai/DeepSeek-V4-Flash`.
+   `deepseek-ai/DeepSeek-V4-Flash-0731`.
 2. **health-followups end to end** — on the brain:
    `goose schedule run-now --schedule-id health-followups`. Confirm:
    `health/appointments.md` gained entries, the commit was pushed to the

@@ -31,7 +31,7 @@ bursts.
 | `inbox-triage` | `0 0 9,13,17 * * MON-FRI` | zen-openai / `minimax-m2.7` | Gmail labels + drafts (**never auto-send**); ntfy only if action needed |
 | `weekly-review` | `0 0 17 * * SUN` (Sun 17:00) | zen-openai / `kimi-k2.6` | self-addressed Gmail draft (**never sent**) + ntfy report |
 | `health-followups` | `0 30 18 * * SUN` (Sun 18:30) | together / `Qwen/Qwen3.5-397B-A17B` | pulls, appends to, commits + pushes `/data/life-vault/health/appointments.md`; PHI-free push ("Health review ready: N items") |
-| `vault-qa` | on-demand, not scheduled | together / `deepseek-ai/DeepSeek-V4-Flash` | interactive session on the brain; developer extension only |
+| `vault-qa` | on-demand, not scheduled | together / `deepseek-ai/DeepSeek-V4-Flash-0731` | interactive session on the brain; developer extension only |
 | `budget-checkin` | `0 0 9 1 * *` (1st of month, 09:00) | together / `openai/gpt-oss-120b` | ntfy summary vs `budget.md` — **disable after deploy** until you've picked a budgeting source |
 
 `scripts/vps/register-schedules.sh` registers this whole roster idempotently and prints

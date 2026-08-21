@@ -49,7 +49,7 @@ Notes on reading the table:
 - "OpenCode → Zen" rows run in the OpenCode CLI (your coding driver), connected to Zen via
   `/connect`. They never pass through Goose or the brain.
 - Together model IDs are full registry IDs: `openai/gpt-oss-120b`,
-  `Qwen/Qwen3.5-397B-A17B`, and `deepseek-ai/DeepSeek-V4-Flash` — Together publishes dated
+  `Qwen/Qwen3.5-397B-A17B`, and `deepseek-ai/DeepSeek-V4-Flash-0731` — Together publishes dated
   variants of DeepSeek V4 Flash, so confirm the exact live ID with
   `scripts/verify/pin-models.sh` before pinning it anywhere new.
 - DeepSeek V4 Flash is priced differently per route: flat $0.14/$0.28 with 1M context on
