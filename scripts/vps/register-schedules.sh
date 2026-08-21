@@ -29,6 +29,38 @@ esac
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+# Multi-account roster: pick up USER_GOOGLE_EMAILS from the brain's secrets
+# when it isn't already in the environment (manual SSH runs). Harmless when
+# the file is absent or the var unset — single-account behavior is unchanged.
+if [[ -z "${USER_GOOGLE_EMAILS:-}" ]] && [[ -r /data/secrets.env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  . /data/secrets.env
+  set +a
+fi
+
+# Where rendered recipe copies live (docs/setup/30-google-oauth.md §8). The
+# native scheduler runs recipes with their parameter DEFAULTS — it cannot
+# pass values — so when USER_GOOGLE_EMAILS is set, each recipe that declares
+# the google_accounts parameter is registered from a copy whose default IS
+# the roster. The copies sit on /data (encrypted, untracked): the personal
+# roster never lands in the repo. Re-running this script re-renders, so
+# roster changes propagate the same way cron changes do.
+RENDER_DIR=/data/rendered-recipes
+
+# render_recipe <src> <dst>: bake the roster into the google_accounts
+# parameter default (the first `default: ""` after `key: google_accounts`).
+render_recipe() {
+  awk -v roster="$USER_GOOGLE_EMAILS" '
+    /key: google_accounts/ { in_param = 1 }
+    in_param && /default: ""/ {
+      sub(/default: ""/, "default: \"" roster "\"")
+      in_param = 0
+    }
+    { print }
+  ' "$1" >"$2"
+}
+
 # Headless box: no Secret Service keyring, and schedule subcommands need no
 # secrets anyway.
 export GOOSE_DISABLE_KEYRING=1
@@ -64,6 +96,14 @@ for id in "${ORDER[@]}"; do
     echo "ERROR: recipe not found: $recipe" >&2
     exit 1
   fi
+  source_recipe="$recipe"
+  if [[ -n "${USER_GOOGLE_EMAILS:-}" ]] && grep -q 'key: google_accounts' "$recipe"; then
+    mkdir -p "$RENDER_DIR"
+    rendered="$RENDER_DIR/$id.yaml"
+    render_recipe "$recipe" "$rendered"
+    source_recipe="$rendered"
+    echo "==> $id: multi-account roster baked into rendered copy ($rendered)"
+  fi
   if grep -q -- "$id" <<<"$EXISTING"; then
     echo "==> $id: already registered — removing and re-adding (no update subcommand)"
     "$GOOSE_BIN" schedule remove --schedule-id "$id"
@@ -73,7 +113,7 @@ for id in "${ORDER[@]}"; do
   "$GOOSE_BIN" schedule add \
     --schedule-id "$id" \
     --cron "${CRONS[$id]}" \
-    --recipe-source "$recipe"
+    --recipe-source "$source_recipe"
 done
 
 # budget-checkin ships paused until a budgeting source is picked. The 1.x CLI

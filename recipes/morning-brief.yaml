@@ -4,40 +4,72 @@
 # The recipe delivers its own result: its explicit final step emails the
 # digest to the account owner via the Gmail send tool (self-addressed only),
 # then prints the digest as the final message for the session record.
+#
+# Multi-account: the google_accounts parameter carries the USER_GOOGLE_EMAILS
+# roster (first entry = primary). run-recipe.sh passes it from the
+# environment; the native scheduler can't pass parameters, so
+# register-schedules.sh registers a rendered copy with the roster baked into
+# the default when USER_GOOGLE_EMAILS is set (docs/setup/30-google-oauth.md §8).
 version: 1.0.0
 title: Morning Brief
 description: Daily digest of today's calendar, unread important email, and due tasks.
+
+parameters:
+  - key: google_accounts
+    input_type: string
+    requirement: optional
+    default: ""
+    description: >-
+      Comma-separated Google account emails to sweep, first entry = the
+      primary (delivery) account. Empty means the single default account
+      workspace-mcp is configured with.
 
 instructions: |
   You are running unattended as a scheduled job. Nobody can answer questions,
   so never ask any. If a tool call fails, retry it once; if it still fails,
   continue with what you have and note the gap in the digest.
 
-  Gather, in this order:
+  Accounts:
+  - Google accounts roster (comma-separated, may be empty): "{{ google_accounts }}"
+  - If the roster is empty, work with the single default account the
+    workspace-mcp tools use when no account is specified.
+  - If the roster lists accounts, repeat the gathering steps below for EACH
+    listed account by passing that account's address as the
+    user_google_email argument on every workspace-mcp tool call. The FIRST
+    address in the roster is the PRIMARY account.
+  - With more than one account, prefix digest lines with a short account tag
+    (the part before the @, e.g. "[phil]") so items are labeled by account.
+
+  Gather, in this order (per account):
   1. Today's calendar events (Google Calendar via workspace-mcp): start time,
      title, and location or video link if present.
   2. Unread email in the inbox that looks important (Gmail via workspace-mcp):
      sender and subject only. Skip newsletters, promotions, and automated
      notifications.
 
-  Then compose ONE compact plain-text digest (no markdown tables):
+  Then compose ONE compact plain-text digest (no markdown tables) covering
+  all accounts:
   - one headline line: today's date and how busy the day looks
-  - "Calendar:" — one line per event, chronological
-  - "Email:" — one line per message, at most 5
+  - "Calendar:" — one line per event, chronological across accounts
+  - "Email:" — one line per message, at most 5 per account
   - omit any section that is empty
 
   Delivery (explicit final step — this run emails its own result):
   - Send the finished digest as ONE email using the Gmail send tool,
-    addressed to your own account (the authenticated user's address —
-    sender and recipient are the same), subject:
-    "Morning brief — <today's date>", body: the digest as plain text.
+    addressed to your own PRIMARY account (the first roster entry, or the
+    authenticated user's address when the roster is empty — sender and
+    recipient are the same, and the send is made from the primary account),
+    subject: "Morning brief — <today's date>", body: the digest as plain
+    text.
   - Then END by printing the same digest as your final message (it becomes
     the run's session record), with no commentary before or after it.
 
   Hard rules:
-  - Gmail and Calendar are otherwise read-only in this run: the single
-    self-addressed delivery email above is the ONLY send, and you never
-    modify, archive, or label anything. Never email any other recipient.
+  - Gmail and Calendar are otherwise read-only in this run — in EVERY
+    account: the single self-addressed delivery email from the primary
+    account above is the ONLY send, and you never modify, archive, or label
+    anything. Never email any other recipient, and never send anything from
+    a non-primary account.
   - No shell commands in this run.
 
 prompt: |

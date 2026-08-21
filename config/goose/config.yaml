@@ -116,7 +116,11 @@ extensions:
       - calendar
       - tasks
     envs:
-      # Replace with your Gmail address — the account whose consent you grant.
+      # Replace with your PRIMARY Gmail address — the default account for
+      # tool calls that don't name one. More accounts? Run one consent dance
+      # each (docs/setup/30-google-oauth.md §8); tokens store side by side
+      # and any authorized account is reachable per call via the tools'
+      # user_google_email argument — this default stays the primary.
       USER_GOOGLE_EMAIL: you@example.com
     env_keys:
       - GOOGLE_OAUTH_CLIENT_ID

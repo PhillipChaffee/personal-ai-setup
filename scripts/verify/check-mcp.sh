@@ -13,7 +13,10 @@ usage() {
 Usage: check-mcp.sh [--help]
 
 Runs three smoke tests through goose's configured extensions:
-  1. Gmail    — subjects of the 3 most recent inbox emails (workspace-mcp)
+  1. Gmail    — subjects of the 3 most recent inbox emails (workspace-mcp).
+     With USER_GOOGLE_EMAILS set (comma-separated multi-account roster,
+     docs/setup/30-google-oauth.md §8) the check runs once PER account so
+     every stored consent is exercised, not just the default account's.
   2. Todoist  — today's tasks (first-party remote MCP)
   3. Playwright — title of https://example.com (SKIPPED unless the playwright
      extension is enabled in ~/.config/goose/config.yaml)
@@ -89,8 +92,27 @@ echo "NOTE: first-run auth may open a browser (Google OAuth consent) or print"
 echo "      an auth URL (Todoist). Complete it, then re-run this script."
 
 # ---- 1. Gmail via workspace-mcp --------------------------------------------
-run_check "Gmail (workspace-mcp)" \
-  "Using the Google Workspace tools, list the subject lines of the 3 most recent emails in my inbox. Output only the three subject lines, one per line. Do not modify, label, or send anything."
+# One smoke test per account in USER_GOOGLE_EMAILS (falls back to
+# USER_GOOGLE_EMAIL, then to the extension's default account). Each account's
+# check passes its address as the tools' user_google_email argument, so a
+# missing consent for a secondary account fails ITS check, not the primary's.
+ACCOUNTS="${USER_GOOGLE_EMAILS:-${USER_GOOGLE_EMAIL:-}}"
+if [ -n "$ACCOUNTS" ]; then
+  OLD_IFS="$IFS"
+  IFS=','
+  for account in $ACCOUNTS; do
+    IFS="$OLD_IFS"
+    account="$(printf '%s' "$account" | tr -d '[:space:]')"
+    [ -n "$account" ] || { IFS=','; continue; }
+    run_check "Gmail ($account)" \
+      "Using the Google Workspace tools, list the subject lines of the 3 most recent emails in the inbox of the Google account $account. Pass user_google_email=$account on every tool call. Output only the three subject lines, one per line. Do not modify, label, or send anything."
+    IFS=','
+  done
+  IFS="$OLD_IFS"
+else
+  run_check "Gmail (workspace-mcp)" \
+    "Using the Google Workspace tools, list the subject lines of the 3 most recent emails in my inbox. Output only the three subject lines, one per line. Do not modify, label, or send anything."
+fi
 
 if [ "$FAIL_COUNT" -gt 0 ]; then
   echo "    Hints: is workspace-mcp enabled in $CONFIG? Are"
@@ -98,6 +120,8 @@ if [ "$FAIL_COUNT" -gt 0 ]; then
   echo "    (Keychain export / secrets.env)? Was the OAuth consent completed"
   echo "    and the GCP app published 'In production'? (docs/setup/30-google-oauth.md"
   echo "    — a 'Testing' app expires refresh tokens every 7 days.)"
+  echo "    A failure for one specific account usually means that account's"
+  echo "    consent dance was never completed — docs/setup/30-google-oauth.md §8."
 fi
 
 # ---- 2. Todoist remote MCP (only if enabled) --------------------------------
