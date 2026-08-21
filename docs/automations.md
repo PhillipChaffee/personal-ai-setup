@@ -76,8 +76,10 @@ its first fire would otherwise be the 1st of the month at 09:00.
    the roster stays reproducible, then re-run it.
 
 4. **Confirm in the Scheduler UI** — open Goose Desktop (connected to the brain), find
-   the schedule, hit run-now, and check that the email arrives in your inbox and the
-   run's session looks right. CLI equivalent: `goose schedule run-now --schedule-id my-job`, then
+   the schedule, hit run-now in the Desktop Scheduler UI, and check that the email
+   arrives in your inbox and the run's session looks right. CLI equivalent:
+   `scripts/common/run-recipe.sh my-job` (NOT `goose schedule run-now` from a shell —
+   run-now detaches into the CLI process and dies with it, verified on 1.46.0), then
    `goose schedule sessions --schedule-id my-job`.
 
 Day-to-day management: `goose schedule list` / `run-now` / `sessions` / `remove` on the
