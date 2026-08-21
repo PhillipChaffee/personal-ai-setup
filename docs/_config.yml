@@ -1,0 +1,12 @@
+title: personal-ai-setup
+description: >-
+  Blueprint for a self-owned personal AI: one Goose agent with one shared
+  history on a hardened VPS, privacy-tiered model routing, native automations.
+theme: jekyll-theme-primer
+plugins:
+  - jekyll-relative-links
+  - jekyll-optional-front-matter
+  - jekyll-titles-from-headings
+relative_links:
+  enabled: true
+  collections: false
