@@ -32,10 +32,14 @@ bursts.
 | `weekly-review` | `0 0 17 * * SUN` (Sun 17:00) | zen-openai / `kimi-k2.6` | self-addressed Gmail draft (**never sent**) + ntfy report |
 | `health-followups` | `0 30 18 * * SUN` (Sun 18:30) | together / `Qwen/Qwen3.5-397B-A17B` | pulls, appends to, commits + pushes `/data/life-vault/health/appointments.md`; PHI-free push ("Health review ready: N items") |
 | `vault-qa` | on-demand, not scheduled | together / `deepseek-ai/DeepSeek-V4-Flash` | interactive session on the brain; developer extension only |
-| `budget-checkin` | `0 0 9 1 * *` (1st of month, 09:00) | together / `openai/gpt-oss-120b` | ntfy summary vs `budget.md` — **ships paused** until you've picked a budgeting source |
+| `budget-checkin` | `0 0 9 1 * *` (1st of month, 09:00) | together / `openai/gpt-oss-120b` | ntfy summary vs `budget.md` — **disable after deploy** until you've picked a budgeting source |
 
 `scripts/vps/register-schedules.sh` registers this whole roster idempotently and prints
-`goose schedule list` when done; `budget-checkin` is left in its paused state.
+`goose schedule list` when done. One caveat it announces loudly: goose 1.x has no
+`schedule pause` CLI, so on a headless deploy `budget-checkin` registers **active**.
+Pause it from the Desktop Scheduler UI once connected to the brain, or
+`goose schedule remove --schedule-id budget-checkin` until you have a budgeting source —
+its first fire would otherwise be the 1st of the month at 09:00.
 
 ## Adding a new automation, end to end
 
@@ -115,7 +119,10 @@ watchdog's failure alert.
 The scheduler has known bugs — background jobs running in chat mode and blocking tool
 execution ([block/goose#3882](https://github.com/block/goose/issues/3882)) and Scheduler
 UI timing/session-loading failures
-([block/goose#5045](https://github.com/block/goose/issues/5045)). Symptoms: runs not
+([block/goose#5045](https://github.com/block/goose/issues/5045)). (These issue links use
+the `block/goose` org where they were filed; goose has since moved to the Linux
+Foundation's `aaif-goose` org, which the rest of this repo links to — both currently
+serve the same project.) Symptoms: runs not
 firing on time, runs hanging mid-tools, or the UI showing stale state.
 
 The repo ships **disabled** systemd units: the template service
