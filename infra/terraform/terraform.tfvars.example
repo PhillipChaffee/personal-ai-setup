@@ -1,0 +1,25 @@
+# Copy to terraform.tfvars and fill in real values.
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# WARNING: the real terraform.tfvars holds secrets (Hetzner API token,
+# Tailscale auth key) and is gitignored — NEVER commit it, and never put
+# real values in this example file. Terraform state (*.tfstate) also
+# contains these values in plaintext and is gitignored for the same reason.
+
+# Hetzner Cloud console > your project > Security > API tokens > Read & Write.
+hcloud_token = "<YOUR-HCLOUD-API-TOKEN>"
+
+# Your SSH public key, e.g. the contents of ~/.ssh/id_ed25519.pub.
+ssh_public_key = "ssh-ed25519 AAAA...your-key... you@example.com"
+
+# Tailscale admin console > Settings > Keys > Generate auth key.
+# Make it: Reusable + Pre-authorized + Tagged (e.g. tag:server).
+# Auth keys expire (90 days max) — regenerate before re-provisioning.
+tailscale_authkey = "tskey-auth-<YOUR-TAILSCALE-AUTH-KEY>"
+
+# Optional overrides (defaults shown; see variables.tf for the caveats).
+# server_type      = "cx22" # US locations may require cpx21 instead
+# location         = "ash"  # fsn1 | nbg1 | hel1 | ash | hil | sin
+# timezone         = "America/New_York"
+# data_volume_size = 10

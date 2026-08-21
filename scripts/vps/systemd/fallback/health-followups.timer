@@ -1,0 +1,22 @@
+# DISABLED FALLBACK — see goose-recipe@.service in this directory and
+# docs/automations.md. deploy-vps.sh installs this file as
+# /etc/systemd/system/goose-recipe@health-followups.timer (renamed so
+# `systemctl enable --now goose-recipe@health-followups.timer` matches the
+# docs) but never enables it; enabling is the deliberate, manual flip when
+# the native goose scheduler misbehaves.
+#
+# Mirrors the native cron "0 30 18 * * SUN" — Sunday 18:30, server-local
+# time (the timezone set in infra/terraform).
+
+[Unit]
+Description=Fallback timer: health-followups (Sunday 18:30)
+
+[Timer]
+Unit=goose-recipe@health-followups.service
+OnCalendar=Sun *-*-* 18:30:00
+# Persistent: like weekly-review, the next natural slot is a week away —
+# catch up if Sunday 18:30 was missed.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

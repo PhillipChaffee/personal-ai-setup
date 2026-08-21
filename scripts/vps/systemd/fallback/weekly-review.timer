@@ -1,0 +1,22 @@
+# DISABLED FALLBACK — see goose-recipe@.service in this directory and
+# docs/automations.md. deploy-vps.sh installs this file as
+# /etc/systemd/system/goose-recipe@weekly-review.timer (renamed so
+# `systemctl enable --now goose-recipe@weekly-review.timer` matches the
+# docs) but never enables it; enabling is the deliberate, manual flip when
+# the native goose scheduler misbehaves.
+#
+# Mirrors the native cron "0 0 17 * * SUN" — Sunday 17:00, server-local
+# time (the timezone set in infra/terraform).
+
+[Unit]
+Description=Fallback timer: weekly-review (Sunday 17:00)
+
+[Timer]
+Unit=goose-recipe@weekly-review.service
+OnCalendar=Sun *-*-* 17:00:00
+# Persistent: the weekly review is worth catching up on if Sunday 17:00
+# was missed — there is no "next slot" until a week later.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

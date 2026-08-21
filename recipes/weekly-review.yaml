@@ -1,0 +1,87 @@
+# Weekly review — Sunday synthesis of the week's calendar, email, and tasks.
+# Scheduled on the brain: goose schedule add --schedule-id weekly-review \
+#   --cron "0 0 17 * * SUN" --recipe-source recipes/weekly-review.yaml
+# The report is left as a Gmail DRAFT to yourself (never sent). The recipe
+# delivers its own ntfy push as an explicit final step by running
+# scripts/common/notify.sh via the developer extension's shell.
+version: 1.0.0
+title: Weekly Review
+description: Synthesizes the past week from calendar, email, and tasks; leaves a self-addressed draft email and reports the summary.
+
+instructions: |
+  You are running unattended as a scheduled job. Nobody can answer questions,
+  so never ask any. If a tool call fails, retry it once; if it still fails,
+  continue and note the gap in the report.
+
+  Build a review of the past 7 days and a look at the next 7:
+
+  1. Calendar (via workspace-mcp): meetings and events from the past week —
+     what took the most time, anything notable. Then the coming week's
+     commitments and anything that needs preparation.
+  2. Email (via workspace-mcp): notable threads from the past week — decisions
+     made, threads still waiting on you, threads where you are waiting on
+     someone else. Subjects and senders, not full bodies.
+  3. Tasks (Todoist): completed this week, slipped/overdue, and what is due
+     next week.
+
+  Compose a plain-text report with these sections:
+  - "The week": 3-5 sentence narrative summary
+  - "Done": bullet list
+  - "Open loops": bullet list (waiting-on-you first)
+  - "Next week": bullet list of commitments and suggested priorities
+
+  Then create a Gmail DRAFT addressed to your own address (the authenticated
+  account's email — look it up from the Gmail profile if needed) with subject
+  "Weekly review — <YYYY-MM-DD>" and the report as the body.
+
+  Delivery (explicit final step — this run delivers its own push):
+  - After the draft is saved, send the report with notify.sh via the
+    developer extension's shell, passing it on stdin:
+      /home/agent/personal-ai-setup/scripts/common/notify.sh -t "Weekly review" <<'REPORT'
+      <the report>
+      REPORT
+  - Then END by printing the full report as your final message, with no
+    commentary before or after it.
+
+  Hard rules:
+  - NEVER send the email. Draft only. Do not use any tool that sends,
+    replies, or forwards.
+  - No other writes: do not modify calendar events, labels, or tasks.
+  - The ONLY shell command you may run is
+    /home/agent/personal-ai-setup/scripts/common/notify.sh, exactly once,
+    for the delivery step above. Never hand-roll a curl or any other
+    delivery path.
+
+prompt: |
+  Run my weekly review now. Leave the report as a draft email to myself,
+  deliver it via notify.sh as your final step, and end by printing the
+  report as your final message.
+
+extensions:
+  - type: builtin
+    name: developer
+    timeout: 300
+  - type: stdio
+    name: workspace-mcp
+    description: Google Workspace MCP (Gmail + Calendar; only write is a draft)
+    cmd: uvx
+    args:
+      - workspace-mcp
+      - --tools
+      - gmail
+      - calendar
+    timeout: 300
+    env_keys:
+      - GOOGLE_OAUTH_CLIENT_ID
+      - GOOGLE_OAUTH_CLIENT_SECRET
+  - type: streamable_http
+    name: todoist
+    description: Todoist first-party remote MCP
+    uri: https://ai.todoist.net/mcp
+    timeout: 300
+
+settings:
+  goose_provider: zen-openai
+  # model id verified as of 2026-08-20
+  goose_model: kimi-k2.6
+  temperature: 0.3
