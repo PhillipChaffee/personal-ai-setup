@@ -5,9 +5,9 @@
 #   --cron "0 30 18 * * SUN" --recipe-source recipes/health-followups.yaml
 # This is the ONLY recipe that syncs the vault: it pulls at the start and
 # commits + pushes its own change at the end (docs/setup/60-vault-setup.md).
-# It also delivers its own push as the explicit final step, via
-# scripts/common/notify.sh — and that push must be PHI-free: the count line
-# "Health review ready: N items", nothing else.
+# It also emails its own result as the explicit final step (one
+# self-addressed email via the Gmail send tool) — and that email must be
+# PHI-free: the count line "Health review ready: N items", nothing else.
 version: 1.0.0
 title: Health Follow-ups
 description: Reviews vault appointment notes against the calendar, records follow-ups owed, and reports only a PHI-free count.
@@ -47,16 +47,20 @@ instructions: |
      must stay generic. If nothing changed, skip the commit and push.
   7. Count N = the number of OPEN (unticked) items in "## Follow-ups" after
      your update.
-  8. Deliver the PHI-free count as the explicit final step:
-       /home/agent/personal-ai-setup/scripts/common/notify.sh -t "Health follow-ups" "Health review ready: N items"
-     (with N replaced by the count).
+  8. Deliver the PHI-free count as the explicit final step: send ONE email
+     via the Gmail send tool, addressed to your own account (sender and
+     recipient are the same authenticated address), subject
+     "Health follow-ups", body exactly:
+     Health review ready: N items
+     (with N replaced by the count). This self-addressed delivery email is
+     your only Gmail write.
 
   Hard rules:
   - The calendar is read-only for this job; the only file you may modify is
     /data/life-vault/health/appointments.md, and the only git repo you may
     touch is /data/life-vault — exactly the pull/add/commit/push commands
     above, nothing more.
-  - The notify.sh push and your final message must contain NO protected
+  - The delivery email and your final message must contain NO protected
     health information — no names, providers, conditions, dates, or file
     contents. Both must be exactly one line, in exactly this form:
     Health review ready: N items
@@ -64,10 +68,11 @@ instructions: |
     line and nothing else. If something failed, still send/print only a
     single generic line such as "Health review failed: see brain logs" —
     never details.
+  - Never email any recipient other than your own address.
 
 prompt: |
   Run the weekly health follow-up review now. Remember: pull first, commit
-  and push your change, deliver via notify.sh, and both the push and the
+  and push your change, email me the count, and both the email and the
   final message are the single PHI-free count line only.
 
 extensions:
@@ -82,6 +87,7 @@ extensions:
       - workspace-mcp
       - --tools
       - calendar
+      - gmail
     timeout: 300
     env_keys:
       - GOOGLE_OAUTH_CLIENT_ID

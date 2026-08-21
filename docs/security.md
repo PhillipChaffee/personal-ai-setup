@@ -99,7 +99,7 @@ Manual unlock is the accepted cost of not storing the key server-side; reboots a
   CI; audited by the [public-repo.md](public-repo.md) checklist.
 
 The full secret roster: `OPENCODE_ZEN_API_KEY`, `TOGETHER_API_KEY`,
-`GOOSE_SERVER__SECRET_KEY`, `NTFY_TOPIC`, `TAVILY_API_KEY` (optional),
+`GOOSE_SERVER__SECRET_KEY`, `NTFY_TOPIC`, `NTFY_EMAIL`, `TAVILY_API_KEY` (optional),
 `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` — plus, outside env vars: the LUKS
 passphrase (password manager only), the Tailscale auth key (Terraform tfvars, untracked),
 and the Google OAuth token files on `/data`.
@@ -125,7 +125,7 @@ Run these on a schedule — an untested recovery path is a broken one.
 4. `sudo /home/agent/personal-ai-setup/scripts/vps/luks-unlock.sh` — enter the passphrase
    from your password manager.
 5. `systemctl status goose-serve` shows active; run `scripts/verify/check-brain.sh`;
-   confirm the next scheduled push arrives.
+   confirm the next scheduled digest email arrives.
 
 ### Key rotation
 
@@ -140,7 +140,7 @@ new → update stores (Keychain on Mac, `/data/secrets.env` on brain) → restar
 | `GOOSE_SERVER__SECRET_KEY` | Generate locally (`openssl rand -hex 32`) | Update secrets.env, restart goose-serve, re-enter on Desktop and iOS clients |
 | Tailscale | Admin console → Machines / Keys | Auth keys are one-time (bootstrap); rotate device keys by re-authing; remove stale devices |
 | Google OAuth client secret | GCP console → Credentials | Re-run the workspace-mcp auth flow; re-transfer tokens per `docs/setup/30-google-oauth.md` |
-| `NTFY_TOPIC` | Pick a new random topic | Update secrets.env + Keychain + phone subscription; old topic is burned |
+| `NTFY_TOPIC` | Pick a new random topic | Update secrets.env + Keychain; old topic is burned |
 | LUKS passphrase | `sudo cryptsetup luksChangeKey /dev/disk/by-id/<volume>` | Update the password manager first; test unlock before closing the session |
 | SSH bootstrap key | `ssh-keygen`, update tfvars + Hetzner | Rarely needed once Tailscale SSH is live |
 

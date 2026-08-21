@@ -2,10 +2,10 @@
 # Registered PAUSED/disabled by default; enable it once ledger.csv is real:
 #   goose schedule add --schedule-id budget-checkin \
 #     --cron "0 0 9 1 * *" --recipe-source recipes/budget-checkin.yaml
-# Runs on Together AI (ZDR). The recipe delivers its own push as an explicit
-# final step via scripts/common/notify.sh; the pushed summary must never
+# Runs on Together AI (ZDR). The recipe emails its own summary as an explicit
+# final step via one self-addressed Gmail send; the emailed summary must never
 # contain account numbers or transaction identifiers. Data stays offline:
-# no git, and no network beyond that one notify.sh call.
+# no git, and no network beyond that one self-addressed delivery email.
 version: 1.0.0
 title: Budget Check-in
 description: Compares last month's spending per category against budget targets and reports a compact summary.
@@ -36,31 +36,43 @@ instructions: |
   - one closing sentence if anything needs attention (e.g. a category >20%
     over target), otherwise none
 
-  Delivery (explicit final step — this run delivers its own push):
-  - Send the summary with notify.sh, passing it on stdin:
-      /home/agent/personal-ai-setup/scripts/common/notify.sh -t "Budget check-in" <<'SUMMARY'
-      <the summary>
-      SUMMARY
+  Delivery (explicit final step — this run emails its own result):
+  - Send the summary as ONE email via the Gmail send tool, addressed to
+    your own account (sender and recipient are the same authenticated
+    address), subject "Budget check-in", body: the summary. Never email any
+    other recipient.
   - Then END by printing the same summary as your final message, with no
     commentary before or after it.
 
   Hard rules:
   - Read-only: do not modify ledger.csv or budget.md, and never touch git.
-  - The summary goes to a push notification. It must NEVER contain account
+  - The summary leaves the machine as an email. It must NEVER contain account
     numbers, card numbers, bank or institution names, or individual
     transaction descriptions — categories and totals only.
-  - The files on disk are the only input, and the single notify.sh call
+  - The files on disk are the only input, and the single delivery email
     above is the only network action allowed in this run.
 
 prompt: |
   Run the monthly budget check-in for the most recent complete month.
-  Deliver the summary via notify.sh as your final step, then end by
+  Email me the summary as your final step, then end by
   printing only the summary.
 
 extensions:
   - type: builtin
     name: developer
     timeout: 300
+  - type: stdio
+    name: workspace-mcp
+    description: Google Workspace MCP (Gmail — one self-addressed delivery email only)
+    cmd: uvx
+    args:
+      - workspace-mcp
+      - --tools
+      - gmail
+    timeout: 300
+    env_keys:
+      - GOOGLE_OAUTH_CLIENT_ID
+      - GOOGLE_OAUTH_CLIENT_SECRET
 
 settings:
   goose_provider: together

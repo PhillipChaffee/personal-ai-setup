@@ -12,6 +12,13 @@
 # The topic name is a secret: anyone who knows it can read and send on it.
 # NTFY_SERVER overrides the ntfy server base URL (default https://ntfy.sh) —
 # for a self-hosted ntfy, or a local mock in tests.
+#
+# ROLE: this is the FAILURE-ALERT channel (run-recipe.sh), not content
+# delivery — recipes email their results directly via Gmail. When NTFY_EMAIL
+# is set, ntfy.sh forwards each message to that address (free tier caps
+# ~5 emails/day — fine for rare alerts, which is why digests don't go
+# through here). Without NTFY_EMAIL it's a plain topic push for anyone
+# who does run the ntfy app.
 set -euo pipefail
 
 TITLE="personal-ai"
@@ -55,9 +62,15 @@ if [ -z "${NTFY_TOPIC:-}" ]; then
   exit 0
 fi
 
+EMAIL_ARGS=()
+if [ -n "${NTFY_EMAIL:-}" ]; then
+  EMAIL_ARGS=(-H "Email: $NTFY_EMAIL")
+fi
+
 if ! curl -fsS --max-time 15 -o /dev/null \
     -H "Title: $TITLE" \
     -H "Priority: $PRIORITY" \
+    ${EMAIL_ARGS[@]+"${EMAIL_ARGS[@]}"} \
     --data-binary "$MESSAGE" \
     "${NTFY_SERVER:-https://ntfy.sh}/${NTFY_TOPIC}"; then
   echo "notify.sh: ERROR: POST to ntfy failed — notification lost." >&2

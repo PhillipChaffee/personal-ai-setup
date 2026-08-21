@@ -1,9 +1,9 @@
 # Inbox triage — labels unread mail and drafts replies; NEVER sends anything.
 # Scheduled on the brain: goose schedule add --schedule-id inbox-triage \
 #   --cron "0 0 9,13,17 * * MON-FRI" --recipe-source recipes/inbox-triage.yaml
-# The recipe notifies ONLY when action-needed items exist (final step runs
-# scripts/common/notify.sh via the developer extension's shell). Otherwise it
-# sends nothing and its final message is exactly NO_ACTION_NEEDED.
+# The recipe emails a summary ONLY when action-needed items exist (one
+# self-addressed email via the Gmail send tool — the single exception to
+# drafts-only). Otherwise its final message is exactly NO_ACTION_NEEDED.
 version: 1.0.0
 title: Inbox Triage
 description: Labels unread inbox mail, drafts (never sends) replies, and reports only what needs your attention.
@@ -29,40 +29,33 @@ instructions: |
     not use it — drafts only.
   - Do not archive, delete, mark read/unread, or mark spam. Labels and drafts
     are your only Gmail writes.
-  - The ONLY shell command you may run is
-    /home/agent/personal-ai-setup/scripts/common/notify.sh, at most once,
-    for the delivery rules below. Never hand-roll a curl or any other
-    delivery path.
+  - No shell commands in this run.
 
   Delivery and final message rules (follow these exactly):
   - If one or more messages are action-needed: compose a SHORT plain-text
     summary listing ONLY the action-needed items — one line each:
     sender — subject — what is needed (and whether a draft was left).
-    Do not list fyi or newsletter items. Deliver it yourself via the
-    developer extension's shell, passing the summary on stdin:
-      /home/agent/personal-ai-setup/scripts/common/notify.sh -t "Inbox triage" <<'SUMMARY'
-      <the summary>
-      SUMMARY
-    Then end by printing the same summary as your final message.
-  - If nothing is action-needed: send NO notification — do not run
-    notify.sh at all — and your final message must be exactly:
+    Do not list fyi or newsletter items. Deliver it as ONE email via the
+    Gmail send tool, addressed to your own account (sender and recipient
+    are the same authenticated address — this self-addressed delivery
+    email is the single exception to the drafts-only rule), subject
+    "Inbox triage — action needed". Then end by printing the same summary
+    as your final message.
+  - If nothing is action-needed: send NO email, and your final message must
+    be exactly:
     NO_ACTION_NEEDED
     with no other words, punctuation, or formatting.
-  - If you could not read the inbox at all: that failure IS worth a
-    notification — send a brief generic note via notify.sh (no message
-    contents) and say so briefly in your final message.
+  - If you could not read the inbox at all: end with a final message that
+    briefly says so — the scheduler's session record captures it.
 
 prompt: |
   Triage my unread inbox now. Follow the delivery and final-message rules
   exactly.
 
 extensions:
-  - type: builtin
-    name: developer
-    timeout: 300
   - type: stdio
     name: workspace-mcp
-    description: Google Workspace MCP (Gmail only — labels and drafts)
+    description: Google Workspace MCP (Gmail — labels, drafts, one self-addressed summary email)
     cmd: uvx
     args:
       - workspace-mcp

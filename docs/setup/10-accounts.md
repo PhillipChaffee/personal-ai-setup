@@ -113,11 +113,15 @@ tasks. If you later pick Todoist as your todo app:
    (gitignored). Never in the Keychain scripts, never in `secrets.env`, never
    in the repo.
 
-## 6. ntfy (push notifications)
+## 6. ntfy (failure-alert transport)
 
-No account at all — ntfy topics are open-by-name, which means **the topic name
-is the entire secret**. Anyone who knows it can read and send your
-notifications.
+ntfy carries exactly one thing in this setup: **failure alerts** from the
+automation watchdog, forwarded to your email. Automation *results* don't go
+through it at all — each recipe emails you directly via Gmail
+([`docs/automations.md`](../automations.md)). No app to install, nothing to
+subscribe to, and no account either — ntfy topics are open-by-name, which
+means **the topic name is the entire secret**. Anyone who knows it can read
+and send on it.
 
 1. Generate a topic name nobody will guess:
 
@@ -128,22 +132,25 @@ notifications.
 2. Treat the result exactly like a password: store it as `NTFY_TOPIC` (Mac
    Keychain now, `/data/secrets.env` in Phase 3). Never commit it, never paste
    it into an issue or chat.
-3. Install the **ntfy iOS app**
-   (<https://apps.apple.com/us/app/ntfy/id1625396347>) and subscribe to the
-   topic.
+3. Decide where failure alerts land: your own email address, stored as
+   `NTFY_EMAIL` alongside the topic (Keychain now, `/data/secrets.env` in
+   Phase 3). Recommended, and not a secret — it's just your address; when set,
+   `scripts/common/notify.sh` adds an `Email:` header so ntfy.sh forwards each
+   alert to your inbox.
 4. Test end-to-end:
 
    ```bash
-   curl -d "ntfy wired up" https://ntfy.sh/<your-topic>
+   curl -H "Email: <your-email>" -d "ntfy wired up" https://ntfy.sh/<your-topic>
    ```
 
-   The push should hit the iPhone within seconds.
+   The message should arrive in your inbox within a minute or two.
 
-Automations notify through `scripts/common/notify.sh`, which POSTs to
-`https://ntfy.sh/$NTFY_TOPIC`. Standing rule regardless of topic secrecy:
-pushes from sensitive jobs carry counts/titles only, **never PHI**
-([`docs/privacy.md`](../privacy.md)). Self-hosting ntfy is a roadmap item
-([`docs/roadmap.md`](../roadmap.md)).
+One number to know: ntfy.sh's free tier caps email forwarding at roughly
+5/day — plenty for rare failure alerts, and exactly why the recipes email
+their content directly instead of through this channel. Standing rule
+regardless of topic secrecy: alerts carry the recipe name only, **never model
+output or PHI** ([`docs/privacy.md`](../privacy.md)). Self-hosting ntfy is a
+roadmap item ([`docs/roadmap.md`](../roadmap.md)).
 
 ## 7. Web search key (optional)
 
@@ -180,7 +187,8 @@ means stored via `scripts/mac/keychain-secrets.sh`; "secrets.env" means
 |---|---|---|---|---|---|
 | OpenCode Zen API key | `OPENCODE_ZEN_API_KEY` | yes | yes | — | §1 (now) |
 | Together AI API key | `TOGETHER_API_KEY` | yes | yes | Pal Chat on iPhone (Phase 1) | §2 (now) |
-| ntfy topic | `NTFY_TOPIC` | yes | yes | ntfy iOS app subscription | §6 (now) |
+| ntfy topic | `NTFY_TOPIC` | yes | yes | — | §6 (now) |
+| Failure-alert email (recommended; not a secret) | `NTFY_EMAIL` | yes | yes | — | §6 (now) |
 | Tavily key (optional) | `TAVILY_API_KEY` | yes | yes | — | §7 |
 | Hetzner API token | `hcloud_token` in `terraform.tfvars` | no | no | `terraform.tfvars` only | §5 (Phase 3) |
 | Tailscale auth key | `tailscale_authkey` in `terraform.tfvars` | no | no | `terraform.tfvars` only | Phase 3 |
@@ -191,5 +199,5 @@ means stored via `scripts/mac/keychain-secrets.sh`; "secrets.env" means
 
 Cross-check before moving on: everything in the "now" rows exists, the two Zen
 cost-control settings are flipped, the Together privacy toggles are verified
-off, and the ntfy test push reached your phone. Then continue to
+off, and the ntfy test email reached your inbox. Then continue to
 [20-mac-setup.md](20-mac-setup.md).

@@ -14,7 +14,7 @@ Usage: check-brain.sh [--insecure] [--run-now] [--local] [--help]
               CA), so plain curl may refuse it; -k only skips verification
               for THIS smoke test — never weaken the clients.
   --run-now   trigger `goose schedule run-now --schedule-id morning-brief`
-              without prompting (costs one recipe run; sends a real push).
+              without prompting (costs one recipe run; sends a real email).
   --local     force local mode (default: auto-detected via /data/goose-data).
 
 Remote mode needs BRAIN_HOST set to the brain's tailnet name, e.g.:
@@ -52,7 +52,7 @@ fi
 GOOSE_BIN="goose"
 if [ "$MODE" = "local" ]; then
   command -v goose >/dev/null 2>&1 || GOOSE_BIN="/home/agent/.local/bin/goose"
-  # Load NTFY_TOPIC / GOOSE_SERVER__SECRET_KEY etc. for the checks below.
+  # Load GOOSE_SERVER__SECRET_KEY etc. for the checks below.
   if [ -z "${GOOSE_SERVER__SECRET_KEY:-}" ] && [ -r /data/secrets.env ]; then
     set -a
     # shellcheck disable=SC1091
@@ -170,7 +170,7 @@ fi
 
 # ---- 4. live fire: run-now morning-brief (optional) -------------------------
 if [ "$RUN_NOW" = "ask" ] && [ -t 0 ]; then
-  read -r -p "Trigger 'goose schedule run-now --schedule-id morning-brief' now? (one real run + one real push) [y/N] " ANSWER
+  read -r -p "Trigger 'goose schedule run-now --schedule-id morning-brief' now? (one real run + one real email) [y/N] " ANSWER
   case "$ANSWER" in y|Y|yes|YES) RUN_NOW="yes" ;; *) RUN_NOW="no" ;; esac
 elif [ "$RUN_NOW" = "ask" ]; then
   RUN_NOW="no"
@@ -183,13 +183,13 @@ if [ "$RUN_NOW" = "yes" ]; then
   fi
   if [ "$RC" -eq 0 ]; then
     pass "run-now morning-brief triggered"
-    echo "      NOW CONFIRM BY HAND: the ntfy push (sent by the recipe's own final"
-    echo "      notify.sh step) arrives on your iPhone within ~1-3 minutes."
-    echo "      No push => inspect the run's session (Desktop Scheduler UI, or"
+    echo "      NOW CONFIRM BY HAND: the digest email ('Morning brief — <date>',"
+    echo "      self-addressed, sent by the recipe's own final Gmail step) arrives"
+    echo "      in your inbox within ~1-3 minutes."
+    echo "      No email => inspect the run's session (Desktop Scheduler UI, or"
     echo "      'goose schedule sessions --schedule-id morning-brief') — a run that"
-    echo "      crashes before its notify step sends nothing — and check that"
-    echo "      NTFY_TOPIC in /data/secrets.env matches the topic the ntfy app"
-    echo "      subscribes to."
+    echo "      crashes before its delivery step sends nothing — and check that the"
+    echo "      Gmail tool works from the brain (docs/setup/30-google-oauth.md)."
   else
     fail "run-now morning-brief (exit $RC)"
   fi
