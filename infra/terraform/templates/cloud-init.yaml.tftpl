@@ -1,0 +1,55 @@
+#cloud-config
+# Rendered by Terraform (templatefile) into hcloud_server.brain user_data.
+# Runs exactly once on first boot. It only bootstraps the base OS, network
+# lockdown, and toolchain — the repo clone, secrets, systemd units, and
+# schedule registration all happen later via scripts/vps/deploy-vps.sh
+# over Tailscale SSH, and the /data volume is LUKS-formatted manually by
+# scripts/vps/luks-setup.sh. Nothing stateful is created here.
+
+timezone: ${timezone}
+
+# SSH is keys-only; password auth off everywhere.
+ssh_pwauth: false
+
+users:
+  - name: agent
+    groups: [sudo]
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    shell: /bin/bash
+    lock_passwd: true
+    ssh_authorized_keys:
+      - ${agent_ssh_public_key}
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - git
+  - jq
+  - curl
+  - ufw
+  - cryptsetup
+  - unattended-upgrades
+
+runcmd:
+  # 1) Join the tailnet first — with the Hetzner firewall dropping all public
+  #    inbound, Tailscale (outbound-initiated WireGuard) is the only way in.
+  #    --ssh enables Tailscale SSH alongside plain sshd-over-tailnet.
+  - curl -fsSL https://tailscale.com/install.sh | sh
+  - tailscale up --authkey '${tailscale_authkey}' --ssh --hostname ai-brain
+  # 2) Host firewall mirrors the cloud firewall: deny all inbound except the
+  #    tailnet interface. Defense in depth — either layer alone blocks public access.
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow in on tailscale0
+  - ufw --force enable
+  # 3) Toolchain for MCP servers: uv (Python, e.g. workspace-mcp via uvx) for
+  #    the agent user, and Node.js LTS system-wide (npx-launched servers).
+  - su - agent -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+  - curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
+  - apt-get install -y nodejs
+  # 4) Goose CLI for the agent user, pinned to a 1.x release (goose 2.0 churn
+  #    risk — bump GOOSE_VERSION deliberately; v1.46.0 verified 2026-08-20).
+  #    CONFIGURE=false skips the interactive wizard; binary lands in
+  #    /home/agent/.local/bin. Config comes later from the repo templates.
+  - su - agent -c 'curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh | GOOSE_VERSION=v1.46.0 CONFIGURE=false bash'

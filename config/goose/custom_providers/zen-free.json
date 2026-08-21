@@ -1,0 +1,12 @@
+{
+  "name": "zen-free",
+  "engine": "openai",
+  "display_name": "OpenCode Zen FREE — trains on your data",
+  "api_key_env": "OPENCODE_ZEN_API_KEY",
+  "base_url": "https://opencode.ai/zen/v1/chat/completions",
+  "models": [
+    { "name": "big-pickle", "context_limit": 131072 }
+  ],
+  "supports_streaming": true,
+  "requires_auth": true
+}
