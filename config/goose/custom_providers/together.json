@@ -1,7 +1,7 @@
 {
   "name": "together",
   "engine": "openai",
-  "display_name": "Together AI",
+  "display_name": "Together AI — ZDR, sensitive-safe",
   "api_key_env": "TOGETHER_API_KEY",
   "base_url": "https://api.together.xyz/v1/chat/completions",
   "models": [

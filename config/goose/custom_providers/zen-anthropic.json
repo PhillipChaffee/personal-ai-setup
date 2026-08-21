@@ -1,7 +1,7 @@
 {
   "name": "zen-anthropic",
   "engine": "anthropic",
-  "display_name": "OpenCode Zen (messages)",
+  "display_name": "OpenCode Zen messages — no sensitive (Claude: 30-day)",
   "api_key_env": "OPENCODE_ZEN_API_KEY",
   "base_url": "https://opencode.ai/zen",
   "models": [
