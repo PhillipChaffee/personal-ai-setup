@@ -38,9 +38,19 @@ more MCP tools eating context.)
 
 1. User type: **External**. ("Internal" is Workspace-org-only; a personal
    Gmail account must use External.)
-2. Fill the minimal required fields: app name (e.g. `personal-ai`), your
-   email as user support email and developer contact. No logo, no domains.
-3. You do **not** need to pre-register scopes — workspace-mcp requests what
+2. Fill the required fields: app name (e.g. `personal-ai`), your email as
+   user support email and developer contact. **No logo** — uploading one
+   forces verification review.
+3. **Homepage URL and privacy policy URL** (required to publish as of
+   Google's 2026 console): point them at this project's GitHub Pages site —
+   your fork's equivalent of
+   `https://<you>.github.io/personal-ai-setup/` and
+   `https://<you>.github.io/personal-ai-setup/privacy/`
+   (`docs/index.md` and `docs/app-privacy-policy.md` in this repo; enable
+   Pages: repo Settings → Pages → Deploy from branch → `main`, `/docs`).
+   Under **Authorized domains**, add `<you>.github.io` — `github.io`
+   subdomains count as domains you own.
+4. You do **not** need to pre-register scopes — workspace-mcp requests what
    its enabled tools need at auth time.
 
 > **⚠️ Publish to "In production" NOW — do not leave the app in "Testing".**
