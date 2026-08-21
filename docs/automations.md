@@ -128,6 +128,14 @@ watchdog's failure alert.
 
 ## Fallback: when the native scheduler misbehaves
 
+**Known failure mode (goose 1.46, headless):** scheduled fires can create the
+run's session and then never start the agent — the session sits at one
+message (the prompt), no log file appears, no email arrives, and nothing
+alerts (the native path has no watchdog). If you see that signature, don't
+debug it — flip to the timers below; the wrapper path adds a real failure
+alert on every run.
+
+
 The scheduler has known bugs — background jobs running in chat mode and blocking tool
 execution ([block/goose#3882](https://github.com/block/goose/issues/3882)) and Scheduler
 UI timing/session-loading failures
