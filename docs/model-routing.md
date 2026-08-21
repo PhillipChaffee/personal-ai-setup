@@ -18,7 +18,8 @@ pricing/model pages). Both catalogs churn — re-verify at signup and monthly vi
 | Interactive coding (daily) | OpenCode → Zen | `kimi-k2.6` | $0.95/$4.00 |
 | Coding escalation | OpenCode → Zen | `claude-sonnet-5` | $2/$10 |
 | Throwaway/non-personal code | OpenCode → Zen | `big-pickle` (free) | $0 — **never personal data** |
-| Hub daily driver (brain) | Goose → `zen-anthropic` | `claude-sonnet-5` | $2/$10 (non-sensitive only) |
+| Hub daily driver (brain) — **default** | Goose → `together` | `Qwen/Qwen3.5-397B-A17B` | $0.60/$3.60 (ZDR — private by default) |
+| Hub premium alternative (non-sensitive) | Goose → `zen-anthropic` | `claude-sonnet-5` | $2/$10 (30-day retention) |
 | Hub cost-saver | Goose → `zen-openai` | `kimi-k2.6` | $0.95/$4.00 |
 | Scheduled automations | Goose → `zen-openai` | `minimax-m2.7` | $0.30/$1.20 |
 | Automation fallback | Goose → `together` | `openai/gpt-oss-120b` | $0.15/$0.60 (verified tool-caller) |
@@ -29,14 +30,22 @@ pricing/model pages). Both catalogs churn — re-verify at signup and monthly vi
 
 Notes on reading the table:
 
-- `zen-openai`, `zen-anthropic`, and `together` are the three Goose custom providers
-  defined in `config/goose/custom_providers/`. `zen-openai` speaks OpenAI
-  chat-completions to `https://opencode.ai/zen/v1/chat/completions` (models:
-  `minimax-m2.7`, `kimi-k2.6`, `glm-5.1`, `deepseek-v4-flash`); `zen-anthropic` speaks
-  Anthropic messages to `https://opencode.ai/zen/v1/messages` (its `base_url` is
-  `https://opencode.ai/zen` — goose appends `/v1/messages` itself; models: `claude-sonnet-5`,
-  `claude-haiku-4-5`, `qwen3.7-plus`); `together` speaks OpenAI chat-completions to
-  `https://api.together.xyz/v1/chat/completions`.
+- `together`, `zen-openai`, `zen-anthropic`, and `zen-free` are the four Goose custom
+  providers defined in `config/goose/custom_providers/`. `together` (the **default**) and
+  `zen-openai` speak OpenAI chat-completions; `zen-anthropic` speaks Anthropic messages
+  (its `base_url` is `https://opencode.ai/zen` — goose appends `/v1/messages` itself);
+  `zen-free` is Zen's $0 models split into their own provider so the "trains on your
+  data" boundary stays visible in the model picker (hard rule 1).
+- Each provider ships a broad model catalog, and `scripts/sync-models.sh` refreshes all
+  four lists from the live Zen and Together `/models` endpoints. **Catalog breadth is for
+  manual picking; it does not loosen routing.** The table above still decides what runs
+  each *job*, and the hard rules below still bound what any picked model may see.
+- Want OpenAI's models in goose? Zen's GPT-5.x models are Responses-API-only and
+  unreachable from goose (see below), so the direct route is goose's built-in `openai`
+  provider — uncomment the block in `config/goose/config.yaml` and add `OPENAI_API_KEY`.
+  Treat it like `zen-anthropic`: ~30-day retention, hard rule 2 applies. (OpenCode
+  reaches Zen's GPT models natively, and OpenAI's open-weight `gpt-oss` models are
+  already on `together`.)
 - "OpenCode → Zen" rows run in the OpenCode CLI (your coding driver), connected to Zen via
   `/connect`. They never pass through Goose or the brain.
 - Together model IDs are full registry IDs: `openai/gpt-oss-120b`,
@@ -58,10 +67,10 @@ Notes on reading the table:
    code only. Nothing from email, calendar, the vault, or any chat that mentions your life.
 2. **Claude and GPT models billed through Zen never see health or finance data.**
    Anthropic- and OpenAI-billed requests carry 30-day retention per those providers'
-   policies — the one exception to Zen's zero-retention posture. `claude-sonnet-5` is fine
-   as the daily hub driver for general and personal-but-not-sensitive work, but the moment
-   a session touches medical records, insurance, billing, or the budget, it belongs on the
-   sensitive tier.
+   policies — the one exception to Zen's zero-retention posture. `claude-sonnet-5` (and
+   the optional `openai` provider) are fine for general and personal-but-not-sensitive
+   work, but the moment a session touches medical records, insurance, billing, or the
+   budget, it belongs on the sensitive tier.
 3. **Sensitive tier = Together (ZDR default, HIPAA/BAA posture) or Zen paid open models
    only.** The vault recipes (`vault-qa`, `health-followups`, `budget-checkin`) pin
    Together. Zen's paid open models (Kimi, GLM, MiniMax, DeepSeek, Qwen — zero retention,

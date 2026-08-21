@@ -99,9 +99,12 @@ defaults plus the `together` provider so they survive across machines; the
    permissions).
 2. On the provider/model screen, skip the built-in provider list and select
    the custom providers the bootstrap installed. Set the default to
-   **`zen-anthropic` / `claude-sonnet-5`** (the hub daily driver), with
-   **`zen-openai` / `kimi-k2.6`** as your cost-saver switch — the model picker
-   changes this in two clicks.
+   **`together` / `Qwen/Qwen3.5-397B-A17B`** (the hub daily driver — ZDR, so
+   the default is also the most private option), with
+   **`zen-anthropic` / `claude-sonnet-5`** as the premium switch for
+   non-sensitive work and **`zen-openai` / `kimi-k2.6`** as the cost-saver —
+   the model picker changes this in two clicks. (`zen-free` is in the picker
+   too; its display name reminds you those models train on your data.)
 3. Confirm the Developer extension is on (default) and leave the extension
    list minimal for now — MCP wiring for Gmail/Calendar/Todoist happens in
    Phase 2 ([30-google-oauth.md](30-google-oauth.md)).

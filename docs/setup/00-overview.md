@@ -83,11 +83,14 @@ Canonical secret variable names, used identically on every platform:
 `GOOGLE_OAUTH_CLIENT_SECRET`. The full annotated list is
 `config/env/secrets.env.example`.
 
-**Provider names.** Goose knows exactly three custom providers, named
-`zen-openai` (Zen's `/chat/completions` models), `zen-anthropic` (Zen's
-`/messages` models), and `together`. Recipes, docs, and scripts all reference
-these names — keep them verbatim, since a renamed provider silently breaks
-every recipe pinned to it.
+**Provider names.** Goose knows exactly four custom providers, named
+`together` (the default), `zen-openai` (Zen's `/chat/completions` models),
+`zen-anthropic` (Zen's `/messages` models), and `zen-free` (Zen's $0 models,
+which train on your data — kept separate so the boundary is visible in the
+picker). Recipes, docs, and scripts all reference these names — keep them
+verbatim, since a renamed provider silently breaks every recipe pinned to it.
+Each ships a broad model list; `scripts/sync-models.sh` refreshes all of them
+from the live catalogs.
 
 **Where recipes live.** Automations are recipe YAMLs in `recipes/` in this
 repo, registered on the **brain's** native scheduler by

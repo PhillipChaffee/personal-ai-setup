@@ -72,9 +72,10 @@ Siri Shortcut ─────┤            OpenCode CLI (coding, local)      �
 │   ├── goose/
 │   │   ├── config.yaml                 # goose settings + MCP extensions (developer, memory, workspace, Todoist, playwright)
 │   │   ├── custom_providers/
-│   │   │   ├── zen-openai.json         # Zen /chat/completions: minimax-m2.7, kimi-k2.6, glm-5.1, deepseek-v4-flash
-│   │   │   ├── zen-anthropic.json      # Zen /messages: claude-sonnet-5, claude-haiku-4-5, qwen3.7-plus
-│   │   │   └── together.json           # Together: gpt-oss-120b, Qwen3.5-397B, DeepSeek V4 Flash (sensitive tier)
+│   │   │   ├── together.json           # DEFAULT provider — Together's chat catalog (ZDR; also the sensitive tier)
+│   │   │   ├── zen-openai.json         # Zen /chat/completions models (Kimi, GLM, MiniMax, DeepSeek)
+│   │   │   ├── zen-anthropic.json      # Zen /messages models (Claude, Qwen 3.5+)
+│   │   │   └── zen-free.json           # Zen $0 models — TRAIN ON YOUR DATA; kept separate on purpose
 │   │   └── goosehints.example          # identity, routing rules, vault path, PHI standing rules
 │   ├── opencode/opencode.json          # OpenCode: Zen models + Together provider, cheap small_model
 │   ├── mcp/workspace-mcp.env.example   # Google Workspace MCP env template
@@ -101,6 +102,7 @@ Siri Shortcut ─────┤            OpenCode CLI (coding, local)      �
 │   ├── common/
 │   │   ├── run-recipe.sh               # headless runner + failure watchdog (one retry, alert on failure)
 │   │   └── notify.sh                   # push via ntfy
+│   ├── sync-models.sh                  # refresh provider model lists from the live Zen/Together catalogs
 │   └── verify/
 │       ├── check-providers.sh          # curl every inference endpoint with your keys
 │       ├── check-goose.sh              # goose smoke test per provider (settles base_url semantics)
