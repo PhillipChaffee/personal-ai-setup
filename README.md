@@ -82,6 +82,7 @@ Siri Shortcut ─────┤            OpenCode CLI (coding, local)      �
 │   ├── privacy.md                      # data classification per provider tier; encryption model & residual risk
 │   ├── automations.md                  # add/manage scheduled workflows; scheduler-bug fallback flip
 │   ├── providers.md                    # email/calendar provider convention (multi-account today, more providers next)
+│   ├── cursor-port.md                  # the Cursor kit ported to Goose + OpenCode: what went where and why
 │   ├── security.md                     # threat model, LUKS design, Tailscale-only exposure, serve TLS/secret
 │   ├── public-repo.md                  # what may/may-not be committed; go-public checklist
 │   ├── troubleshooting.md              # base_url 404s, scheduler bugs, pairing, LUKS, rate limits
@@ -92,6 +93,10 @@ Siri Shortcut ─────┤            OpenCode CLI (coding, local)      �
 │   ├── goose/custom_providers/         # together (DEFAULT), zen-openai, zen-anthropic, zen-free (trains on data — isolated on purpose)
 │   ├── goose/goosehints.example        # identity, routing rules, vault path, PHI standing rules
 │   ├── opencode/opencode.json          # OpenCode: Zen models + Together provider, cheap small_model
+│   ├── opencode/AGENTS.md              # global coding/workflow rules template (→ ~/.config/opencode/AGENTS.md)
+│   ├── opencode/agents/                # 30 review/research subagents (→ ~/.config/opencode/agents/)
+│   ├── opencode/project-rules/         # per-project rule snippets (python, django, linear…) — paste-in
+│   ├── skills/                         # 11 skills, Claude-compatible SKILL.md (→ ~/.agents/skills — read by BOTH OpenCode and goose)
 │   ├── mcp/workspace-mcp.env.example   # Google Workspace MCP env template
 │   └── env/secrets.env.example         # every secret VAR NAME (no values) — copy to /data/secrets.env
 ├── recipes/                            # the six automations (brief, triage, review, health, vault-qa, budget)
