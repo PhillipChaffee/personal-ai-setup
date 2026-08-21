@@ -27,8 +27,8 @@ Quick index:
 JSON "not found" — even though `curl` against the raw API works fine with the same
 key.
 
-**Cause.** The two engines treat `base_url` differently (verified against goose
-v1.46.0 with a local mock, 2026-08-21): the `openai` engine appends
+**Cause.** The two engines treat `base_url` differently (as of goose
+v1.46.0): the `openai` engine appends
 `/chat/completions` only when the URL doesn't already end with it, so both the
 full path and the bare `…/v1` base work; the `anthropic` engine **always
 appends `/v1/messages`**, so its base_url must not include it — a base_url
@@ -64,10 +64,10 @@ The same ambiguity exists independently per engine (`openai` vs `anthropic`), so
 `claude-haiku-4-5`, …) return 401/403 "invalid api key" or similar, while
 `zen-openai` models work with the same `OPENCODE_ZEN_API_KEY`.
 
-**What's known (settled 2026-08-21 against the live endpoint).** Zen's
+**What's known (as of 2026-08-21).** Zen's
 `/messages` accepts `x-api-key` (200) and **rejects** `Authorization: Bearer`
 (401). Goose's `anthropic` engine sends `x-api-key` plus
-`anthropic-version: 2023-06-01` (verified against goose v1.46.0), so
+`anthropic-version: 2023-06-01` (as of goose v1.46.0), so
 `zen-anthropic` authenticates correctly as shipped — a 401 here means the key
 itself is wrong, missing from the environment (are the Keychain exports in
 your shell? see `scripts/mac/keychain-secrets.sh`), or Zen changed its auth.
@@ -86,6 +86,22 @@ your shell? see `scripts/mac/keychain-secrets.sh`), or Zen changed its auth.
    use the fallback: **drop the `zen-anthropic` provider**. Claude stays
    available through OpenCode on the Mac, and the hub's daily driver falls
    back to `zen-openai`/`kimi-k2.6` — see `docs/model-routing.md`.
+
+## Phone or new client gets a TLS error (or Desktop suddenly can't connect)
+
+**Symptom.** A client refuses the brain's TLS: iOS apps error outright;
+Desktop fails if a pinned fingerprint no longer matches.
+
+**Cause.** Either the brain is still on its self-signed certificate (iOS
+will never accept it), or the LE certificate rotated (they renew ~every 60
+days via `tls-cert-renew.timer`) while a client still pins the old
+fingerprint.
+
+**Fix.** Issue/renew the real cert: `sudo scripts/vps/renew-tls-cert.sh` on
+the brain (needs MagicDNS + HTTPS Certificates enabled in the Tailscale
+admin console). Then make sure clients do NOT pin a fingerprint — with a
+CA-trusted cert, pinning only creates renewal breakage. Verify from any
+tailnet machine with strict TLS: `curl -s https://<brain>.<tailnet>.ts.net:3284/status`.
 
 ## Goose scheduler job didn't fire
 

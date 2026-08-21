@@ -1,0 +1,12 @@
+# Renews the brain's Let's Encrypt cert (tailscale cert) and restarts
+# goose-serve. Fired weekly by tls-cert-renew.timer; `tailscale cert` is a
+# no-op fast path when the cert isn't near expiry, so weekly is cheap and
+# renewals land well inside LE's ~90-day window.
+[Unit]
+Description=Renew brain TLS certificate via tailscale cert
+After=network-online.target tailscaled.service
+RequiresMountsFor=/data
+
+[Service]
+Type=oneshot
+ExecStart=/home/agent/personal-ai-setup/scripts/vps/renew-tls-cert.sh

@@ -1,11 +1,12 @@
 # Phone setup — the iPhone as a thin client
 
-The iPhone never runs an agent. It's three small apps and a shortcut, each a
-thin surface onto infrastructure you already run — in priority order: the
-**Goose iOS app** (primary, pairs to the brain), **Tailscale** (network),
-**Pal Chat** (backup chat, works day one), and a **Siri Shortcut** (voice
-one-shots). Automation results need nothing here at all — they arrive by
-email (§2).
+The iPhone never runs an agent. It's a few small apps, each a thin surface
+onto infrastructure you already run — in priority order: **Telegram** (the
+working agentic path — chat with the brain from anywhere, §1a), **Tailscale**
+(network), **Pal Chat** (quick BYOK chat, works day one), and a **Siri
+Shortcut** (voice one-shots). Automation results need nothing here at all —
+they arrive by email (§2). The **Goose iOS app** is covered honestly in §1b:
+as of goose 1.46 / app 1.1.6 it cannot talk to a headless brain.
 
 §2–§5 need no server and can be done in Phase 1. §1 needs the brain
 ([50-vps-brain.md](50-vps-brain.md)) — come back to it from there.
@@ -16,87 +17,50 @@ email (§2).
 > [chatboxai/chatbox#3516](https://github.com/chatboxai/chatbox/issues/3516)).
 > Pal Chat is the verified pick for BYOK chat on iOS.
 
-## 1. Goose iOS app — the primary surface (experimental)
+## 1a. Telegram gateway — the working agentic path
 
-Install **"Goose AI"** from the App Store
-(<https://apps.apple.com/us/app/goose-ai/id6752889295>, iOS 17+). It's the
-official thin remote client: it connects back to a running goose agent
-through an **outbound-only websocket tunnel** (relayed via Cloudflare — no
-inbound port opens anywhere; the privacy trade-off and its alternatives are
-discussed in [`docs/privacy.md`](../privacy.md#the-goose-ios-tunnel-and-cloudflare)).
+The brain runs goose's Telegram gateway, giving your phone full agentic
+access — same sessions, all extensions, from anywhere, no tailnet needed on
+the phone, always-on because it lives on the VPS:
 
-**What it can do:** chat with your agent from anywhere, see and resume the
-same sessions as every other surface, and check on long-running tasks —
-everything executes on the paired host, so paired to the brain it has the
-full extension set and the shared history.
+1. In Telegram, message **@BotFather** → `/newbot` → pick a name and a
+   `…bot` username. Copy the bot token (a secret — Keychain / secrets.env,
+   never in a repo).
+2. On the brain, with the secrets env loaded:
+   `goose gateway start telegram --bot-token "$TELEGRAM_BOT_TOKEN"`
+   (run under systemd or tmux so it survives; then
+   `goose gateway pair telegram` prints a pairing code).
+3. Send the pairing code to your bot from your own Telegram account — that
+   binds the gateway to you. **The gateway answers your account only**;
+   treat the bot token like a password.
 
-**What it can't do / honest caveats:** it is an explicitly
-**experimental/preview** feature. Nothing works if the paired host isn't
-running; the documented pairing flow is Desktop-initiated (headless pairing
-is our own attempt, below); fine-grained tool-approval UX on the phone is
-unverified; and the feature surface changes across goose releases. The thing
-that fixes all of this — native remote ACP + push on the goose mobile
-roadmap — is tracked in [`docs/roadmap.md`](../roadmap.md).
+## 1b. Goose iOS app — status: not usable with a headless brain
 
-### Pairing, in fallback order
+The **"Goose AI"** App Store app
+(<https://apps.apple.com/us/app/goose-ai/id6752889295>) is
+**maintainer-published** (an individual goose core maintainer's developer
+account, referenced by the project's blog and `block/goose-mobile` — not a
+Block Inc. release, and not promoted on the goose site). As of
+goose 1.46 / app 1.1.6 (2026-08-21):
 
-Work down this chain until one sticks. A–B give the real app experience;
-C–D are degraded but dependable.
+- Its **server URL + secret mode connects** (the `/status` probe passes,
+  including over a real LE certificate) **but every chat action 404s** — the
+  app expects the REST API of `goosed`, the backend bundled inside the
+  Desktop *app*, which the headless CLI's `goose serve` does not expose
+  (serve answers only `/status` and `/acp`, even with `--platform desktop`).
+- The **QR/tunnel pairing flow was removed upstream**, and no in-app entry
+  point for `goose gateway pair mobile` codes exists in this app version.
 
-**A. Headless pairing from the brain (try first — experimental, may not
-exist in your pinned version).** The pairing tunnel is documented as started
-from Goose Desktop; whether the CLI on a headless box can start one depends
-on the release. On the brain:
-
-```bash
-goose --help | grep -iE 'tunnel|mobile|pair'
-```
-
-If your pinned version has a tunnel/pairing subcommand, run it inside `tmux`
-(it must stay running), and pair the app with the QR code or URL it prints.
-If the grep comes up empty, this path doesn't exist in your version — move
-to B, and re-check after goose upgrades.
-
-**B. Desktop-initiated tunnel (works, but only while the Mac is awake).**
-With Goose Desktop connected to the brain as a remote server
-([50-vps-brain.md](50-vps-brain.md)), start the mobile tunnel from Desktop
-(Settings → the mobile/remote-access pane) and scan the QR with the app. The
-Mac acts as a relay in front of the brain: sessions and history still live on
-the brain, but the phone loses access whenever the Mac sleeps. Acceptable as
-a daytime arrangement; not a 24/7 one.
-
-**C. Telegram gateway on the brain (24/7, different app, same brain).**
-Goose's experimental gateway gives you the brain inside Telegram — no tunnel,
-no Mac ([gateway docs](https://github.com/aaif-goose/goose/blob/main/documentation/docs/experimental/remote-access/telegram-gateway.md)):
-
-1. In Telegram, message **@BotFather** → `/newbot` → pick a name and a unique
-   username → copy the bot token. Treat the token *and the bot username* as
-   secrets — anyone who finds the bot can try to talk to it.
-2. On the brain (in `tmux`, so it survives the SSH session):
-
-   ```bash
-   goose gateway start telegram --bot-token "<YOUR-BOT-TOKEN>"
-   goose gateway pair telegram        # prints a pairing code
-   ```
-
-3. Send the pairing code to your bot from **your own Telegram account** —
-   codes expire within minutes, so do this immediately. Pairing binds the
-   gateway to your account; never post the code or the bot username anywhere,
-   and don't pair any other account. If you adopt this as your daily channel,
-   store the token as an extra `TELEGRAM_BOT_TOKEN=` line in
-   `/data/secrets.env` and promote the gateway to a small systemd unit.
-
-Trade-offs: Telegram becomes a relay party in the phone path (same shape of
-trade as the Cloudflare tunnel — see
-[`docs/privacy.md`](../privacy.md#the-goose-ios-tunnel-and-cloudflare)), and
-chat happens in Telegram's UI rather than the app's.
-
-**D. Pal Chat (§4).** Always works, needs nothing but a provider key — but
-it's plain BYOK chat: no tools, no brain, device-local history.
+Net: install it only if you want to re-test after goose upgrades
+(watch the mobile roadmap — native remote ACP + push — in
+[`docs/roadmap.md`](../roadmap.md)). Until then, §1a is the phone's agentic
+surface. If you do try it and enter your server secret into the app, note the
+trust boundary (individually-published binary) and rotate
+`GOOSE_SERVER__SECRET_KEY` afterwards if that bothers you (docs/security.md).
 
 ## 2. How the stack reaches you — email, no app
 
-Nothing to set up here anymore: the ntfy phone app is no longer part of the
+Nothing to set up here — there is no phone push app in the
 system. Automation results arrive as ordinary email — each recipe on the
 brain sends its result to your own address via Gmail as its final step
 ([`docs/automations.md`](../automations.md)) — and failure alerts reach the
@@ -108,12 +72,11 @@ same inbox via ntfy's email gateway, configured back in
 Install the **Tailscale** iOS app, sign in with the same identity you used in
 [10-accounts.md §3](10-accounts.md), and allow the VPN configuration.
 
-Nothing in §1–2 strictly requires this today (the tunnel is an outbound
-path, and email needs nothing) — but the tailnet is the only route to everything
-tailnet-bound on the brain: emergency SSH from the phone, any future
-self-hosted web surface, and the goose mobile roadmap's remote-ACP path,
-which will replace the Cloudflare tunnel with a direct connection over
-exactly this tailnet. Set it up now so it's there when you need it.
+Nothing in §1–2 strictly requires this today (Telegram and email need no
+tailnet) — but the tailnet is the only route to everything tailnet-bound on
+the brain: emergency SSH from the phone, any future self-hosted web surface,
+and the goose mobile roadmap's remote-ACP path, which would connect directly
+over exactly this tailnet. Set it up now so it's there when you need it.
 
 ## 4. Pal Chat — the backup that works day one
 
@@ -180,14 +143,14 @@ unlock your phone — acceptable for a low-balance PAYG key you can rotate
 containing literal quote characters can break the JSON body; for one-shot
 voice questions this effectively never happens. Long agent-style requests
 will hit Shortcuts' HTTP patience — keep it to questions, and take real work
-to the Goose app or the Mac.
+to Telegram or the Mac.
 
 ## Done — the phone at a glance
 
 | Surface | Needs | Gives |
 |---|---|---|
-| Goose iOS app (§1) | Brain + a working pairing path | Full agent, shared history — primary |
-| Telegram gateway (§1C) | Brain | Full agent in Telegram — 24/7 fallback |
+| Telegram gateway (§1a) | Brain + bot token | Full agent, shared brain, 24/7 — the primary phone surface |
+| Goose iOS app (§1b) | An upstream fix | Nothing today (incompatible with a headless brain as of app 1.1.6) |
 | Email inbox (§2) | Nothing new | Every automation's results and failure alerts |
 | Tailscale (§3) | Tailnet | Direct path to the brain, future-proofing |
 | Pal Chat (§4) | A provider key | Chat that survives everything being down |

@@ -181,6 +181,16 @@ for t in morning-brief inbox-triage weekly-review health-followups; do
   sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/fallback/$t.timer" "/etc/systemd/system/goose-recipe@$t.timer"
 done
 sudo systemctl daemon-reload
+sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/tls-cert-renew.service" /etc/systemd/system/tls-cert-renew.service
+sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/tls-cert-renew.timer" /etc/systemd/system/tls-cert-renew.timer
+sudo systemctl enable --now tls-cert-renew.timer >/dev/null
+sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/goose-telegram-gateway.service" /etc/systemd/system/goose-telegram-gateway.service
+if grep -q '^TELEGRAM_BOT_TOKEN=..*' /data/secrets.env 2>/dev/null; then
+  sudo systemctl enable --now goose-telegram-gateway.service >/dev/null
+  echo "    telegram gateway: enabled (token present)"
+else
+  echo "    telegram gateway: installed but not enabled (no TELEGRAM_BOT_TOKEN in secrets.env; see docs/setup/40-phone-setup.md §1a)"
+fi
 sudo systemctl enable goose-serve.service >/dev/null
 echo "==> (Re)starting goose-serve"
 sudo systemctl restart goose-serve.service

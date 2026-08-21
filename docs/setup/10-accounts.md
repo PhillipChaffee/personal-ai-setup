@@ -52,8 +52,8 @@ The sensitive tier: OpenAI-compatible, ZDR by default, SOC 2, HIPAA/BAA
 posture (<https://docs.together.ai>).
 
 1. Sign up at <https://api.together.ai>.
-2. Buy credit — **expect no signup credit** (the old $25 free credit was
-   retired; sources indicate a ~$5 minimum purchase). ~$5–10 is plenty to
+2. Buy credit — **expect no signup credit** (the former $25 free credit was
+   retired; expect a ~$5 minimum purchase). ~$5–10 is plenty to
    start.
 3. **Organization Settings → Privacy:** confirm both toggles are **OFF** —
    storing prompts/responses, and sharing data for training. They default off
