@@ -43,9 +43,9 @@ What it does (it's idempotent — safe to re-run after a failed step):
   | `config/goose/goosehints.example` | `~/.config/goose/.goosehints` |
   | `config/opencode/opencode.json` | OpenCode's config dir (`~/.config/opencode/`) |
 
-The three custom-provider JSONs are the heart of it: they define the
-`zen-openai`, `zen-anthropic`, and `together` providers (endpoints and pinned
-model lists per [`docs/model-routing.md`](../model-routing.md)). Goose picks
+The four custom-provider JSONs are the heart of it: they define the
+`together` (default), `zen-openai`, `zen-anthropic`, and `zen-free` providers
+(endpoints and model lists per [`docs/model-routing.md`](../model-routing.md)). Goose picks
 them up from `~/.config/goose/custom_providers/` automatically — reference:
 [custom providers](https://github.com/aaif-goose/goose/blob/main/documentation/docs/getting-started/providers.md).
 

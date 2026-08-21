@@ -71,8 +71,8 @@ definition:
   `health/appointments.md` by path; `budget-checkin` reads
   `finance/ledger.csv` and `finance/budget.md` by path.
 - **Name documents date-first** so listings sort chronologically and the
-  agent can reason about recency: `2026-03-12-cardiology-visit.md` (and
-  `2026-03-12-cardiology-visit.pdf` beside it).
+  agent can reason about recency: `2026-03-12-dental-visit.md` (and
+  `2026-03-12-dental-visit.pdf` beside it).
 - **Ledger amounts are positive numbers = money spent** (see
   `finance/budget.md` for the full convention).
 - `health/appointments.md` must keep its `## Follow-ups` heading — the
