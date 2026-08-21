@@ -39,11 +39,10 @@ bursts.
 `inbox-triage`, and `weekly-review` sweep every listed account (items tagged
 by account; labels and drafts stay inside the account that owns the message)
 while delivery stays one self-addressed email from the primary. The recipes
-carry the roster as a `google_accounts` parameter: the native scheduler can't
-pass parameter values, so `register-schedules.sh` bakes the roster into
-rendered copies under `/data/rendered-recipes/` and registers those;
-`run-recipe.sh` passes it from the environment on manual and fallback-timer
-runs. The vault recipes stay primary-only by design.
+carry the roster as a `google_accounts` parameter: `register-schedules.sh`
+stores it on each schedule (`goose schedule add --params`) so the scheduler
+applies it at fire time, and `run-recipe.sh` passes the same value on manual
+and fallback-timer runs. The vault recipes stay primary-only by design.
 
 `scripts/vps/register-schedules.sh` registers this whole roster idempotently and prints
 `goose schedule list` when done. One caveat it announces loudly: goose 1.x has no
@@ -86,17 +85,21 @@ its first fire would otherwise be the 1st of the month at 09:00.
 
    Better: add the same line to `scripts/vps/register-schedules.sh` (it's idempotent) so
    the roster stays reproducible, then re-run it. If your recipe declares the
-   `google_accounts` parameter and you use `USER_GOOGLE_EMAILS`, don't register the repo
-   path directly — add the job to `register-schedules.sh` so it registers the rendered
-   copy with the account roster baked in (a directly-registered repo path would sweep
-   only the primary).
+   `google_accounts` parameter and you use `USER_GOOGLE_EMAILS`, add `--params
+   google_accounts="$USER_GOOGLE_EMAILS"` to the `schedule add` (or just add the job to
+   `register-schedules.sh`, which does it for you) — without it the run sweeps only the
+   primary account.
 
 4. **Confirm in the Scheduler UI** — open Goose Desktop (connected to the brain), find
    the schedule, hit run-now in the Desktop Scheduler UI, and check that the email
    arrives in your inbox and the run's session looks right. CLI equivalent:
-   `scripts/common/run-recipe.sh my-job` (NOT `goose schedule run-now` from a shell —
-   as of goose 1.46.0, run-now detaches into the CLI process and dies with it), then
-   `goose schedule sessions --schedule-id my-job`.
+   `scripts/common/run-recipe.sh my-job`, then
+   `goose schedule sessions --schedule-id my-job`. `goose schedule run-now --schedule-id
+   my-job` also works and is handy for a quick check — verified against goose 1.46.0, it
+   runs the job **synchronously in the CLI process** and prints the failure inline — but
+   because it runs in that process, a dropped SSH session kills the run mid-flight, and it
+   does not load `/data/secrets.env` or add the watchdog's retry + failure alert. Prefer
+   the wrapper for anything you care about finishing.
 
 Day-to-day management: `goose schedule list` / `run-now` / `sessions` / `remove` on the
 brain, or the Desktop Scheduler UI for pause/resume and history. Reference:

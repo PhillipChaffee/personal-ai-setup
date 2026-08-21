@@ -288,17 +288,15 @@ the Google console.
    path on both; `config/goose/goosehints.example` has the wording).
 6. **Propagate to the automations** (brain): re-run
    `scripts/vps/register-schedules.sh`. The sweep recipes (morning-brief,
-   inbox-triage, weekly-review) declare a `google_accounts` parameter; the
-   native scheduler can't pass parameter values, so the script bakes the
-   roster into rendered copies under `/data/rendered-recipes/` (on the
-   encrypted volume — the roster never lands in this repo) and registers
-   those. `run-recipe.sh` (manual and fallback-timer runs) passes the roster
-   from the environment instead. Digest lines are tagged by account; drafts
+   inbox-triage, weekly-review) declare a `google_accounts` parameter, and
+   the script stores the roster on each schedule (`goose schedule add
+   --params`), so the scheduler applies it at fire time. `run-recipe.sh`
+   (manual and fallback-timer runs) passes the same roster from the
+   environment. Digest lines are tagged by account; drafts
    and labels stay inside the account that owns the message. The vault
    recipes (`health-followups`, `budget-checkin`) deliberately stay on the
-   primary account only. Re-run the script whenever the roster changes or a
-   `git pull` updates the sweep recipes — the rendered copies don't update
-   themselves.
+   primary account only. Re-run the script whenever the roster changes — the
+   stored schedule parameters only update when the schedules are re-registered.
 7. **Verify:** `scripts/verify/check-mcp.sh` now runs the Gmail smoke test
    once per listed account (on the brain it reads the roster from
    `/data/secrets.env` by itself). A failure naming one account means that

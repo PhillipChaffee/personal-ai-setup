@@ -62,7 +62,16 @@ run_check() {
     -t "$prompt" \
     --provider "$PROVIDER" --model "$MODEL" \
     >"$OUT_FILE" 2>&1 || rc=$?
-  if [ "$rc" -eq 0 ] && grep -qiE 'authentication is required|complete the (sign-in|authorization)' "$OUT_FILE"; then
+  # goose exits 0 even when an extension fails to start or every model call
+  # dies (same behavior run-recipe.sh compensates for), so a zero exit alone is
+  # not success — a per-account check that never reached Gmail must not PASS.
+  if [ "$rc" -eq 0 ] && grep -qE 'Failed to start extension|^(Network error|Server error|Request failed)|Please resend your message to try again' "$OUT_FILE"; then
+    echo "    FAIL — the run completed but never reached the tools:"
+    grep -oE 'Failed to start extension [^)]*\)|^(Network error|Server error|Request failed)[^\n]*' "$OUT_FILE" | head -n 3 | sed 's/^/      | /'
+    tail -n 4 "$OUT_FILE" | sed 's/^/      | /'
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    SUMMARY="$SUMMARY  FAIL  $name (tools/provider unreachable)"$'\n'
+  elif [ "$rc" -eq 0 ] && grep -qiE 'authentication is required|complete the (sign-in|authorization)' "$OUT_FILE"; then
     # The tool answered with an auth prompt, not data — and this one-shot run
     # has already exited, taking the localhost OAuth callback listener with
     # it, so consent clicked NOW lands on a dead port. The consent must
@@ -99,7 +108,11 @@ echo "      an auth URL (Todoist). Complete it, then re-run this script."
 # On the brain the roster lives in /data/secrets.env — load it like the other
 # brain-side scripts (register-schedules.sh, check-brain.sh) so an SSH shell
 # without the exports still sweeps every account.
-if [ -z "${USER_GOOGLE_EMAILS:-}" ] && [ -r /data/secrets.env ]; then
+if [ -z "${GOOGLE_OAUTH_CLIENT_ID:-}" ] && [ -r /data/secrets.env ]; then
+  # Gate on the OAuth client id, not the roster: secrets.env is also the only
+  # source of GOOGLE_OAUTH_CLIENT_ID/SECRET, which workspace-mcp needs to start
+  # at all. Gating on the roster meant that exporting USER_GOOGLE_EMAILS by hand
+  # skipped the file and left the extension unable to launch.
   set -a
   # shellcheck disable=SC1091
   . /data/secrets.env

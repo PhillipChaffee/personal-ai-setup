@@ -6,10 +6,10 @@
 # then prints the digest as the final message for the session record.
 #
 # Multi-account: the google_accounts parameter carries the USER_GOOGLE_EMAILS
-# roster (first entry = primary). run-recipe.sh passes it from the
-# environment; the native scheduler can't pass parameters, so
-# register-schedules.sh registers a rendered copy with the roster baked into
-# the default when USER_GOOGLE_EMAILS is set (docs/setup/30-google-oauth.md §8).
+# roster (first entry = primary). register-schedules.sh stores it on the
+# schedule (`goose schedule add --params`), run-recipe.sh passes it per run;
+# with no roster the empty default applies and the run is single-account
+# (docs/setup/30-google-oauth.md §8).
 version: 1.0.0
 title: Morning Brief
 description: Daily digest of today's calendar, unread important email, and due tasks.
