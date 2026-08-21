@@ -5,7 +5,42 @@
   "api_key_env": "OPENCODE_ZEN_API_KEY",
   "base_url": "https://opencode.ai/zen/v1/chat/completions",
   "models": [
-    { "name": "big-pickle", "context_limit": 131072 }
+    {
+      "name": "big-pickle",
+      "context_limit": 131072
+    },
+    {
+      "name": "deepseek-v4-flash-free",
+      "context_limit": 131072
+    },
+    {
+      "name": "hy3-free",
+      "context_limit": 131072
+    },
+    {
+      "name": "laguna-s-2.1-free",
+      "context_limit": 131072
+    },
+    {
+      "name": "mimo-v2.5-free",
+      "context_limit": 131072
+    },
+    {
+      "name": "muse-spark-1.2-contributor-free",
+      "context_limit": 131072
+    },
+    {
+      "name": "nemotron-3-ultra-free",
+      "context_limit": 131072
+    },
+    {
+      "name": "nemotron-3.5-lightning-free",
+      "context_limit": 131072
+    },
+    {
+      "name": "x-preview-f-free",
+      "context_limit": 131072
+    }
   ],
   "supports_streaming": true,
   "requires_auth": true
