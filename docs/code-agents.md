@@ -118,6 +118,16 @@ podman logs code-agent-<id>                # one chat's opencode server
 
 # health
 scripts/verify/check-code-agents.sh --probe
+
+# full integration test — NO containers, NO VPS, no API key: the manager
+# runs for real against a stub engine + a protocol-faithful mock OpenCode
+# server. 30 checks over the whole lifecycle (auth, guards, clone/branch/
+# setup, SSE live-streaming through the proxy, the blocking permission
+# flow, busy-guarded idle spin-down, wake with state intact, purge).
+scripts/verify/test-code-agent-manager.sh
+# ...or keep the same stack up to drive other clients at it
+# (e.g. goose-phone-app: cargo run -p opencode-client --example smoke):
+scripts/verify/test-code-agent-manager.sh --serve
 ```
 
 Tunables (env on the unit, defaults in the manager): `CODE_AGENT_IDLE_SECONDS`

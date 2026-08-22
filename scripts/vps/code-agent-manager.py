@@ -81,6 +81,11 @@ ENGINE = os.environ.get("CODE_AGENT_ENGINE", "podman")
 IMAGE = os.environ.get("CODE_AGENT_IMAGE", "code-agent:local")
 TLS_CERT = os.environ.get("CODE_AGENT_TLS_CERT", "/data/tls/cert.pem")
 TLS_KEY = os.environ.get("CODE_AGENT_TLS_KEY", "/data/tls/key.pem")
+# Testing/dev overrides (scripts/verify/test-code-agent-manager.sh): bind a
+# fixed address instead of the tailnet IP, and speed up the idle reaper.
+# Never set CODE_AGENT_BIND on the brain — tailnet-only is the rule.
+BIND_OVERRIDE = os.environ.get("CODE_AGENT_BIND", "")
+REAPER_INTERVAL = int(os.environ.get("CODE_AGENT_REAPER_INTERVAL", "60"))
 
 PASSWORD = os.environ.get("OPENCODE_SERVER_PASSWORD", "")
 GH_PAT = os.environ.get("GITHUB_CODE_AGENT_PAT", "")
@@ -368,6 +373,9 @@ def wake_chat(chat_id):
         if running_count(index) >= MAX_ACTIVE:
             return 409, (f"{MAX_ACTIVE} chats already active — stop one or "
                          "wait for idle spin-down.")
+    # Mark activity BEFORE starting: a stale last_active would let the idle
+    # reaper stop the container in the middle of this very wake.
+    touch(chat_id)
     try:
         if state == "stopped":
             engine("start", container_name(chat_id))
@@ -411,7 +419,7 @@ def chat_busy(chat):
 
 def reaper_loop():
     while True:
-        time.sleep(60)
+        time.sleep(REAPER_INTERVAL)
         try:
             index = load_index()
             now = time.time()
@@ -590,11 +598,20 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.close_connection = True
         self.end_headers()
-        # SSE heartbeats arrive every ~10s; 60s of silence means a dead stream.
-        conn.sock.settimeout(60)
+        # SSE heartbeats arrive every ~10s; 60s of silence means a dead
+        # stream. On a `Connection: close` upstream response http.client
+        # detaches conn.sock (None) — the response still reads from the
+        # underlying socket, which keeps the 600s timeout set above; tighten
+        # only when the handle is still exposed.
+        if conn.sock is not None:
+            conn.sock.settimeout(60)
         try:
             while True:
-                chunk = resp.read(8192)
+                # read1: return whatever is available NOW. A plain read(8192)
+                # waits for the full 8KB and silently turns SSE into a
+                # buffered batch (caught by test-code-agent-manager.sh's
+                # live-arrival check).
+                chunk = resp.read1(8192)
                 if not chunk:
                     break
                 self.wfile.write(chunk)
@@ -651,7 +668,7 @@ def main():
         log(f"WARNING: {REPOS_PATH} missing — the allowlist is empty; copy "
             "config/code-agents/repos.example.json there and edit it.")
 
-    host = tailnet_ip()
+    host = BIND_OVERRIDE or tailnet_ip()
     have_tls = os.path.exists(TLS_CERT) and os.path.exists(TLS_KEY)
     if not host:
         # Tailnet-only rule (docs/security.md): the socket must exist on the
