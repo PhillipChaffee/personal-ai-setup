@@ -123,3 +123,27 @@ be read. The rule:
 The `NTFY_TOPIC` value itself is a secret: it lives in the Keychain (Mac) and
 `/data/secrets.env` (brain), never in this repo. See
 [public-repo.md](public-repo.md).
+
+## Multiple accounts (and, later, multiple providers)
+
+With a `USER_GOOGLE_EMAILS` roster ([30-google-oauth.md §8](setup/30-google-oauth.md)),
+the sweep recipes read every listed account. Two things change, and one rule keeps
+everything honest:
+
+- **Classification doesn't care which account content came from.** A second Gmail's
+  inbox is Tier 2 like the first, and can surface Tier 3 content the same way — the
+  tier table above applies per *content*, not per account. Nothing about the model
+  routing changes.
+- **Digests aggregate across accounts into the primary inbox.** The one self-addressed
+  delivery email (always sent from and to the **primary** account) now carries
+  subjects/summaries from every account on the roster — so a secondary account's
+  content ends up stored in the primary account's mailbox. If that crossing is
+  unacceptable for some account, leave it off the roster; it stays reachable
+  interactively without ever appearing in a digest.
+- **The send rule tightens rather than loosens:** the single self-addressed email from
+  the primary is still the *only* send; secondary accounts are never sent from at all
+  (inbox-triage's drafts stay inside the account that owns the thread).
+
+Non-Google providers are not wired in yet; the bar any future provider must clear —
+including a policy row in this document *before* adoption — is defined in
+[providers.md](providers.md).

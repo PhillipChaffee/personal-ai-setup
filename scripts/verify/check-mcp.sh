@@ -13,7 +13,10 @@ usage() {
 Usage: check-mcp.sh [--help]
 
 Runs three smoke tests through goose's configured extensions:
-  1. Gmail    — subjects of the 3 most recent inbox emails (workspace-mcp)
+  1. Gmail    — subjects of the 3 most recent inbox emails (workspace-mcp).
+     With USER_GOOGLE_EMAILS set (comma-separated multi-account roster,
+     docs/setup/30-google-oauth.md §8) the check runs once PER account so
+     every stored consent is exercised, not just the default account's.
   2. Todoist  — today's tasks (first-party remote MCP)
   3. Playwright — title of https://example.com (SKIPPED unless the playwright
      extension is enabled in ~/.config/goose/config.yaml)
@@ -31,10 +34,21 @@ case "${1:-}" in
   *) echo "check-mcp.sh: unknown argument: $1" >&2; usage >&2; exit 2 ;;
 esac
 
-command -v goose >/dev/null 2>&1 || {
-  echo "check-mcp.sh: goose CLI not found (Mac: scripts/mac/bootstrap-mac.sh)" >&2
-  exit 2
-}
+# A non-interactive SSH shell on the brain does not source the profile that
+# puts ~/.local/bin on PATH, so fall back to the known install location the
+# way register-schedules.sh does — otherwise this script is unusable over ssh.
+GOOSE_BIN="${GOOSE_BIN:-}"
+if [ -z "$GOOSE_BIN" ]; then
+  if command -v goose >/dev/null 2>&1; then
+    GOOSE_BIN="$(command -v goose)"
+  elif [ -x "$HOME/.local/bin/goose" ]; then
+    GOOSE_BIN="$HOME/.local/bin/goose"
+  else
+    echo "check-mcp.sh: goose CLI not found on PATH or at ~/.local/bin/goose" >&2
+    echo "              (Mac: scripts/mac/bootstrap-mac.sh)" >&2
+    exit 2
+  fi
+fi
 
 CONFIG="$HOME/.config/goose/config.yaml"
 PROVIDER="zen-openai"
@@ -55,11 +69,20 @@ run_check() {
   echo "--> $name"
   rc=0
   env GOOSE_MODE=auto GOOSE_MAX_TURNS=15 GOOSE_DISABLE_SESSION_NAMING=true \
-    goose run --no-session --quiet \
+    "$GOOSE_BIN" run --no-session --quiet \
     -t "$prompt" \
     --provider "$PROVIDER" --model "$MODEL" \
     >"$OUT_FILE" 2>&1 || rc=$?
-  if [ "$rc" -eq 0 ] && grep -qiE 'authentication is required|complete the (sign-in|authorization)' "$OUT_FILE"; then
+  # goose exits 0 even when an extension fails to start or every model call
+  # dies (same behavior run-recipe.sh compensates for), so a zero exit alone is
+  # not success — a per-account check that never reached Gmail must not PASS.
+  if [ "$rc" -eq 0 ] && grep -qE 'Failed to start extension|^(Network error|Server error|Request failed)|Please resend your message to try again' "$OUT_FILE"; then
+    echo "    FAIL — the run completed but never reached the tools:"
+    grep -oE 'Failed to start extension [^)]*\)|^(Network error|Server error|Request failed)[^\n]*' "$OUT_FILE" | head -n 3 | sed 's/^/      | /'
+    tail -n 4 "$OUT_FILE" | sed 's/^/      | /'
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    SUMMARY="$SUMMARY  FAIL  $name (tools/provider unreachable)"$'\n'
+  elif [ "$rc" -eq 0 ] && grep -qiE 'authentication is required|complete the (sign-in|authorization)' "$OUT_FILE"; then
     # The tool answered with an auth prompt, not data — and this one-shot run
     # has already exited, taking the localhost OAuth callback listener with
     # it, so consent clicked NOW lands on a dead port. The consent must
@@ -89,8 +112,47 @@ echo "NOTE: first-run auth may open a browser (Google OAuth consent) or print"
 echo "      an auth URL (Todoist). Complete it, then re-run this script."
 
 # ---- 1. Gmail via workspace-mcp --------------------------------------------
-run_check "Gmail (workspace-mcp)" \
-  "Using the Google Workspace tools, list the subject lines of the 3 most recent emails in my inbox. Output only the three subject lines, one per line. Do not modify, label, or send anything."
+# One smoke test per account in USER_GOOGLE_EMAILS (falls back to
+# USER_GOOGLE_EMAIL, then to the extension's default account). Each account's
+# check passes its address as the tools' user_google_email argument, so a
+# missing consent for a secondary account fails ITS check, not the primary's.
+# On the brain the roster lives in /data/secrets.env — load it like the other
+# brain-side scripts (register-schedules.sh, check-brain.sh) so an SSH shell
+# without the exports still sweeps every account.
+if [ -z "${GOOGLE_OAUTH_CLIENT_ID:-}" ] && [ -r /data/secrets.env ]; then
+  # Gate on the OAuth client id, not the roster: secrets.env is also the only
+  # source of GOOGLE_OAUTH_CLIENT_ID/SECRET, which workspace-mcp needs to start
+  # at all. Gating on the roster meant that exporting USER_GOOGLE_EMAILS by hand
+  # skipped the file and left the extension unable to launch.
+  set -a
+  # shellcheck disable=SC1091
+  . /data/secrets.env
+  set +a
+fi
+
+GMAIL_CHECKS=0
+ACCOUNTS="${USER_GOOGLE_EMAILS:-${USER_GOOGLE_EMAIL:-}}"
+if [ -n "$ACCOUNTS" ]; then
+  OLD_IFS="$IFS"
+  IFS=','
+  for account in $ACCOUNTS; do
+    IFS="$OLD_IFS"
+    account="$(printf '%s' "$account" | tr -d '[:space:]')"
+    [ -n "$account" ] || { IFS=','; continue; }
+    GMAIL_CHECKS=$((GMAIL_CHECKS + 1))
+    run_check "Gmail ($account)" \
+      "Using the Google Workspace tools, list the subject lines of the 3 most recent emails in the inbox of the Google account $account. Pass user_google_email=$account on every tool call. Output only the three subject lines, one per line. Do not modify, label, or send anything."
+    IFS=','
+  done
+  IFS="$OLD_IFS"
+fi
+if [ "$GMAIL_CHECKS" -eq 0 ]; then
+  # No (usable) roster — the pre-multi-account behavior: one check against
+  # the extension's default account. A roster of only commas/whitespace
+  # lands here too instead of silently skipping Gmail entirely.
+  run_check "Gmail (workspace-mcp)" \
+    "Using the Google Workspace tools, list the subject lines of the 3 most recent emails in my inbox. Output only the three subject lines, one per line. Do not modify, label, or send anything."
+fi
 
 if [ "$FAIL_COUNT" -gt 0 ]; then
   echo "    Hints: is workspace-mcp enabled in $CONFIG? Are"
@@ -98,6 +160,8 @@ if [ "$FAIL_COUNT" -gt 0 ]; then
   echo "    (Keychain export / secrets.env)? Was the OAuth consent completed"
   echo "    and the GCP app published 'In production'? (docs/setup/30-google-oauth.md"
   echo "    — a 'Testing' app expires refresh tokens every 7 days.)"
+  echo "    A failure for one specific account usually means that account's"
+  echo "    consent dance was never completed — docs/setup/30-google-oauth.md §8."
 fi
 
 # ---- 2. Todoist remote MCP (only if enabled) --------------------------------

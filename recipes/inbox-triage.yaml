@@ -4,49 +4,91 @@
 # The recipe emails a summary ONLY when action-needed items exist (one
 # self-addressed email via the Gmail send tool — the single exception to
 # drafts-only). Otherwise its final message is exactly NO_ACTION_NEEDED.
+#
+# Multi-account: the google_accounts parameter carries the USER_GOOGLE_EMAILS
+# roster (first entry = primary). register-schedules.sh stores it on the
+# schedule (`goose schedule add --params`), run-recipe.sh passes it per run;
+# with no roster the empty default applies and the run is single-account
+# (docs/setup/30-google-oauth.md §8).
 version: 1.0.0
 title: Inbox Triage
 description: Labels unread inbox mail, drafts (never sends) replies, and reports only what needs your attention.
 
+parameters:
+  - key: google_accounts
+    input_type: string
+    requirement: optional
+    default: ""
+    description: >-
+      Comma-separated Google account emails to sweep, first entry = the
+      primary (delivery) account. Empty means the single default account
+      workspace-mcp is configured with.
+
 instructions: |
   You are running unattended as a scheduled job. Nobody can answer questions,
-  so never ask any.
+  so never ask any. If a tool call fails, retry it once; if it still fails,
+  continue with the remaining accounts and report the gap as described in
+  the delivery rules below.
 
-  Triage every UNREAD message currently in the Gmail inbox (via workspace-mcp):
+  Accounts:
+  - Google accounts roster (comma-separated, may be empty): "{{ google_accounts }}"
+  - If the roster is empty, triage the single default account the
+    workspace-mcp tools use when no account is specified — that default
+    account is the PRIMARY account.
+  - If the roster lists accounts, triage EACH listed account's inbox by
+    passing that account's address as the user_google_email argument on
+    every workspace-mcp tool call. The FIRST address in the roster is the
+    PRIMARY account. All writes for a message (labels, drafts) must be made
+    in the SAME account that holds the message.
+
+  Triage every UNREAD message currently in each Gmail inbox (via
+  workspace-mcp):
 
   1. Classify each message as one of:
      - action-needed: a human reply, decision, payment, or deadline is required
      - fyi: worth knowing, no action required
      - newsletter/promo/automated: bulk or machine-generated mail
   2. Apply Gmail labels accordingly: "Triage/Action", "Triage/FYI",
-     "Triage/Newsletter". Create a label the first time it is missing.
+     "Triage/Newsletter". Create a label the first time it is missing in
+     that account.
   3. For action-needed messages where a reply is the obvious next step, write
-     a short draft reply and save it as a Gmail DRAFT on the thread.
+     a short draft reply and save it as a Gmail DRAFT on the thread — in the
+     same account that received the message.
 
   Absolute prohibitions:
-  - You must NEVER send, reply-and-send, or forward any email. Only draft
-    creation is allowed. If the only tool available would send a message, do
-    not use it — drafts only.
+  - You must NEVER send, reply-and-send, or forward any email from ANY
+    account. Only draft creation is allowed. If the only tool available
+    would send a message, do not use it — drafts only. (The single
+    self-addressed summary email from the primary account described below
+    is the sole exception.)
   - Do not archive, delete, mark read/unread, or mark spam. Labels and drafts
     are your only Gmail writes.
   - No shell commands in this run.
 
   Delivery and final message rules (follow these exactly):
-  - If one or more messages are action-needed: compose a SHORT plain-text
-    summary listing ONLY the action-needed items — one line each:
-    sender — subject — what is needed (and whether a draft was left).
+  - An account whose inbox could not be read at all (after the one retry)
+    COUNTS AS an action-needed item: "[tag] inbox unreadable — could not
+    triage". It goes in the summary like any other action-needed item, so
+    a broken consent is surfaced by email, never silently dropped.
+  - If one or more items are action-needed (across all accounts, including
+    unreadable-inbox items): compose a SHORT plain-text summary listing
+    ONLY the action-needed items — one line each: sender — subject — what
+    is needed (and whether a draft was left). When more than one account
+    was in scope, prefix each line with a short account tag (the part
+    before the @, e.g. "[side-project]" for side-project@example.com).
     Do not list fyi or newsletter items. Deliver it as ONE email via the
-    Gmail send tool, addressed to your own account (sender and recipient
-    are the same authenticated address — this self-addressed delivery
-    email is the single exception to the drafts-only rule), subject
-    "Inbox triage — action needed". Then end by printing the same summary
-    as your final message.
-  - If nothing is action-needed: send NO email, and your final message must
-    be exactly:
+    Gmail send tool, sent from the PRIMARY account and addressed to that
+    same primary address (sender and recipient are the same — this
+    self-addressed delivery email is the single exception to the
+    drafts-only rule), subject "Inbox triage — action needed". Then end by
+    printing the same summary as your final message.
+  - If nothing is action-needed and every inbox was readable: send NO
+    email, and your final message must be exactly:
     NO_ACTION_NEEDED
     with no other words, punctuation, or formatting.
-  - If you could not read the inbox at all: end with a final message that
-    briefly says so — the scheduler's session record captures it.
+  - Only if NO inbox could be read at all (so there is no account to send
+    the summary from reliably): send no email and end with a final message
+    that briefly says so — the scheduler's session record captures it.
 
 prompt: |
   Triage my unread inbox now. Follow the delivery and final-message rules
