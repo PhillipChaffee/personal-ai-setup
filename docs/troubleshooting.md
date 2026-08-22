@@ -304,3 +304,39 @@ go stale silently.
 
 Run `pin-models.sh` monthly even when nothing is broken — catching a deprecation
 notice beats catching a 404 at 07:00 when the morning brief fails.
+
+## Code agent chat won't start, wake, or answer
+
+Symptoms: the app's Code tab shows a chat stuck in "waking…", `POST /api/chats`
+returns 502, or the gateway itself is unreachable.
+
+- **Gateway unreachable (connection refused / TLS error).** The manager binds
+  the tailnet IP only and exits until tailscaled has an IPv4 — check
+  `systemctl status code-agent-manager` and `tailscale status`. After a
+  reboot, `/data` is locked until `luks-unlock.sh` runs; the unit stays down
+  by design (`RequiresMountsFor=/data`). No TLS? Run
+  `sudo scripts/vps/renew-tls-cert.sh` — without a cert the manager serves
+  plain HTTP and logs a warning.
+- **401 from the gateway.** Password mismatch: the app's Code settings must
+  carry the current `OPENCODE_SERVER_PASSWORD` (username `opencode`).
+- **Create fails with a 403.** The repo isn't in
+  `/data/code-agents/repos.json`, or you picked a zen-free model for a repo
+  not flagged `public_throwaway` — both are policy, not bugs
+  (`docs/code-agents.md`).
+- **Create fails with a 409.** `CODE_AGENT_MAX_ACTIVE` (default 2) chats are
+  already running — stop one from the app or wait for idle spin-down.
+- **Create/wake 502.** The container didn't come up in 90s. Look at
+  `journalctl -u code-agent-manager -n 50` and
+  `podman logs code-agent-<id>`. First create after a deploy pulls the
+  OpenCode base image — slow networks can blow the window; re-try once.
+  Clone failures usually mean the PAT lacks that repo
+  (fine-grained scope: docs/setup/70-code-agents.md §1).
+- **Zen models error inside a chat** ("provider not authenticated"). The
+  seeded auth.json shape may have drifted with an opencode upgrade — check
+  `scripts/vps/code-agent-manager.py` (`seed_auth`) against what
+  `opencode auth login` writes, and re-run
+  `scripts/verify/check-code-agents.sh --probe`.
+- **A chat vanished from the running list.** Idle spin-down is normal
+  (default 15 min); the volume keeps everything. Opening the chat wakes it.
+  If wake says the container is `absent` (e.g. after `podman rm` or an image
+  upgrade), wake recreates it from the volume — that's the designed path.

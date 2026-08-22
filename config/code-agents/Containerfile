@@ -1,0 +1,38 @@
+# Containerfile — the code-agent image: one container per code chat.
+# Built by deploy-vps.sh as `code-agent:local`; started/stopped per chat by
+# scripts/vps/code-agent-manager.py. Concept + operations: docs/code-agents.md.
+#
+# Base: the official OpenCode image (Alpine + the static `opencode` binary,
+# ripgrep preinstalled; ENTRYPOINT is `opencode`). We add the git toolchain
+# the agent needs to do its own git work — clone/commit/push and `gh pr
+# create` — with the credential arriving ONLY via the GH_TOKEN env var at run
+# time (the gitconfig line below lets plain `git push` over HTTPS use gh as
+# its credential helper, so no token is ever written into the workspace).
+#
+# Image tag pinning: `latest` tracks upstream; pin a release tag here the
+# same way goose is pinned to 1.x if churn ever breaks a deploy
+# (scripts/verify/check-code-agents.sh smoke-tests the built image).
+ARG OPENCODE_IMAGE=ghcr.io/anomalyco/opencode:latest
+FROM ${OPENCODE_IMAGE}
+
+RUN apk add --no-cache git openssh-client github-cli \
+ && printf '[credential "https://github.com"]\n\thelper = !gh auth git-credential\n' >> /etc/gitconfig
+
+# Everything stateful lives in the per-chat volume mounted at /chat:
+#   /chat/home       $HOME — opencode's XDG dirs (config, auth.json, the
+#                    chat's own SQLite DB, caches) — written by the manager
+#                    at create time, preserved across spin-down/wake
+#   /chat/workspace  the repo clone the agent works in
+# Nothing outside /chat is writable state; the container is disposable.
+ENV HOME=/chat/home
+WORKDIR /chat/workspace
+
+# Toolchains: keep the base image lean. A repo that needs npm/python/cargo
+# declares a `setup` command in /data/code-agents/repos.json (run in-container
+# at create time), or extend this image locally:
+#   RUN apk add --no-cache nodejs npm python3 py3-pip
+#
+# The manager starts this image as:
+#   opencode serve --hostname 0.0.0.0 --port 4096
+# (0.0.0.0 is container-internal only — the manager publishes the port on
+# 127.0.0.1 and fronts it with TLS + auth on the tailnet.)

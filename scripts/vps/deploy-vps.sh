@@ -191,6 +191,39 @@ if grep -q '^TELEGRAM_BOT_TOKEN=..*' /data/secrets.env 2>/dev/null; then
 else
   echo "    telegram gateway: installed but not enabled (no TELEGRAM_BOT_TOKEN in secrets.env; see docs/setup/40-phone-setup.md §1a)"
 fi
+# ---------------------------------------------------------- code agents
+# Per-chat OpenCode containers + session manager (docs/code-agents.md,
+# docs/setup/70-code-agents.md). Everything is installed unconditionally;
+# the manager is ENABLED only when both of its secrets are present in
+# secrets.env — the same conditional-enable pattern as the telegram gateway.
+echo "==> Code agents: container engine, image, manager"
+if ! command -v podman >/dev/null 2>&1; then
+  echo "    installing podman (rootless) + uidmap + slirp4netns"
+  sudo apt-get update -qq
+  sudo apt-get install -y -qq podman uidmap slirp4netns >/dev/null
+fi
+# Rootless podman needs subordinate id ranges for agent, and the system unit
+# needs agent's user runtime dir (/run/user/1000) kept alive by linger.
+grep -q '^agent:' /etc/subuid 2>/dev/null || \
+  sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 agent
+sudo loginctl enable-linger agent >/dev/null 2>&1 || true
+echo "    building code-agent image (pulls the OpenCode base on first run)"
+podman build -q -t code-agent:local \
+  -f "$REPO_DIR/config/code-agents/Containerfile" \
+  "$REPO_DIR/config/code-agents" >/dev/null
+mkdir -p /data/code-agents/chats
+install_template "$REPO_DIR/config/code-agents/repos.example.json" /data/code-agents/repos.json
+sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/code-agent-manager.service" /etc/systemd/system/code-agent-manager.service
+sudo systemctl daemon-reload
+if grep -q '^OPENCODE_SERVER_PASSWORD=..*' /data/secrets.env 2>/dev/null && \
+   grep -q '^GITHUB_CODE_AGENT_PAT=..*' /data/secrets.env 2>/dev/null; then
+  sudo systemctl enable --now code-agent-manager.service >/dev/null
+  echo "    code agents: enabled (manager on the tailnet, port 4300)"
+else
+  echo "    code agents: installed but not enabled (set OPENCODE_SERVER_PASSWORD"
+  echo "    and GITHUB_CODE_AGENT_PAT in secrets.env; docs/setup/70-code-agents.md)"
+fi
+
 sudo systemctl enable goose-serve.service >/dev/null
 echo "==> (Re)starting goose-serve"
 sudo systemctl restart goose-serve.service
@@ -239,6 +272,8 @@ Verify next (docs/setup/50-vps-brain.md §6-10):
   5. From the Mac (in your repo checkout, where the terraform state lives),
      confirm zero public exposure:
        ./scripts/verify/check-security.sh "\$(cd infra/terraform && terraform output -raw server_public_ip)"
+  6. Code agents (if enabled — docs/setup/70-code-agents.md):
+       $REPO_DIR/scripts/verify/check-code-agents.sh --probe
 
 Upgrades later: git pull happens automatically — just re-run this script.
 ============================================================
