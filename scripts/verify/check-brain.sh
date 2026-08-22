@@ -178,10 +178,11 @@ elif [ "$RUN_NOW" = "ask" ]; then
 fi
 if [ "$RUN_NOW" = "yes" ]; then
   # Deliberately NOT `goose schedule run-now` (verified live, goose 1.46.0):
-  # run-now spawns the job inside the CLI process and returns immediately —
-  # the process (or SSH session) exiting kills the half-started run. The
-  # wrapper runs the same recipe synchronously with the secrets env loaded,
-  # which is also exactly the fallback-timer path.
+  # run-now executes the job inside the CLI process — synchronously, so it
+  # does report failures inline, but the process (or SSH session) exiting
+  # kills the run, and it neither loads /data/secrets.env nor retries. The
+  # wrapper runs the same recipe with the secrets env loaded and the failure
+  # watchdog attached, which is also exactly the fallback-timer path.
   if [ "$MODE" = "local" ]; then
     RC=0; /home/agent/personal-ai-setup/scripts/common/run-recipe.sh morning-brief >/dev/null || RC=$?
   else

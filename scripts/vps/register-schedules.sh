@@ -39,14 +39,12 @@ if [[ -z "${USER_GOOGLE_EMAILS:-}" ]] && [[ -r /data/secrets.env ]]; then
   set +a
 fi
 
-# Where rendered recipe copies live (docs/setup/30-google-oauth.md §8). The
-# native scheduler runs recipes with their parameter DEFAULTS — it cannot
-# pass values — so when USER_GOOGLE_EMAILS is set, each recipe that declares
-# the google_accounts parameter is registered from a copy whose default IS
-# the roster. The copies sit on /data (encrypted, untracked): the personal
-# roster never lands in the repo. Re-running this script re-renders, so
-# roster changes propagate the same way cron changes do.
-RENDER_DIR=/data/rendered-recipes
+# The multi-account roster reaches scheduled runs as a stored recipe
+# PARAMETER: `goose schedule add --params google_accounts=<roster>` persists
+# it into schedule.json (verified against goose 1.46.0) and the scheduler
+# applies it at fire time. Re-running this script updates stored params the
+# same way it updates crons, and an empty roster simply omits --params so the
+# recipe's own default ("") applies — single-account behavior, unchanged.
 
 # The convention everywhere in this setup: the roster's FIRST entry is the
 # primary account and must equal USER_GOOGLE_EMAIL. Warn on drift — recipes
@@ -57,30 +55,6 @@ if [[ -n "${USER_GOOGLE_EMAILS:-}" && -n "${USER_GOOGLE_EMAIL:-}" \
   echo "         match USER_GOOGLE_EMAIL ($USER_GOOGLE_EMAIL) — the roster's first" >&2
   echo "         entry must be the primary (docs/setup/30-google-oauth.md §8)." >&2
 fi
-
-# render_recipe <src> <dst>: bake the roster into the google_accounts
-# parameter default (the `default: ""` line of that parameter's block).
-# Exits non-zero unless exactly one substitution happened — a formatting
-# drift in the recipe (e.g. '' instead of "", or reordered keys) must fail
-# loudly here, never silently register a copy with an empty roster. The
-# roster comes in via ENVIRON (no -v, so awk does no backslash processing)
-# and is escaped so sub() cannot expand '&'.
-render_recipe() {
-  awk '
-    BEGIN {
-      roster = ENVIRON["USER_GOOGLE_EMAILS"]
-      gsub(/\\/, "\\\\", roster)
-      gsub(/&/, "\\\\&", roster)
-    }
-    /- key: / { in_param = /key: google_accounts/ }
-    in_param && sub(/default: ""/, "default: \"" roster "\"") {
-      done++
-      in_param = 0
-    }
-    { print }
-    END { exit done == 1 ? 0 : 1 }
-  ' "$1" >"$2"
-}
 
 # Headless box: no Secret Service keyring, and schedule subcommands need no
 # secrets anyway.
@@ -117,20 +91,12 @@ for id in "${ORDER[@]}"; do
     echo "ERROR: recipe not found: $recipe" >&2
     exit 1
   fi
-  source_recipe="$recipe"
+  # Sweep recipes declare the google_accounts parameter; pass the roster as a
+  # stored schedule parameter when one is configured.
+  PARAMS=()
   if [[ -n "${USER_GOOGLE_EMAILS:-}" ]] && grep -q 'key: google_accounts' "$recipe"; then
-    mkdir -p "$RENDER_DIR"
-    rendered="$RENDER_DIR/$id.yaml"
-    export USER_GOOGLE_EMAILS
-    if ! render_recipe "$recipe" "$rendered" \
-        || ! grep -qF -- "default: \"$USER_GOOGLE_EMAILS\"" "$rendered"; then
-      echo "ERROR: $id: could not bake the USER_GOOGLE_EMAILS roster into $rendered" >&2
-      echo "       (has the google_accounts parameter block in $recipe drifted from" >&2
-      echo "       the literal 'default: \"\"' form this script rewrites?)" >&2
-      exit 1
-    fi
-    source_recipe="$rendered"
-    echo "==> $id: multi-account roster baked into rendered copy ($rendered)"
+    PARAMS=(--params "google_accounts=$USER_GOOGLE_EMAILS")
+    echo "==> $id: registering with the multi-account roster as a stored parameter"
   fi
   if grep -q -- "$id" <<<"$EXISTING"; then
     echo "==> $id: already registered — removing and re-adding (no update subcommand)"
@@ -141,7 +107,8 @@ for id in "${ORDER[@]}"; do
   "$GOOSE_BIN" schedule add \
     --schedule-id "$id" \
     --cron "${CRONS[$id]}" \
-    --recipe-source "$source_recipe"
+    --recipe-source "$recipe" \
+    ${PARAMS[@]+"${PARAMS[@]}"}
 done
 
 # budget-checkin ships paused until a budgeting source is picked. The 1.x CLI

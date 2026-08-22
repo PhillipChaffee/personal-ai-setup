@@ -125,6 +125,12 @@ done
 if [[ ! -e "$GOOSE_CONFIG_DIR/.goosehints" ]]; then
   cp "$REPO_DIR/config/goose/goosehints.example" "$GOOSE_CONFIG_DIR/.goosehints"
   echo "    installed $GOOSE_CONFIG_DIR/.goosehints (edit it — it is yours now)"
+elif ! cmp -s "$REPO_DIR/config/goose/goosehints.example" "$GOOSE_CONFIG_DIR/.goosehints"; then
+  # Yours to edit, so never overwritten — but say so, or template additions
+  # (e.g. the multi-account paragraph) silently never reach an existing brain.
+  echo "    NOTE: $GOOSE_CONFIG_DIR/.goosehints differs from the repo template — not overwriting."
+  echo "          Review new guidance and merge by hand:"
+  echo "          diff '$GOOSE_CONFIG_DIR/.goosehints' '$REPO_DIR/config/goose/goosehints.example'"
 fi
 
 # ------------------------------------------- encrypted goose data dir
@@ -192,6 +198,15 @@ else
   echo "    telegram gateway: installed but not enabled (no TELEGRAM_BOT_TOKEN in secrets.env; see docs/setup/40-phone-setup.md §1a)"
 fi
 sudo systemctl enable goose-serve.service >/dev/null
+
+# ------------------------------------------------------------ schedules
+# BEFORE the restart on purpose: goose serve's scheduler reads schedule.json
+# once at startup and does not hot-reload it, so a schedule registered while
+# serve is running stays dormant until the next restart (verified against
+# goose 1.46.0). Registering first means the restart below picks everything up.
+echo "==> Registering automation schedules"
+bash "$REPO_DIR/scripts/vps/register-schedules.sh"
+
 echo "==> (Re)starting goose-serve"
 sudo systemctl restart goose-serve.service
 
@@ -215,10 +230,6 @@ if [[ "$UP" -ne 1 ]]; then
        Inspect:  sudo journalctl -u goose-serve -n 50 --no-pager"
 fi
 echo "    up."
-
-# ------------------------------------------------------------ schedules
-echo "==> Registering automation schedules"
-bash "$REPO_DIR/scripts/vps/register-schedules.sh"
 
 # -------------------------------------------------------------- summary
 cat <<EOF
