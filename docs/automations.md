@@ -44,12 +44,20 @@ stores it on each schedule (`goose schedule add --params`) so the scheduler
 applies it at fire time, and `run-recipe.sh` passes the same value on manual
 and fallback-timer runs. The vault recipes stay primary-only by design.
 
-`scripts/vps/register-schedules.sh` registers this whole roster idempotently and prints
-`goose schedule list` when done. One caveat it announces loudly: goose 1.x has no
-`schedule pause` CLI, so on a headless deploy `budget-checkin` registers **active**.
-Pause it from the Desktop Scheduler UI once connected to the brain, or
-`goose schedule remove --schedule-id budget-checkin` until you have a budgeting source —
-its first fire would otherwise be the 1st of the month at 09:00.
+`scripts/vps/register-schedules.sh` registers this roster idempotently and prints
+`goose schedule list` when done.
+
+**Vault-dependent recipes are skipped until their inputs exist.** `health-followups`
+needs `/data/life-vault/health/appointments.md` and `budget-checkin` needs
+`/data/life-vault/finance/ledger.csv`; before Phase 4 those files do not exist, and a
+registered recipe would fail on every fire and trip the watchdog's alert. The script
+skips them (and unregisters them if an earlier deploy added them), naming the missing
+path. They register themselves once the vault is cloned and the file is real — no extra
+step. `REGISTER_ALL=1` overrides this if you want the whole roster regardless.
+
+That also removes the old `budget-checkin` caveat: goose 1.x still has no `schedule
+pause` CLI, but the recipe no longer registers active on a fresh brain, so there is
+nothing to pause until you actually have a ledger.
 
 ## Adding a new automation, end to end
 

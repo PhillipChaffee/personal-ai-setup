@@ -83,6 +83,16 @@ declare -A CRONS=(
   [budget-checkin]="0 0 9 1 * *"
 )
 
+# Recipes whose inputs live in the private life vault (Phase 4). Registering
+# them before that exists guarantees a scheduled failure every week — the run
+# dies on the missing file and the watchdog fires an alert. Skip them, and
+# unregister them if a previous deploy already added them, until their inputs
+# are real. Set REGISTER_ALL=1 to register the roster regardless.
+declare -A PREREQ=(
+  [health-followups]="/data/life-vault/health/appointments.md"
+  [budget-checkin]="/data/life-vault/finance/ledger.csv"
+)
+
 EXISTING="$("$GOOSE_BIN" schedule list 2>/dev/null || true)"
 
 for id in "${ORDER[@]}"; do
@@ -91,6 +101,17 @@ for id in "${ORDER[@]}"; do
     echo "ERROR: recipe not found: $recipe" >&2
     exit 1
   fi
+  prereq="${PREREQ[$id]:-}"
+  if [[ -n "$prereq" && ! -e "$prereq" && -z "${REGISTER_ALL:-}" ]]; then
+    if grep -q -- "$id" <<<"$EXISTING"; then
+      echo "==> $id: prerequisite missing ($prereq) — unregistering"
+      "$GOOSE_BIN" schedule remove --schedule-id "$id"
+    else
+      echo "==> $id: skipped — prerequisite missing ($prereq)"
+    fi
+    continue
+  fi
+
   # Sweep recipes declare the google_accounts parameter; pass the roster as a
   # stored schedule parameter when one is configured.
   PARAMS=()
