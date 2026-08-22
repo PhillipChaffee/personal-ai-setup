@@ -46,8 +46,17 @@ Tunables (optional):
     CODE_AGENT_ENGINE         container engine, default podman
     CODE_AGENT_IMAGE          default code-agent:local
     CODE_AGENT_TLS_CERT/KEY   default /data/tls/{cert,key}.pem (falls back
-                              to plain HTTP on 127.0.0.1 with a loud warning)
+                              to plain HTTP with a loud warning)
+    CODE_AGENT_BIND           testing/dev ONLY: bind this address instead of
+                              the tailnet IP (never set on the brain)
+    CODE_AGENT_REAPER_INTERVAL  idle-reaper cadence seconds, default 60
+
+Typing: mypy --strict clean (enforced by .github/workflows/python-types.yml).
+Wire boundaries (JSON in/out, subprocess) are the only places `Any` appears,
+immediately validated into the dataclasses below.
 """
+
+from __future__ import annotations
 
 import base64
 import http.client
@@ -56,13 +65,14 @@ import os
 import re
 import secrets as pysecrets
 import shutil
-import socket
 import ssl
 import subprocess
 import sys
 import threading
 import time
+from dataclasses import asdict, dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 # ------------------------------------------------------------- configuration
@@ -81,9 +91,6 @@ ENGINE = os.environ.get("CODE_AGENT_ENGINE", "podman")
 IMAGE = os.environ.get("CODE_AGENT_IMAGE", "code-agent:local")
 TLS_CERT = os.environ.get("CODE_AGENT_TLS_CERT", "/data/tls/cert.pem")
 TLS_KEY = os.environ.get("CODE_AGENT_TLS_KEY", "/data/tls/key.pem")
-# Testing/dev overrides (scripts/verify/test-code-agent-manager.sh): bind a
-# fixed address instead of the tailnet IP, and speed up the idle reaper.
-# Never set CODE_AGENT_BIND on the brain — tailnet-only is the rule.
 BIND_OVERRIDE = os.environ.get("CODE_AGENT_BIND", "")
 REAPER_INTERVAL = int(os.environ.get("CODE_AGENT_REAPER_INTERVAL", "60"))
 
@@ -94,7 +101,9 @@ TOGETHER_KEY = os.environ.get("TOGETHER_API_KEY", "")
 
 CONFIG_TEMPLATE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "config", "code-agents", "opencode.json",
+    "config",
+    "code-agents",
+    "opencode.json",
 )
 
 BASE_CHAT_PORT = 4310  # per-chat opencode ports: 4310, 4311, ... on 127.0.0.1
@@ -102,113 +111,266 @@ BASE_CHAT_PORT = 4310  # per-chat opencode ports: 4310, 4311, ... on 127.0.0.1
 # Zen's free models train on user data (docs/privacy.md, hard rule 1). Refused
 # unless the repo's allowlist entry sets public_throwaway. The explicit set
 # tracks docs/model-routing.md; the "free" substring is a forward-compat net.
-FREE_MODEL_IDS = {"big-pickle", "muse-spark-contributor"}
+FREE_MODEL_IDS = frozenset({"big-pickle", "muse-spark-contributor"})
 
 
-def log(msg):
+def log(msg: str) -> None:
     print(f"code-agent-manager: {msg}", flush=True)
 
 
-# ------------------------------------------------------------- index / repos
+# ----------------------------------------------------------------- the model
+
+
+def _str(raw: dict[str, Any], key: str, default: str = "") -> str:
+    value = raw.get(key, default)
+    return value if isinstance(value, str) else default
+
+
+def _bool(raw: dict[str, Any], key: str) -> bool:
+    return bool(raw.get(key, False))
+
+
+def _float(raw: dict[str, Any], key: str) -> float:
+    value = raw.get(key, 0.0)
+    return float(value) if isinstance(value, (int, float)) else 0.0
+
+
+@dataclass
+class Chat:
+    """One code chat's metadata — the index entry. Content lives in the
+    chat's volume; this is everything the manager (and the app's list view)
+    needs without waking anything."""
+
+    id: str
+    repo: str
+    title: str
+    port: int
+    branch: str
+    model: str | None = None
+    probe: bool = False
+    created: float = 0.0
+    last_active: float = 0.0
+
+    def to_wire(self) -> dict[str, object]:
+        return asdict(self)
+
+    @classmethod
+    def from_wire(cls, raw: dict[str, Any]) -> Chat:
+        model = raw.get("model")
+        return cls(
+            id=_str(raw, "id"),
+            repo=_str(raw, "repo"),
+            title=_str(raw, "title"),
+            port=int(raw.get("port", 0)),
+            branch=_str(raw, "branch"),
+            model=model if isinstance(model, str) else None,
+            probe=_bool(raw, "probe"),
+            created=_float(raw, "created"),
+            last_active=_float(raw, "last_active"),
+        )
+
+
+@dataclass
+class Index:
+    """The manager's only cross-chat state, persisted atomically."""
+
+    chats: dict[str, Chat] = field(default_factory=dict)
+
+    @classmethod
+    def load(cls) -> Index:
+        try:
+            with open(INDEX_PATH, "r", encoding="utf-8") as f:
+                raw: Any = json.load(f)
+        except FileNotFoundError:
+            return cls()
+        chats_raw = raw.get("chats", {}) if isinstance(raw, dict) else {}
+        chats: dict[str, Chat] = {}
+        if isinstance(chats_raw, dict):
+            for cid, entry in chats_raw.items():
+                if isinstance(cid, str) and isinstance(entry, dict):
+                    chats[cid] = Chat.from_wire(entry)
+        return cls(chats=chats)
+
+    def save(self) -> None:
+        tmp = INDEX_PATH + ".tmp"
+        payload = {"chats": {cid: chat.to_wire() for cid, chat in self.chats.items()}}
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=1)
+        os.replace(tmp, INDEX_PATH)
+
+
+@dataclass(frozen=True)
+class RepoEntry:
+    """One allowlist entry — the trust boundary (docs/code-agents.md)."""
+
+    name: str
+    url: str
+    setup: str = ""
+    edit_only: bool = False
+    allow_push: bool = False
+    public_throwaway: bool = False
+
+    @classmethod
+    def from_wire(cls, raw: dict[str, Any]) -> RepoEntry:
+        return cls(
+            name=_str(raw, "name"),
+            url=_str(raw, "url"),
+            setup=_str(raw, "setup"),
+            edit_only=_bool(raw, "edit_only"),
+            allow_push=_bool(raw, "allow_push"),
+            public_throwaway=_bool(raw, "public_throwaway"),
+        )
+
+    def to_wire(self) -> dict[str, object]:
+        return asdict(self)
+
+
+PROBE_REPO = RepoEntry(name="_probe", url="")
+
+
+@dataclass(frozen=True)
+class CreateChatRequest:
+    repo: str
+    task: str
+    title: str
+    model: str | None
+
+    @classmethod
+    def from_wire(cls, raw: dict[str, Any]) -> CreateChatRequest:
+        model = raw.get("model")
+        return cls(
+            repo=_str(raw, "repo"),
+            task=_str(raw, "task"),
+            title=_str(raw, "title"),
+            model=model if isinstance(model, str) and model else None,
+        )
+
+
+@dataclass(frozen=True)
+class ApiError:
+    status: int
+    message: str
+
 
 _lock = threading.Lock()
 
 
-def _load_json(path, default):
+def load_repos() -> dict[str, RepoEntry]:
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        with open(REPOS_PATH, "r", encoding="utf-8") as f:
+            raw: Any = json.load(f)
     except FileNotFoundError:
-        return default
-
-
-def load_index():
-    return _load_json(INDEX_PATH, {"chats": {}})
-
-
-def save_index(index):
-    tmp = INDEX_PATH + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(index, f, indent=1)
-    os.replace(tmp, INDEX_PATH)
-
-
-def load_repos():
-    data = _load_json(REPOS_PATH, {"repos": []})
-    return {r["name"]: r for r in data.get("repos", []) if "name" in r}
+        return {}
+    repos: dict[str, RepoEntry] = {}
+    entries = raw.get("repos", []) if isinstance(raw, dict) else []
+    if isinstance(entries, list):
+        for entry in entries:
+            if isinstance(entry, dict) and isinstance(entry.get("name"), str):
+                repo = RepoEntry.from_wire(entry)
+                repos[repo.name] = repo
+    return repos
 
 
 # ------------------------------------------------------------------ engine
 
-def engine(*args, check=True, capture=True, timeout=120):
+
+def engine(
+    *args: str,
+    check: bool = True,
+    capture: bool = True,
+    timeout: int = 120,
+) -> subprocess.CompletedProcess[str]:
     cmd = [ENGINE, *args]
     return subprocess.run(
-        cmd, check=check, timeout=timeout,
+        cmd,
+        check=check,
+        timeout=timeout,
         stdout=subprocess.PIPE if capture else None,
-        stderr=subprocess.STDOUT if capture else None, text=True,
+        stderr=subprocess.STDOUT if capture else None,
+        text=True,
     )
 
 
-def container_name(chat_id):
+def container_name(chat_id: str) -> str:
     return f"code-agent-{chat_id}"
 
 
-def container_state(chat_id):
+def container_state(chat_id: str) -> str:
     """running | stopped (exists, not running) | absent"""
     try:
-        r = engine("container", "inspect", "--format", "{{.State.Status}}",
-                   container_name(chat_id), check=False)
-    except Exception:
+        result = engine(
+            "container",
+            "inspect",
+            "--format",
+            "{{.State.Status}}",
+            container_name(chat_id),
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
         return "absent"
-    if r.returncode != 0:
+    if result.returncode != 0:
         return "absent"
-    return "running" if r.stdout.strip() == "running" else "stopped"
+    return "running" if result.stdout.strip() == "running" else "stopped"
 
 
-def running_count(index):
-    return sum(1 for cid in index["chats"] if container_state(cid) == "running")
+def running_count(index: Index) -> int:
+    return sum(1 for cid in index.chats if container_state(cid) == "running")
 
 
-def run_container(chat):
+def run_container(chat: Chat) -> None:
     """Create + start the chat's container (state lives in the volume)."""
-    chat_dir = os.path.join(CHATS_DIR, chat["id"])
-    args = [
-        "run", "-d", "--name", container_name(chat["id"]),
-        "--label", "code-agent=1",
-        "--memory", MEM_LIMIT, "--cpus", CPU_LIMIT,
-        "-p", f"127.0.0.1:{chat['port']}:4096",
-        "-v", f"{chat_dir}:/chat",
-        "-e", f"OPENCODE_SERVER_PASSWORD={PASSWORD}",
-        "-e", "OPENCODE_DISABLE_AUTOUPDATE=1",
+    chat_dir = os.path.join(CHATS_DIR, chat.id)
+    args: list[str] = [
+        "run",
+        "-d",
+        "--name",
+        container_name(chat.id),
+        "--label",
+        "code-agent=1",
+        "--memory",
+        MEM_LIMIT,
+        "--cpus",
+        CPU_LIMIT,
+        "-p",
+        f"127.0.0.1:{chat.port}:4096",
+        "-v",
+        f"{chat_dir}:/chat",
+        "-e",
+        f"OPENCODE_SERVER_PASSWORD={PASSWORD}",
+        "-e",
+        "OPENCODE_DISABLE_AUTOUPDATE=1",
     ]
     if TOGETHER_KEY:
         args += ["-e", f"TOGETHER_API_KEY={TOGETHER_KEY}"]
-    if GH_PAT and not chat.get("probe"):
+    if GH_PAT and not chat.probe:
         args += ["-e", f"GH_TOKEN={GH_PAT}"]
     args += [IMAGE, "serve", "--hostname", "0.0.0.0", "--port", "4096"]
     engine(*args)
 
 
-def oneshot(chat_dir, script, env_extra=(), timeout=600):
+def oneshot(
+    chat_dir: str,
+    script: str,
+    env_extra: tuple[str, ...] = (),
+    timeout: int = 600,
+) -> subprocess.CompletedProcess[str]:
     """Run a shell one-shot inside a throwaway container on the chat volume
     (used for clone/branch/setup so git + gh + the token never need to exist
     on the host side of this service)."""
-    args = ["run", "--rm", "--entrypoint", "/bin/sh",
-            "-v", f"{chat_dir}:/chat"]
+    args: list[str] = ["run", "--rm", "--entrypoint", "/bin/sh", "-v", f"{chat_dir}:/chat"]
     for kv in env_extra:
         args += ["-e", kv]
     args += [IMAGE, "-c", script]
     return engine(*args, timeout=timeout)
 
 
-def wait_for_chat(port, timeout_s=90):
+def wait_for_chat(port: int, timeout_s: int = 90) -> bool:
     """Poll the chat's opencode server until it answers (auth'd or 401)."""
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         try:
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
-            conn.request("GET", "/session",
-                         headers={"Authorization": basic_auth_header()})
+            conn.request("GET", "/session", headers={"Authorization": basic_auth_header()})
             resp = conn.getresponse()
             resp.read()
             conn.close()
@@ -220,32 +382,35 @@ def wait_for_chat(port, timeout_s=90):
     return False
 
 
-def basic_auth_header():
+def basic_auth_header() -> str:
     tok = base64.b64encode(f"opencode:{PASSWORD}".encode()).decode()
     return f"Basic {tok}"
 
 
 # ------------------------------------------------------------ chat lifecycle
 
-def next_port(index):
-    used = {c["port"] for c in index["chats"].values()}
+
+def next_port(index: Index) -> int:
+    used = {chat.port for chat in index.chats.values()}
     port = BASE_CHAT_PORT
     while port in used:
         port += 1
     return port
 
 
-def is_free_model(model):
+def is_free_model(model: str | None) -> bool:
     if not model:
         return False
     bare = model.split("/", 1)[-1].lower()
     return bare in FREE_MODEL_IDS or "free" in bare
 
 
-def render_chat_config(chat_dir, model, allow_push):
+def render_chat_config(chat_dir: str, model: str | None, allow_push: bool) -> None:
     """Render the per-chat opencode config from the repo template."""
     with open(CONFIG_TEMPLATE, "r", encoding="utf-8") as f:
-        cfg = json.load(f)
+        cfg: Any = json.load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError(f"config template is not a JSON object: {CONFIG_TEMPLATE}")
     cfg.pop("_readme", None)
     if model:
         cfg["model"] = model
@@ -257,7 +422,7 @@ def render_chat_config(chat_dir, model, allow_push):
         json.dump(cfg, f, indent=2)
 
 
-def seed_auth(chat_dir):
+def seed_auth(chat_dir: str) -> None:
     """Seed opencode's auth.json so Zen models work headlessly.
     NOTE: shape mirrors what `opencode auth login` writes as of the pinned
     version — check-code-agents.sh --probe verifies models actually resolve;
@@ -272,56 +437,72 @@ def seed_auth(chat_dir):
     os.chmod(path, 0o600)
 
 
-def create_chat(body):
-    repos = load_repos()
-    repo_name = body.get("repo", "")
-    probe = repo_name == "_probe"
-    if not probe and repo_name not in repos:
-        listed = ", ".join(sorted(repos)) or "(allowlist empty)"
-        return None, (403, f"repo '{repo_name}' is not in the allowlist "
-                           f"(/data/code-agents/repos.json). Allowed: {listed}")
-    repo = repos.get(repo_name, {"name": "_probe", "url": "", "setup": "",
-                                 "allow_push": False, "public_throwaway": False})
+def shquote(s: str) -> str:
+    return "'" + s.replace("'", "'\\''") + "'"
 
-    model = body.get("model") or ""
-    if is_free_model(model) and not repo.get("public_throwaway"):
-        return None, (403, f"model '{model}' is a zen-free model — free models "
-                           "train on your data (docs/privacy.md hard rule 1) and "
-                           "are refused unless the repo is flagged public_throwaway.")
+
+def create_chat(request: CreateChatRequest) -> Chat | ApiError:
+    repos = load_repos()
+    probe = request.repo == "_probe"
+    if not probe and request.repo not in repos:
+        listed = ", ".join(sorted(repos)) or "(allowlist empty)"
+        return ApiError(
+            403,
+            f"repo '{request.repo}' is not in the allowlist "
+            f"(/data/code-agents/repos.json). Allowed: {listed}",
+        )
+    repo = repos.get(request.repo, PROBE_REPO)
+
+    if is_free_model(request.model) and not repo.public_throwaway:
+        return ApiError(
+            403,
+            f"model '{request.model}' is a zen-free model — free models train on "
+            "your data (docs/privacy.md hard rule 1) and are refused unless the "
+            "repo is flagged public_throwaway.",
+        )
 
     with _lock:
-        index = load_index()
+        index = Index.load()
         if running_count(index) >= MAX_ACTIVE:
-            return None, (409, f"{MAX_ACTIVE} chats already active (CODE_AGENT_MAX_ACTIVE) "
-                               "— stop one or wait for idle spin-down.")
+            return ApiError(
+                409,
+                f"{MAX_ACTIVE} chats already active (CODE_AGENT_MAX_ACTIVE) "
+                "— stop one or wait for idle spin-down.",
+            )
         suffix = pysecrets.token_hex(3)
-        chat_id = re.sub(r"[^a-zA-Z0-9-]", "-", f"{repo_name}-{suffix}").strip("-")
-        port = next_port(index)
-        chat = {
-            "id": chat_id, "repo": repo_name,
-            "title": body.get("title") or (body.get("task") or chat_id)[:80],
-            "model": model or None, "port": port,
-            "branch": f"agent/{chat_id}", "probe": probe,
-            "created": time.time(), "last_active": time.time(),
-        }
-        index["chats"][chat_id] = chat
-        save_index(index)
+        chat_id = re.sub(r"[^a-zA-Z0-9-]", "-", f"{request.repo}-{suffix}").strip("-")
+        now = time.time()
+        chat = Chat(
+            id=chat_id,
+            repo=request.repo,
+            title=request.title or (request.task or chat_id)[:80],
+            port=next_port(index),
+            branch=f"agent/{chat_id}",
+            model=request.model,
+            probe=probe,
+            created=now,
+            last_active=now,
+        )
+        index.chats[chat_id] = chat
+        index.save()
 
     chat_dir = os.path.join(CHATS_DIR, chat_id)
     os.makedirs(os.path.join(chat_dir, "workspace"), exist_ok=True)
     os.makedirs(os.path.join(chat_dir, "home"), exist_ok=True)
-    render_chat_config(chat_dir, model, repo.get("allow_push", False))
+    render_chat_config(chat_dir, request.model, repo.allow_push)
     seed_auth(chat_dir)
 
     try:
         if probe:
             # Self-contained scratch repo: lets the verify script exercise the
             # whole lifecycle with no network and no credential.
-            oneshot(chat_dir,
-                    "cd /chat/workspace && git init -q -b main && "
-                    "git -c user.email=probe@localhost -c user.name=probe "
-                    "commit -q --allow-empty -m init && "
-                    f"git checkout -q -b {chat['branch']}")
+            oneshot(
+                chat_dir,
+                "cd /chat/workspace && git init -q -b main && "
+                "git -c user.email=probe@localhost -c user.name=probe "
+                "commit -q --allow-empty -m init && "
+                f"git checkout -q -b {chat.branch}",
+            )
         else:
             # Clone + branch in-container: gh's credential helper turns
             # GH_TOKEN into the HTTPS credential; nothing token-shaped is
@@ -329,50 +510,46 @@ def create_chat(body):
             # never the owner's personal one (issue #17 C4).
             script = (
                 f"cd /chat/workspace && "
-                f"git clone {shquote(repo['url'])} . && "
-                f"git checkout -b {chat['branch']} && "
+                f"git clone {shquote(repo.url)} . && "
+                f"git checkout -b {chat.branch} && "
                 f"git config user.name 'code-agent' && "
                 f"git config user.email 'code-agent@brain.invalid'"
             )
-            oneshot(chat_dir, script, env_extra=[f"GH_TOKEN={GH_PAT}"])
-            setup = (repo.get("setup") or "").strip()
+            oneshot(chat_dir, script, env_extra=(f"GH_TOKEN={GH_PAT}",))
+            setup = repo.setup.strip()
             if setup:
-                oneshot(chat_dir, f"cd /chat/workspace && {setup}",
-                        timeout=1800)
+                oneshot(chat_dir, f"cd /chat/workspace && {setup}", timeout=1800)
         run_container(chat)
-        if not wait_for_chat(port):
+        if not wait_for_chat(chat.port):
             raise RuntimeError("opencode server did not come up in 90s")
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError, RuntimeError, ValueError) as e:
         log(f"create {chat_id} failed: {e}")
         notify_failure(f"chat create failed ({chat_id}): launch/setup error")
         with _lock:
-            index = load_index()
-            index["chats"].pop(chat_id, None)
-            save_index(index)
+            index = Index.load()
+            index.chats.pop(chat_id, None)
+            index.save()
         engine("rm", "-f", container_name(chat_id), check=False)
         shutil.rmtree(chat_dir, ignore_errors=True)
-        return None, (502, f"chat create failed: {e}")
+        return ApiError(502, f"chat create failed: {e}")
 
-    return chat, None
-
-
-def shquote(s):
-    return "'" + s.replace("'", "'\\''") + "'"
+    return chat
 
 
-def wake_chat(chat_id):
+def wake_chat(chat_id: str) -> tuple[int, str]:
     with _lock:
-        index = load_index()
-        chat = index["chats"].get(chat_id)
-        if not chat:
+        index = Index.load()
+        chat = index.chats.get(chat_id)
+        if chat is None:
             return 404, "unknown chat"
         state = container_state(chat_id)
         if state == "running":
             touch(chat_id)
             return 200, "already running"
         if running_count(index) >= MAX_ACTIVE:
-            return 409, (f"{MAX_ACTIVE} chats already active — stop one or "
-                         "wait for idle spin-down.")
+            return 409, (
+                f"{MAX_ACTIVE} chats already active — stop one or wait for idle spin-down."
+            )
     # Mark activity BEFORE starting: a stale last_active would let the idle
     # reaper stop the container in the middle of this very wake.
     touch(chat_id)
@@ -381,79 +558,108 @@ def wake_chat(chat_id):
             engine("start", container_name(chat_id))
         else:  # absent (e.g. removed after an image upgrade) — volume has it all
             run_container(chat)
-        if not wait_for_chat(chat["port"]):
+        if not wait_for_chat(chat.port):
             return 502, "chat container started but opencode did not answer"
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError) as e:
         notify_failure(f"chat wake failed ({chat_id})")
         return 502, f"wake failed: {e}"
     touch(chat_id)
     return 200, "woken"
 
 
-def touch(chat_id):
+def touch(chat_id: str) -> None:
     with _lock:
-        index = load_index()
-        if chat_id in index["chats"]:
-            index["chats"][chat_id]["last_active"] = time.time()
-            save_index(index)
+        index = Index.load()
+        chat = index.chats.get(chat_id)
+        if chat is not None:
+            chat.last_active = time.time()
+            index.save()
 
 
-def chat_busy(chat):
+def chat_busy(chat: Chat) -> bool:
     """True if any session on this chat's server is mid-work — a busy chat is
     never stopped by the idle reaper, whatever the clock says."""
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", chat["port"], timeout=5)
-        conn.request("GET", "/session/status",
-                     headers={"Authorization": basic_auth_header()})
+        conn = http.client.HTTPConnection("127.0.0.1", chat.port, timeout=5)
+        conn.request(
+            "GET", "/session/status", headers={"Authorization": basic_auth_header()}
+        )
         resp = conn.getresponse()
         body = resp.read().decode("utf-8", "replace")
         conn.close()
         if resp.status != 200:
             return True  # can't tell — err on the side of not stopping
-        data = json.loads(body or "{}")
+        data: Any = json.loads(body or "{}")
         blob = json.dumps(data).lower()
         return '"busy"' in blob or '"retry"' in blob
-    except Exception:
+    except (OSError, ValueError):
         return True
 
 
-def reaper_loop():
+def reaper_loop() -> None:
     while True:
         time.sleep(REAPER_INTERVAL)
         try:
-            index = load_index()
+            index = Index.load()
             now = time.time()
-            for cid, chat in list(index["chats"].items()):
+            for cid, chat in list(index.chats.items()):
                 if container_state(cid) != "running":
                     continue
-                if now - chat.get("last_active", 0) < IDLE_SECONDS:
+                if now - chat.last_active < IDLE_SECONDS:
                     continue
                 if chat_busy(chat):
                     touch(cid)  # working counts as activity
                     continue
                 log(f"idle spin-down: {cid}")
                 engine("stop", container_name(cid), check=False, timeout=90)
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError, ValueError) as e:
             log(f"reaper error: {e}")
 
 
-def notify_failure(reason):
+def notify_failure(reason: str) -> None:
     """Failure alerts ride the standard channel (notify.sh -> ntfy). Component
     + failure class only — never model output (docs/automations.md)."""
-    notify = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                          "common", "notify.sh")
+    notify = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "common",
+        "notify.sh",
+    )
     try:
-        subprocess.run([notify, "-t", "Code agent failure", "-p", "high", reason],
-                       check=False, timeout=30)
-    except Exception:
+        subprocess.run(
+            [notify, "-t", "Code agent failure", "-p", "high", reason],
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
         pass
 
 
 # ------------------------------------------------------------------ HTTP
 
-HOP_HEADERS = {"connection", "keep-alive", "transfer-encoding", "upgrade",
-               "proxy-authenticate", "proxy-authorization", "te", "trailers",
-               "host", "authorization"}
+HOP_HEADERS = frozenset(
+    {
+        "connection",
+        "keep-alive",
+        "transfer-encoding",
+        "upgrade",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "host",
+        "authorization",
+    }
+)
+
+_last_touch: dict[str, float] = {}
+
+
+def touch_maybe(chat_id: str, min_interval: float = 30.0) -> None:
+    """Rate-limited activity marker for long streams."""
+    now = time.time()
+    if now - _last_touch.get(chat_id, 0.0) > min_interval:
+        _last_touch[chat_id] = now
+        touch(chat_id)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -461,8 +667,8 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "code-agent-manager"
 
     # ---- auth ----
-    def authed(self):
-        hdr = self.headers.get("Authorization", "")
+    def authed(self) -> bool:
+        hdr = self.headers.get("Authorization", "") or ""
         cred = ""
         if hdr.startswith("Basic "):
             cred = hdr[6:]
@@ -471,17 +677,17 @@ class Handler(BaseHTTPRequestHandler):
             cred = (q.get("auth_token") or [""])[0]
         try:
             _, _, pw = base64.b64decode(cred).decode().partition(":")
-        except Exception:
+        except (ValueError, UnicodeDecodeError):
             pw = ""
-        return PASSWORD and pysecrets.compare_digest(pw, PASSWORD)
+        return bool(PASSWORD) and pysecrets.compare_digest(pw, PASSWORD)
 
-    def deny(self):
+    def deny(self) -> None:
         self.send_response(401)
         self.send_header("WWW-Authenticate", 'Basic realm="code-agents"')
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    def send_json(self, code, obj):
+    def send_json(self, code: int, obj: object) -> None:
         body = json.dumps(obj, indent=1).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
@@ -489,104 +695,132 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def read_body(self):
+    def read_body(self) -> bytes:
         n = int(self.headers.get("Content-Length") or 0)
         return self.rfile.read(n) if n else b""
 
     # ---- routing ----
-    def handle_any(self):
+    def handle_any(self) -> None:
         if not self.authed():
-            return self.deny()
+            self.deny()
+            return
         path = urlparse(self.path).path
         m = re.match(r"^/chat/([a-zA-Z0-9-]+)(/.*|$)", path)
         if m:
-            return self.proxy(m.group(1), m.group(2) or "/")
+            self.proxy(m.group(1), m.group(2) or "/")
+            return
         if path == "/api/health" and self.command == "GET":
-            index = load_index()
-            return self.send_json(200, {
-                "ok": True, "engine": ENGINE, "image": IMAGE,
-                "chats": len(index["chats"]),
-                "active": running_count(index), "max_active": MAX_ACTIVE,
-                "idle_seconds": IDLE_SECONDS,
-            })
+            index = Index.load()
+            self.send_json(
+                200,
+                {
+                    "ok": True,
+                    "engine": ENGINE,
+                    "image": IMAGE,
+                    "chats": len(index.chats),
+                    "active": running_count(index),
+                    "max_active": MAX_ACTIVE,
+                    "idle_seconds": IDLE_SECONDS,
+                },
+            )
+            return
         if path == "/api/repos" and self.command == "GET":
-            return self.send_json(200, {"repos": list(load_repos().values())})
+            self.send_json(
+                200, {"repos": [repo.to_wire() for repo in load_repos().values()]}
+            )
+            return
         if path == "/api/chats" and self.command == "GET":
-            index = load_index()
-            out = []
-            for cid, chat in sorted(index["chats"].items(),
-                                    key=lambda kv: -kv[1].get("last_active", 0)):
-                c = dict(chat)
-                c["status"] = container_state(cid)
-                c["url"] = f"/chat/{cid}"
-                out.append(c)
-            return self.send_json(200, {"chats": out})
+            index = Index.load()
+            out: list[dict[str, object]] = []
+            for cid, chat in sorted(
+                index.chats.items(), key=lambda kv: -kv[1].last_active
+            ):
+                entry = chat.to_wire()
+                entry["status"] = container_state(cid)
+                entry["url"] = f"/chat/{cid}"
+                out.append(entry)
+            self.send_json(200, {"chats": out})
+            return
         if path == "/api/chats" and self.command == "POST":
             try:
-                body = json.loads(self.read_body() or b"{}")
+                raw: Any = json.loads(self.read_body() or b"{}")
             except json.JSONDecodeError:
-                return self.send_json(400, {"error": "invalid JSON body"})
-            chat, err = create_chat(body)
-            if err:
-                return self.send_json(err[0], {"error": err[1]})
-            chat = dict(chat)
-            chat["status"] = "running"
-            chat["url"] = f"/chat/{chat['id']}"
-            return self.send_json(201, chat)
+                self.send_json(400, {"error": "invalid JSON body"})
+                return
+            if not isinstance(raw, dict):
+                self.send_json(400, {"error": "body must be a JSON object"})
+                return
+            result = create_chat(CreateChatRequest.from_wire(raw))
+            if isinstance(result, ApiError):
+                self.send_json(result.status, {"error": result.message})
+                return
+            entry = result.to_wire()
+            entry["status"] = "running"
+            entry["url"] = f"/chat/{result.id}"
+            self.send_json(201, entry)
+            return
         m = re.match(r"^/api/chats/([a-zA-Z0-9-]+)/(wake|stop)$", path)
         if m and self.command == "POST":
             cid, action = m.group(1), m.group(2)
             if action == "wake":
                 code, msg = wake_chat(cid)
-                return self.send_json(code, {"status": msg})
+                self.send_json(code, {"status": msg})
+                return
             engine("stop", container_name(cid), check=False, timeout=90)
-            return self.send_json(200, {"status": "stopped"})
+            self.send_json(200, {"status": "stopped"})
+            return
         m = re.match(r"^/api/chats/([a-zA-Z0-9-]+)$", path)
         if m and self.command == "DELETE":
             cid = m.group(1)
             purge = "purge=1" in (urlparse(self.path).query or "")
             with _lock:
-                index = load_index()
-                if cid not in index["chats"]:
-                    return self.send_json(404, {"error": "unknown chat"})
-                index["chats"].pop(cid)
-                save_index(index)
+                index = Index.load()
+                if cid not in index.chats:
+                    self.send_json(404, {"error": "unknown chat"})
+                    return
+                index.chats.pop(cid)
+                index.save()
             engine("rm", "-f", container_name(cid), check=False)
             if purge:
                 shutil.rmtree(os.path.join(CHATS_DIR, cid), ignore_errors=True)
-            return self.send_json(200, {"status": "deleted",
-                                        "volume": "purged" if purge else "kept"})
-        return self.send_json(404, {"error": f"no route: {self.command} {path}"})
+            self.send_json(
+                200, {"status": "deleted", "volume": "purged" if purge else "kept"}
+            )
+            return
+        self.send_json(404, {"error": f"no route: {self.command} {path}"})
 
     # ---- reverse proxy (wake-on-request, SSE-safe) ----
-    def proxy(self, chat_id, subpath):
-        index = load_index()
-        chat = index["chats"].get(chat_id)
-        if not chat:
-            return self.send_json(404, {"error": "unknown chat"})
+    def proxy(self, chat_id: str, subpath: str) -> None:
+        index = Index.load()
+        chat = index.chats.get(chat_id)
+        if chat is None:
+            self.send_json(404, {"error": "unknown chat"})
+            return
         if container_state(chat_id) != "running":
             code, msg = wake_chat(chat_id)
             if code != 200:
-                return self.send_json(code, {"error": f"wake failed: {msg}"})
+                self.send_json(code, {"error": f"wake failed: {msg}"})
+                return
         touch(chat_id)
 
         q = urlparse(self.path).query
         target = subpath + (f"?{q}" if q else "")
         body = self.read_body()
-        headers = {k: v for k, v in self.headers.items()
-                   if k.lower() not in HOP_HEADERS}
+        headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP_HEADERS}
         headers["Authorization"] = basic_auth_header()
-        headers["Host"] = f"127.0.0.1:{chat['port']}"
+        headers["Host"] = f"127.0.0.1:{chat.port}"
         try:
-            conn = http.client.HTTPConnection("127.0.0.1", chat["port"], timeout=20)
+            conn = http.client.HTTPConnection("127.0.0.1", chat.port, timeout=20)
             conn.request(self.command, target, body=body or None, headers=headers)
             # Headers can be slow on blocking endpoints (a synchronous prompt
             # runs the whole agent turn before answering); the 20s above only
             # guards the connect.
-            conn.sock.settimeout(600)
+            if conn.sock is not None:
+                conn.sock.settimeout(600)
             resp = conn.getresponse()
         except OSError as e:
-            return self.send_json(502, {"error": f"chat unreachable: {e}"})
+            self.send_json(502, {"error": f"chat unreachable: {e}"})
+            return
 
         self.send_response(resp.status)
         for k, v in resp.getheaders():
@@ -622,51 +856,62 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
 
-    def do_GET(self): self.handle_any()          # noqa: E704
-    def do_POST(self): self.handle_any()         # noqa: E704
-    def do_PUT(self): self.handle_any()          # noqa: E704
-    def do_PATCH(self): self.handle_any()        # noqa: E704
-    def do_DELETE(self): self.handle_any()       # noqa: E704
+    def do_GET(self) -> None:
+        self.handle_any()
 
-    def log_message(self, fmt, *args):
+    def do_POST(self) -> None:
+        self.handle_any()
+
+    def do_PUT(self) -> None:
+        self.handle_any()
+
+    def do_PATCH(self) -> None:
+        self.handle_any()
+
+    def do_DELETE(self) -> None:
+        self.handle_any()
+
+    def log_message(self, format: str, *args: object) -> None:
         # journald gets one concise line; never log query strings (auth_token).
         log(f"{self.command} {urlparse(self.path).path}")
 
 
-_last_touch = {}
-
-
-def touch_maybe(chat_id, min_interval=30):
-    """Rate-limited activity marker for long streams."""
-    now = time.time()
-    if now - _last_touch.get(chat_id, 0) > min_interval:
-        _last_touch[chat_id] = now
-        touch(chat_id)
-
-
 # ------------------------------------------------------------------- main
 
-def tailnet_ip():
+
+def tailnet_ip() -> str:
     try:
-        out = subprocess.run(["tailscale", "ip", "-4"], check=True,
-                             stdout=subprocess.PIPE, text=True, timeout=10)
-        return out.stdout.strip().splitlines()[0]
-    except Exception:
+        out = subprocess.run(
+            ["tailscale", "ip", "-4"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+            timeout=10,
+        )
+        lines = out.stdout.strip().splitlines()
+        return lines[0] if lines else ""
+    except (OSError, subprocess.SubprocessError):
         return ""
 
 
-def main():
+def main() -> None:
     if not PASSWORD:
-        log("FATAL: OPENCODE_SERVER_PASSWORD is empty — refusing to serve "
-            "an unauthenticated code plane. Set it in /data/secrets.env.")
+        log(
+            "FATAL: OPENCODE_SERVER_PASSWORD is empty — refusing to serve "
+            "an unauthenticated code plane. Set it in /data/secrets.env."
+        )
         sys.exit(1)
     if not GH_PAT:
-        log("WARNING: GITHUB_CODE_AGENT_PAT is empty — private clones and "
-            "agent-side push/PR will fail until it is set.")
+        log(
+            "WARNING: GITHUB_CODE_AGENT_PAT is empty — private clones and "
+            "agent-side push/PR will fail until it is set."
+        )
     os.makedirs(CHATS_DIR, exist_ok=True)
     if not os.path.exists(REPOS_PATH):
-        log(f"WARNING: {REPOS_PATH} missing — the allowlist is empty; copy "
-            "config/code-agents/repos.example.json there and edit it.")
+        log(
+            f"WARNING: {REPOS_PATH} missing — the allowlist is empty; copy "
+            "config/code-agents/repos.example.json there and edit it."
+        )
 
     host = BIND_OVERRIDE or tailnet_ip()
     have_tls = os.path.exists(TLS_CERT) and os.path.exists(TLS_KEY)
@@ -678,8 +923,10 @@ def main():
         log("no Tailscale IPv4 yet — exiting for systemd to retry")
         sys.exit(1)
     if not have_tls:
-        log("WARNING: no TLS cert at /data/tls — serving PLAIN HTTP. Run "
-            "scripts/vps/renew-tls-cert.sh (docs/setup/50-vps-brain.md).")
+        log(
+            "WARNING: no TLS cert at /data/tls — serving PLAIN HTTP. Run "
+            "scripts/vps/renew-tls-cert.sh (docs/setup/50-vps-brain.md)."
+        )
 
     server = ThreadingHTTPServer((host, GATEWAY_PORT), Handler)
     server.daemon_threads = True
@@ -688,9 +935,11 @@ def main():
         ctx.load_cert_chain(TLS_CERT, TLS_KEY)
         server.socket = ctx.wrap_socket(server.socket, server_side=True)
     threading.Thread(target=reaper_loop, daemon=True).start()
-    log(f"listening on {host}:{GATEWAY_PORT} "
+    log(
+        f"listening on {host}:{GATEWAY_PORT} "
         f"(tls={'yes' if have_tls else 'NO'}, engine={ENGINE}, image={IMAGE}, "
-        f"idle={IDLE_SECONDS}s, max_active={MAX_ACTIVE})")
+        f"idle={IDLE_SECONDS}s, max_active={MAX_ACTIVE})"
+    )
     server.serve_forever()
 
 

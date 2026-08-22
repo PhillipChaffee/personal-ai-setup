@@ -1,0 +1,31 @@
+# Enforce the repo's Python conventions: full type annotations + dataclasses,
+# mypy --strict clean (config: mypy.ini at the repo root). Any new Python file
+# must be added to mypy.ini's `files` list — the glob check below fails the
+# build if one is committed without being covered.
+name: python-types
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  mypy-strict:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install mypy
+        run: pip install --quiet mypy
+      - name: Every .py file is covered by mypy.ini
+        run: |
+          missing=0
+          while IFS= read -r f; do
+            grep -qF "$(echo "$f" | sed 's|^\./||')" mypy.ini || {
+              echo "::error file=$f::not listed in mypy.ini [mypy] files"; missing=1;
+            }
+          done < <(find . -name '*.py' -not -path './.git/*')
+          exit $missing
+      - name: mypy --strict
+        run: mypy
