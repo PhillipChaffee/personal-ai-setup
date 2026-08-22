@@ -132,10 +132,15 @@ for id in "${ORDER[@]}"; do
     ${PARAMS[@]+"${PARAMS[@]}"}
 done
 
-# budget-checkin ships paused until a budgeting source is picked. The 1.x CLI
-# has no pause subcommand (pause/resume lives in the Desktop Scheduler UI),
-# but probe for one so a future goose that grows it gets used automatically.
-if "$GOOSE_BIN" schedule --help 2>&1 | grep -qw "pause"; then
+# budget-checkin, when it IS registered (its ledger exists), ships paused
+# until a budgeting source is picked. The 1.x CLI has no pause subcommand
+# (pause/resume lives in the Desktop Scheduler UI), but probe for one so a
+# future goose that grows it gets used automatically. Skipped entirely when
+# the prerequisite guard above never registered it — otherwise this prints a
+# warning about a schedule that does not exist.
+if ! "$GOOSE_BIN" schedule list 2>/dev/null | grep -q "budget-checkin"; then
+  : # not registered (no ledger yet) — nothing to pause
+elif "$GOOSE_BIN" schedule --help 2>&1 | grep -qw "pause"; then
   echo "==> budget-checkin: pausing via CLI"
   "$GOOSE_BIN" schedule pause --schedule-id budget-checkin
 else
