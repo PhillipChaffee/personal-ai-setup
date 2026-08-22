@@ -34,10 +34,21 @@ case "${1:-}" in
   *) echo "check-mcp.sh: unknown argument: $1" >&2; usage >&2; exit 2 ;;
 esac
 
-command -v goose >/dev/null 2>&1 || {
-  echo "check-mcp.sh: goose CLI not found (Mac: scripts/mac/bootstrap-mac.sh)" >&2
-  exit 2
-}
+# A non-interactive SSH shell on the brain does not source the profile that
+# puts ~/.local/bin on PATH, so fall back to the known install location the
+# way register-schedules.sh does — otherwise this script is unusable over ssh.
+GOOSE_BIN="${GOOSE_BIN:-}"
+if [ -z "$GOOSE_BIN" ]; then
+  if command -v goose >/dev/null 2>&1; then
+    GOOSE_BIN="$(command -v goose)"
+  elif [ -x "$HOME/.local/bin/goose" ]; then
+    GOOSE_BIN="$HOME/.local/bin/goose"
+  else
+    echo "check-mcp.sh: goose CLI not found on PATH or at ~/.local/bin/goose" >&2
+    echo "              (Mac: scripts/mac/bootstrap-mac.sh)" >&2
+    exit 2
+  fi
+fi
 
 CONFIG="$HOME/.config/goose/config.yaml"
 PROVIDER="zen-openai"
@@ -58,7 +69,7 @@ run_check() {
   echo "--> $name"
   rc=0
   env GOOSE_MODE=auto GOOSE_MAX_TURNS=15 GOOSE_DISABLE_SESSION_NAMING=true \
-    goose run --no-session --quiet \
+    "$GOOSE_BIN" run --no-session --quiet \
     -t "$prompt" \
     --provider "$PROVIDER" --model "$MODEL" \
     >"$OUT_FILE" 2>&1 || rc=$?

@@ -70,10 +70,19 @@ if [ ! -f "$RECIPE" ]; then
   fail_notify 2 "recipe file not found"
   exit 2
 fi
-if ! command -v goose >/dev/null 2>&1; then
-  echo "run-recipe.sh: goose CLI not found on PATH" >&2
-  fail_notify 127 "goose CLI not found"
-  exit 127
+# Same PATH caveat as check-mcp.sh: a non-interactive shell (ssh, or a
+# systemd unit with a minimal PATH) may not have ~/.local/bin on PATH.
+GOOSE_BIN="${GOOSE_BIN:-}"
+if [ -z "$GOOSE_BIN" ]; then
+  if command -v goose >/dev/null 2>&1; then
+    GOOSE_BIN="$(command -v goose)"
+  elif [ -x "$HOME/.local/bin/goose" ]; then
+    GOOSE_BIN="$HOME/.local/bin/goose"
+  else
+    echo "run-recipe.sh: goose CLI not found on PATH or at ~/.local/bin/goose" >&2
+    fail_notify 127 "goose CLI not found"
+    exit 127
+  fi
 fi
 
 # Canonical headless environment. Deliberately NOT exporting GOOSE_PROVIDER /
@@ -97,7 +106,7 @@ OUT="$(mktemp "${TMPDIR:-/tmp}/run-recipe.$NAME.XXXXXX")"
 trap 'rm -f "$OUT"' EXIT
 
 run_goose() {
-  goose run --recipe "$RECIPE" ${PARAMS[@]+"${PARAMS[@]}"} \
+  "$GOOSE_BIN" run --recipe "$RECIPE" ${PARAMS[@]+"${PARAMS[@]}"} \
     --no-session --quiet --output-format json \
     >"$OUT"
 }
