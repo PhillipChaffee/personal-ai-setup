@@ -1,0 +1,62 @@
+# Coverage for the manager — the one long-lived program in this repo.
+#
+# It has no unit tests and does not want them: every interesting path (auth,
+# the allowlist gate, wake/stop/purge, the SSE proxy, the idle reaper) only
+# exists while it is serving. So coverage is measured the way the component is
+# actually exercised — by running the 30-check integration harness against it
+# with the interpreter swapped for `coverage run` (MANAGER_PY), no containers
+# and no VPS required. Config: .coveragerc; report thresholds: codecov.yml.
+name: coverage
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Manager coverage (integration harness)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install coverage.py
+        # Pinned like the other Python tooling: the reported number should
+        # move when the code moves, not when a dependency releases.
+        run: pip install --quiet coverage==7.15.4
+
+      - name: Run the integration harness under coverage
+        run: |
+          MANAGER_PY="coverage run --parallel-mode --data-file=$PWD/.coverage" \
+            scripts/verify/test-code-agent-manager.sh
+
+      - name: Combine and report
+        run: |
+          coverage combine --data-file="$PWD/.coverage"
+          coverage report --data-file="$PWD/.coverage"
+          coverage xml --data-file="$PWD/.coverage" -o coverage.xml
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.xml
+          flags: python
+          # ONE-TIME SETUP: sign in at codecov.io with GitHub (free for public
+          # repos) so this repository exists there, then add its upload token
+          # as the CODECOV_TOKEN secret. The first run of this workflow proved
+          # the rest of the path works and named what was missing: Codecov
+          # answered "Repository not found".
+          #
+          # That activation is needed whichever way we authenticate, so we take
+          # the token while we are there rather than use_oidc: Codecov also
+          # requires a token for uploads landing on a protected branch (main is
+          # protected here), and codecov-action#1806 / #1817 report the OIDC
+          # path failing on exactly that case.
+          token: ${{ secrets.CODECOV_TOKEN }}
+          # Until that secret exists the upload is a no-op: a reporting
+          # problem must not fail a build whose checks all passed.
+          fail_ci_if_error: false
