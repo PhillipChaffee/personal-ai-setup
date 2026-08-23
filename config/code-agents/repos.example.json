@@ -1,0 +1,36 @@
+{
+  "_readme": [
+    "Repo allowlist for code agents — the trust boundary (docs/code-agents.md).",
+    "Copy to /data/code-agents/repos.json on the brain and edit; the file is",
+    "per-user state and never committed (this repo is public).",
+    "",
+    "Only list repos you own or trust: the agent ingests AGENTS.md/.claude/",
+    "from whatever it clones, and the container is the blast-radius bound.",
+    "Only Tier 1/2 repos belong here (docs/privacy.md) — never the life vault.",
+    "",
+    "Fields per repo:",
+    "  name              short id used in chat names and the app's repo picker",
+    "  url               HTTPS clone URL (private repos work via the PAT)",
+    "  tier              1 or 2 — your own data classification, for the record",
+    "  setup             command run in-container in the fresh workspace at",
+    "                    create time ('' = none). Keep it light: cpx21.",
+    "  edit_only         true = no toolchain expectations; agent edits and",
+    "                    commits, checks run in CI or locally",
+    "  allow_push        true = git push runs WITHOUT a permission ask for",
+    "                    chats on this repo (default false = every push asks)",
+    "  public_throwaway  true = zen-free models are permitted for this repo",
+    "                    (hard rule 1: free models train on your data — only",
+    "                    ever for public, non-personal code)"
+  ],
+  "repos": [
+    {
+      "name": "personal-ai-setup",
+      "url": "https://github.com/<your-github-username>/personal-ai-setup.git",
+      "tier": 1,
+      "setup": "",
+      "edit_only": true,
+      "allow_push": false,
+      "public_throwaway": false
+    }
+  ]
+}

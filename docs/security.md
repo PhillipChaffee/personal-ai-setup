@@ -141,6 +141,8 @@ new → update stores (Keychain on Mac, `/data/secrets.env` on brain) → restar
 | Tailscale | Admin console → Machines / Keys | Auth keys are one-time (bootstrap); rotate device keys by re-authing; remove stale devices |
 | Google OAuth client secret | GCP console → Credentials | Re-run the workspace-mcp auth flow; re-transfer tokens per `docs/setup/30-google-oauth.md` |
 | `NTFY_TOPIC` | Pick a new random topic | Update secrets.env + Keychain; old topic is burned |
+| `OPENCODE_SERVER_PASSWORD` | Generate locally (`openssl rand -hex 32`) | Update secrets.env, `sudo systemctl restart code-agent-manager`, re-enter in the app's Code settings. Container env is baked at creation: recreate each chat's container to rotate it there too (`podman rm code-agent-<id>`, then wake — the volume keeps all state) |
+| `GITHUB_CODE_AGENT_PAT` | GitHub → Settings → Developer settings → Fine-grained tokens | Keep scope: allowlisted repos only, Contents + Pull requests. Update secrets.env, restart code-agent-manager; new chats get the new token immediately, existing chats after a container recreate (`podman rm` + wake, volume preserved) |
 | LUKS passphrase | `sudo cryptsetup luksChangeKey /dev/disk/by-id/<volume>` | Update the password manager first; test unlock before closing the session |
 | SSH bootstrap key | `ssh-keygen`, update tfvars + Hetzner | Rarely needed once Tailscale SSH is live |
 

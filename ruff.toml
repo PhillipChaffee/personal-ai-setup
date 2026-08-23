@@ -1,0 +1,41 @@
+# Ruff — strict linting for every .py file in this repo (mypy.ini owns typing;
+# this owns everything else). CI: .github/workflows/python-lint.yml.
+#
+# Policy: enable the ENTIRE rule set, then justify every exception. Blanket
+# ignores live here with a reason; one-off exceptions live in the code as
+# `# noqa: RULE` next to the line they excuse (RUF100 fails the build when
+# such a noqa stops being needed, so they can't rot).
+#
+# CI pins the ruff version: `select = ["ALL"]` means a new ruff release can
+# add rules, and a lint gate that goes red on its own schedule trains people
+# to ignore it. Bump the pin (workflow + .pre-commit-config.yaml) on purpose.
+
+line-length = 100
+target-version = "py312"
+
+[lint]
+select = ["ALL"]
+ignore = [
+    # Docstring *presence* per symbol. Every module has a docstring, and every
+    # function whose behavior isn't obvious from its name and signature has
+    # one; requiring one on each dataclass, tiny helper and __init__ buys
+    # `"""Return the port."""`, not understanding. Docstring *style* rules
+    # (D2xx/D4xx) stay on, so the docstrings that exist are well-formed.
+    "D101",
+    "D102",
+    "D103",
+    "D105",
+    "D107",
+    # Mutually exclusive with rules kept on: D211 (no blank line before class)
+    # and D212 (multi-line summary starts on the first line).
+    "D203",
+    "D213",
+]
+
+[lint.pydocstyle]
+convention = "pep257"
+
+[format]
+# Not wired into CI yet — the linter is the gate. Kept here so `ruff format`
+# agrees with the settings above if it is ever turned on.
+docstring-code-format = true

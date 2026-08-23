@@ -1,0 +1,39 @@
+# code-agent-manager.service — per-chat container lifecycle + TLS gateway for
+# code agents (scripts/vps/code-agent-manager.py; docs/code-agents.md).
+# Installed by deploy-vps.sh; enabled only when GITHUB_CODE_AGENT_PAT and
+# OPENCODE_SERVER_PASSWORD are present in /data/secrets.env (the same
+# conditional-enable pattern as the telegram gateway).
+#
+# Binding: the manager asks tailscaled for the tailnet IPv4 itself and exits
+# nonzero until one exists — Restart=always/RestartSec=5 is the wait-for-the-
+# tailnet loop, same as goose-serve.service. It binds the tailnet address
+# ONLY (docs/security.md); per-chat opencode ports live on 127.0.0.1 behind it.
+
+[Unit]
+Description=code-agent manager (per-chat OpenCode containers + gateway)
+Wants=network-online.target
+After=network-online.target tailscaled.service
+# Chat volumes, the metadata index, secrets, and the TLS cert all live on the
+# LUKS volume — keep the unit down until luks-unlock.sh has mounted it.
+RequiresMountsFor=/data
+
+[Service]
+User=agent
+EnvironmentFile=/data/secrets.env
+WorkingDirectory=/home/agent
+Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Rootless podman under a system unit needs the user runtime dir that
+# loginctl enable-linger keeps alive (deploy-vps.sh sets linger for agent).
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStartPre=/usr/bin/mountpoint -q /data
+ExecStart=/usr/bin/python3 /home/agent/personal-ai-setup/scripts/vps/code-agent-manager.py
+# Stop running chat containers cleanly on shutdown; volumes make this safe.
+ExecStopPost=/bin/bash -c 'podman stop --filter label=code-agent=1 --time 30 >/dev/null 2>&1 || true'
+Restart=always
+RestartSec=5
+# NoNewPrivileges is deliberately absent: rootless podman's user-namespace
+# setup relies on the setuid newuidmap/newgidmap helpers, which it blocks.
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

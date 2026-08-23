@@ -26,6 +26,14 @@ Two rules of thumb that catch most edge cases:
   training), which is acceptable even when Tier 3 content drifts through. It must never be
   moved to `claude-sonnet-5` or a free model.
 - If you're unsure which tier something is, it's the higher one.
+- **Code-agent chats** (`docs/code-agents.md`) are classified **at the allowlist gate**,
+  not per message: `/data/code-agents/repos.json` may only contain repos you classify
+  Tier 1 or 2 — the life vault and anything Tier 3 never enter it. Zen-free models are
+  refused unless a repo is explicitly flagged `public_throwaway` (hard rule 1). If a chat
+  trips over sensitive content anyway, abort it — never continue the session. Chat
+  transcripts live in per-chat volumes on the encrypted `/data`, and the phone app caches
+  transcripts on-device — consistent with the trusted-client-device stance in
+  [security.md](security.md).
 
 ## Provider policy summary (verified as of 2026-08-20)
 

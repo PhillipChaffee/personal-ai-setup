@@ -1,4 +1,6 @@
-# Secret scanning on every commit — this repo is public by design.
+# Pre-commit gates: secret scanning (this repo is public by design) and the
+# strict Python lint that CI enforces anyway — catching it here beats a red
+# build. Both hooks mirror a GitHub workflow: secret-scan.yml, python-lint.yml.
 #
 # One-time setup:
 #   pipx install pre-commit   (or: brew install pre-commit)
@@ -13,3 +15,10 @@ repos:
     rev: v8.28.0
     hooks:
       - id: gitleaks
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Keep this rev in lockstep with the pin in .github/workflows/python-lint.yml
+    # — the whole rule set is enabled, so versions must not drift.
+    rev: v0.15.8
+    hooks:
+      - id: ruff-check

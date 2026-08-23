@@ -25,6 +25,7 @@ pricing/model pages). Both catalogs churn — re-verify at signup and monthly vi
 | Automation fallback | Goose → `together` | `openai/gpt-oss-120b` | $0.15/$0.60 (verified tool-caller) |
 | Sensitive doc Q&A | Goose → `together` | `Qwen3.5-397B-A17B` | $0.60/$3.60 (ZDR/HIPAA) |
 | Sensitive long-context (big PDFs) | Goose → `together` | DeepSeek V4 Flash | $0.14/$0.28, 1M ctx |
+| Code agents (brain, per-chat containers) | OpenCode in container → Zen/Together | **owner's choice at kick-off** — default `deepseek-v4-flash` | Zen: peak/off-peak; Together alt $0.14/$0.28 |
 | Backup phone chat (Pal Chat) | Together direct | gpt-oss-120b / Qwen3.5 | cheap, ZDR |
 | Embeddings (roadmap RAG) | Together | M2-BERT-80M-32K | ~$0.01 |
 
@@ -48,6 +49,11 @@ Notes on reading the table:
   already on `together`.)
 - "OpenCode → Zen" rows run in the OpenCode CLI (your coding driver), connected to Zen via
   `/connect`. They never pass through Goose or the brain.
+- The **code agents** row is the one deliberately unpinned job class: model choice is
+  per-chat at kick-off (`docs/code-agents.md`), defaulting to `deepseek-v4-flash`. The
+  hard rules still bind — the session manager refuses zen-free models for any repo not
+  flagged `public_throwaway` in the allowlist, and only Tier 1/2 repos are allowlistable
+  at all, so the free-tier and retention rules cannot be violated by a model pick.
 - Together model IDs are full registry IDs: `openai/gpt-oss-120b`,
   `Qwen/Qwen3.5-397B-A17B`, and `deepseek-ai/DeepSeek-V4-Flash-0731` — Together publishes dated
   variants of DeepSeek V4 Flash, so confirm the exact live ID with

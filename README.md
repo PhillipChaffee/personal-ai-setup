@@ -8,7 +8,7 @@ This repo is the complete, reproducible blueprint: Terraform for the server, con
 
 - **One AI, one history.** A [Goose](https://github.com/aaif-goose/goose) agent (the "brain") runs 24/7 on a small hardened VPS. Your laptop and phone are thin clients to it — start a conversation anywhere, continue it everywhere. (The phone app is experimental; a fallback chain is documented.)
 - **Automations that just happen.** A morning brief in your inbox at 7:00, inbox triage that labels and drafts (never sends to anyone but you), a Sunday weekly review — all Goose recipes on its native scheduler, managed from a UI, each emailing you its own result (failures alert separately via [ntfy](https://ntfy.sh)'s email gateway).
-- **A serious coding agent.** [OpenCode](https://github.com/anomalyco/opencode) on your laptop, wired to the same inference accounts.
+- **A serious coding agent.** [OpenCode](https://github.com/anomalyco/opencode) on your laptop, wired to the same inference accounts — plus **code agents on the brain**: Claude Code-style autonomous coding chats, each in its own container, kicked off and reviewed from your phone ([`docs/code-agents.md`](docs/code-agents.md)).
 - **A private tier for life admin.** Email, calendar, and todos via MCP; health records and budget Q&A behind hard privacy rules — that data only ever reaches [Together AI](https://docs.together.ai) (zero-data-retention default, SOC 2, HIPAA posture), never free models, never providers that retain.
 - **Cheap, flexible inference.** [OpenCode Zen](https://opencode.ai/docs/zen) (at-cost gateway: Kimi, GLM, MiniMax, DeepSeek, Claude…) plus Together AI (200+ open models). Broad model catalogs ship in the configs; `scripts/sync-models.sh` refreshes them from the live catalogs. Swap any of it — that's the point.
 
@@ -46,6 +46,7 @@ Goose iOS app ◄── tunnel ────────────────�
 Email inbox ◄─ recipes' self-addressed results (Gmail) ───────    ├─ sessions.db ─── THE shared history
 Telegram gw (fallback) ◄──────────────────────────────────────    ├─ native scheduler ── THE automations
 Pal Chat (backup) ─┐            Goose Desktop ◄─ remote ACP ─►    ├─ MCP: workspace-mcp, Todoist, search
+                   │            OpenCode app ◄─ HTTPS :4300 ──►   ├─ code agents: per-chat containers
 Siri Shortcut ─────┤            OpenCode CLI (coding, local)      ├─ life-vault clone (private repo)
                    │            goose CLI (offline fallback)      └─ all state on LUKS-encrypted volume
                    └────────────────────────────────────────►┌──►  Zen API / Together API (HTTPS)
@@ -60,6 +61,7 @@ Siri Shortcut ─────┤            OpenCode CLI (coding, local)      �
 | **Goose Desktop** (Mac) | Full desktop UI, attached to the brain as a remote client over goose's Agent Client Protocol ("remote ACP" in the diagram) — same sessions as the phone. Also hosts the Scheduler UI (pause / run-now / per-run history). |
 | **goose CLI** (Mac) | Local offline fallback hub when the brain is unreachable. |
 | **OpenCode CLI** (Mac) | The daily coding driver — dedicated open-source coding agent with first-party Zen integration (`/connect`), per-agent cheap-model routing, and the same MCP servers. Runs locally; coding sessions don't need the brain. |
+| **Code agents** (on the brain) | Claude Code-style autonomous coding chats: one container per chat (idle chats spin down, volumes persist), live streaming + permission asks to your devices, any model per chat, PRs as the deliverable. Managed by `code-agent-manager` behind the tailnet on port 4300. See [`docs/code-agents.md`](docs/code-agents.md). |
 | **Goose iOS app** | Primary phone surface: thin remote client tunneling to the brain (experimental; fallback chain documented in `docs/setup/40-phone-setup.md`). |
 | **Pal Chat** (iPhone) | BYOK backup chat straight to Together — works even if the brain is down. Backup precisely because its history is device-local. |
 | **ntfy / Telegram / Siri Shortcut** | Failure-alert channel (topic publish forwarded to your email via ntfy's gateway — no app to install); fallback phone channel; voice one-shots. |
@@ -81,6 +83,7 @@ Siri Shortcut ─────┤            OpenCode CLI (coding, local)      �
 │   ├── model-routing.md                # which model for which job + hard privacy rules
 │   ├── privacy.md                      # data classification per provider tier; encryption model & residual risk
 │   ├── automations.md                  # add/manage scheduled workflows; scheduler-bug fallback flip
+│   ├── code-agents.md                  # code agents: per-chat containers, lifecycle, git/permission model
 │   ├── providers.md                    # email/calendar provider convention (multi-account today, more providers next)
 │   ├── cursor-port.md                  # the Cursor kit ported to Goose + OpenCode: what went where and why
 │   ├── security.md                     # threat model, LUKS design, Tailscale-only exposure, serve TLS/secret
@@ -97,6 +100,7 @@ Siri Shortcut ─────┤            OpenCode CLI (coding, local)      �
 │   ├── opencode/agents/                # 30 review/research subagents (→ ~/.config/opencode/agents/)
 │   ├── opencode/project-rules/         # per-project rule snippets (python, django, linear…) — paste-in
 │   ├── skills/                         # 11 skills, Claude-compatible SKILL.md (→ ~/.agents/skills — read by BOTH OpenCode and goose)
+│   ├── code-agents/                    # code-agent image, per-chat opencode config, repo-allowlist template
 │   ├── mcp/workspace-mcp.env.example   # Google Workspace MCP env template
 │   └── env/secrets.env.example         # every secret VAR NAME (no values) — copy to /data/secrets.env
 ├── recipes/                            # the six automations (brief, triage, review, health, vault-qa, budget)
@@ -121,7 +125,7 @@ The repo is a template; your identity and choices live outside it or in a handfu
 
 ## Principles
 
-1. **One brain, one history.** The hub agent runs only on the VPS; its `sessions.db` is the single chat history. Every device — Desktop, iPhone, CLI — is a client to the same brain, so a conversation started anywhere continues everywhere.
+1. **One brain, one history.** The hub agent runs only on the VPS; its `sessions.db` is the single chat history. Every device — Desktop, iPhone, CLI — is a client to the same brain, so a conversation started anywhere continues everywhere. *One deliberate carve-out:* **code-agent chats** live in their own per-chat volumes on the brain (`docs/code-agents.md`), never in `sessions.db` — coding sessions and life-admin history stay structurally separate, unified only in the client UI.
 2. **Native Goose automations.** Scheduled work is Goose recipes registered on Goose's built-in scheduler (`goose schedule add`), manageable from Desktop's Scheduler UI — not bare cron. Each scheduled recipe delivers its own result as an explicit final step: one self-addressed email via the Gmail send tool. `scripts/common/run-recipe.sh` acts as a failure watchdog (one retry, then a high-priority alert through `scripts/common/notify.sh`, emailed via ntfy's gateway) for manual and fallback-timer runs. Disabled systemd-timer fallbacks ship in-repo in case of scheduler bugs.
 3. **Privacy tiers.** Every job class is pinned to a provider tier (`docs/model-routing.md`, `docs/privacy.md`). Health and finance data go to Together AI only (ZDR/HIPAA posture). Zen free models never see personal data. Claude/GPT via Zen never see health/finance data. Delivery emails and failure alerts never contain PHI.
 4. **Everything as code.** Infrastructure is Terraform, configs are templates, host state is scripts + systemd units, and every manual step is a runbook. A dead laptop or dead VPS is an inconvenience, not a loss.
