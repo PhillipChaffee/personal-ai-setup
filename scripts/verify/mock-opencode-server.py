@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""mock-opencode-server — a protocol-faithful fake of the slice of the
-OpenCode HTTP API that the code-agent plane uses (manager proxying, the
-phone app's opencode-client, and check scripts). Lets the whole plane be
-tested on any machine with no containers, no VPS, and no API key:
+"""mock-opencode-server — a protocol-faithful fake of the OpenCode HTTP API.
+
+It covers the slice the code-agent plane uses (manager proxying, the phone
+app's opencode-client, and check scripts), so the whole plane can be tested
+on any machine with no containers, no VPS, and no API key:
 
     scripts/verify/test-code-agent-manager.sh
 
@@ -26,9 +27,10 @@ State lives in <dir>/home/mock-opencode-state.json so stopping and
 restarting the process — the stub engine's spin-down/wake — provably
 preserves sessions and transcripts, mirroring the per-chat volume design.
 
-Typing: mypy --strict clean (enforced by .github/workflows/python-types.yml).
-Message *parts* stay wire-shaped dicts by design — they are built by the
-typed helpers below and serialized verbatim; everything else is dataclasses.
+Conventions: `mypy --strict` and `ruff check` clean, same gates as the rest
+of the repo's Python (mypy.ini, ruff.toml). Message *parts* stay wire-shaped
+dicts by design — they are built by the typed helpers below and serialized
+verbatim; everything else is dataclasses.
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -51,11 +54,18 @@ Wire = dict[str, object]
 @dataclass(frozen=True)
 class Config:
     port: int
-    dir: str
+    dir: Path
     password: str
 
 
-CONFIG = Config(port=0, dir=".", password="mock")
+# Placeholder until main() parses argv; --password (or the env var) supplies
+# the real one. This is a test double that only ever listens on 127.0.0.1.
+CONFIG = Config(port=0, dir=Path(), password="mock")  # noqa: S106
+
+# Path shapes: /session/<id>/<verb> and /session/<id>/permissions/<pid>.
+SESSION_PATH_PARTS = 3
+PERMISSION_PATH_PARTS = 4
+HEARTBEAT_SECONDS = 5.0
 
 STATE_LOCK = threading.Lock()
 SUB_LOCK = threading.Lock()
@@ -140,7 +150,7 @@ class StoredMessage:
         info_raw = raw.get("info")
         parts_raw = raw.get("parts")
         parts: list[Wire] = [p for p in parts_raw if isinstance(p, dict)] if isinstance(
-            parts_raw, list
+            parts_raw, list,
         ) else []
         return cls(
             info=MessageInfo.from_wire(info_raw if isinstance(info_raw, dict) else {}),
@@ -154,15 +164,15 @@ class State:
     messages: dict[str, list[StoredMessage]] = field(default_factory=dict)
 
     @classmethod
-    def path(cls) -> str:
-        d = os.path.join(CONFIG.dir, "home")
-        os.makedirs(d, exist_ok=True)
-        return os.path.join(d, "mock-opencode-state.json")
+    def path(cls) -> Path:
+        d = CONFIG.dir / "home"
+        d.mkdir(parents=True, exist_ok=True)
+        return d / "mock-opencode-state.json"
 
     @classmethod
     def load(cls) -> State:
         try:
-            with open(cls.path(), "r", encoding="utf-8") as f:
+            with cls.path().open(encoding="utf-8") as f:
                 raw: Any = json.load(f)
         except FileNotFoundError:
             return cls()
@@ -191,10 +201,11 @@ class State:
                 for sid, entries in self.messages.items()
             },
         }
-        tmp = self.path() + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
+        path = self.path()
+        tmp = path.with_name(path.name + ".tmp")
+        with tmp.open("w", encoding="utf-8") as f:
             json.dump(payload, f, indent=1)
-        os.replace(tmp, self.path())
+        tmp.replace(path)
 
 
 # ------------------------------------------------------- wire-part builders
@@ -241,20 +252,20 @@ def run_turn(session_id: str, prompt: str) -> None:
     BUSY.add(session_id)
     try:
         user_msg = MessageInfo(
-            id=f"msg_{secrets.token_hex(4)}", role="user", session_id=session_id
+            id=f"msg_{secrets.token_hex(4)}", role="user", session_id=session_id,
         )
         user_part = text_part(user_msg.id, session_id, prompt)
         with STATE_LOCK:
             state = State.load()
             state.messages.setdefault(session_id, []).append(
-                StoredMessage(info=user_msg, parts=[user_part])
+                StoredMessage(info=user_msg, parts=[user_part]),
             )
             state.save()
         publish("message.updated", {"info": user_msg.to_wire()})
         publish("message.part.updated", {"part": user_part})
 
         asst = MessageInfo(
-            id=f"msg_{secrets.token_hex(4)}", role="assistant", session_id=session_id
+            id=f"msg_{secrets.token_hex(4)}", role="assistant", session_id=session_id,
         )
         publish("message.updated", {"info": asst.to_wire()})
 
@@ -324,7 +335,7 @@ def run_turn(session_id: str, prompt: str) -> None:
         with STATE_LOCK:
             state = State.load()
             state.messages.setdefault(session_id, []).append(
-                StoredMessage(info=asst, parts=parts)
+                StoredMessage(info=asst, parts=parts),
             )
             state.save()
     finally:
@@ -367,106 +378,122 @@ class Handler(BaseHTTPRequestHandler):
             return {}
         return raw if isinstance(raw, dict) else {}
 
+    def deny(self) -> None:
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="mock"')
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def handle_any(self) -> None:
+        """Authenticate, then dispatch to one route (mirrors the real API)."""
         if not self.authed():
-            self.send_response(401)
-            self.send_header("WWW-Authenticate", 'Basic realm="mock"')
-            self.send_header("Content-Length", "0")
-            self.end_headers()
+            self.deny()
             return
         path = urlparse(self.path).path
+        verb = self.command
         parts = [p for p in path.split("/") if p]
-
-        if path == "/event" and self.command == "GET":
+        if (path, verb) == ("/event", "GET"):
             self.stream_events()
-            return
-        if path == "/session" and self.command == "GET":
+        elif (path, verb) == ("/session", "GET"):
             with STATE_LOCK:
                 self.send_json(200, [s.to_wire() for s in State.load().sessions])
-            return
-        if path == "/session" and self.command == "POST":
-            q = parse_qs(urlparse(self.path).query)
-            directory = (q.get("directory") or ["/chat/workspace"])[0]
-            sess = Session(
-                id=f"ses_{secrets.token_hex(5)}",
-                title="mock session",
-                directory=directory,
-            )
-            with STATE_LOCK:
-                state = State.load()
-                state.sessions.append(sess)
-                state.save()
-            self.send_json(200, sess.to_wire())
-            return
-        if path == "/session/status" and self.command == "GET":
+        elif (path, verb) == ("/session", "POST"):
+            self.route_create_session()
+        elif (path, verb) == ("/session/status", "GET"):
             self.send_json(200, {sid: {"type": "busy"} for sid in sorted(BUSY)})
-            return
-        if path == "/permission" and self.command == "GET":
-            self.send_json(200, [p.perm.to_wire() for p in PENDING.values()])
-            return
+        elif (path, verb) == ("/permission", "GET"):
+            self.send_json(200, [entry.perm.to_wire() for entry in PENDING.values()])
+        elif len(parts) >= SESSION_PATH_PARTS and parts[0] == "session":
+            self.route_session(parts)
+        else:
+            self.no_route()
 
-        if len(parts) >= 3 and parts[0] == "session":
-            sid = parts[1]
-            if parts[2] == "message" and self.command == "GET":
-                with STATE_LOCK:
-                    entries = State.load().messages.get(sid, [])
-                    self.send_json(200, [m.to_wire() for m in entries])
-                return
-            if parts[2] == "prompt_async" and self.command == "POST":
-                body = self.read_json()
-                body_parts = body.get("parts", [])
-                text = ""
-                if isinstance(body_parts, list):
-                    for part in body_parts:
-                        if isinstance(part, dict) and part.get("type") == "text":
-                            value = part.get("text", "")
-                            if isinstance(value, str):
-                                text += value
-                threading.Thread(
-                    target=run_turn, args=(sid, text), daemon=True
-                ).start()
-                self.send_response(204)
-                self.send_header("Content-Length", "0")
-                self.end_headers()
-                return
-            if parts[2] == "abort" and self.command == "POST":
-                # Resolve any blocked permission so the turn thread finishes.
-                for pending in list(PENDING.values()):
-                    if pending.perm.session_id == sid:
-                        pending.response = "reject"
-                        pending.event.set()
-                BUSY.discard(sid)
-                publish("session.idle", {"sessionID": sid})
-                self.send_json(200, True)
-                return
-            if parts[2] == "diff" and self.command == "GET":
-                self.send_json(
-                    200,
-                    [
-                        {
-                            "path": "README.md",
-                            "additions": 3,
-                            "deletions": 1,
-                            "patch": (
-                                "--- a/README.md\n+++ b/README.md\n@@ -1 +1,3 @@\n"
-                                "-old\n+new line one\n+new line two\n+new line three\n"
-                            ),
-                        }
-                    ],
-                )
-                return
-            if parts[2] == "permissions" and len(parts) == 4 and self.command == "POST":
-                entry = PENDING.get(parts[3])
-                if entry is None:
-                    self.send_json(404, {"error": "unknown permission"})
-                    return
-                response = self.read_json().get("response", "reject")
-                entry.response = response if isinstance(response, str) else "reject"
-                entry.event.set()
-                self.send_json(200, True)
-                return
-
+    def no_route(self) -> None:
+        path = urlparse(self.path).path
         self.send_json(404, {"error": f"mock: no route {self.command} {path}"})
+
+    def route_create_session(self) -> None:
+        q = parse_qs(urlparse(self.path).query)
+        directory = (q.get("directory") or ["/chat/workspace"])[0]
+        sess = Session(
+            id=f"ses_{secrets.token_hex(5)}",
+            title="mock session",
+            directory=directory,
+        )
+        with STATE_LOCK:
+            state = State.load()
+            state.sessions.append(sess)
+            state.save()
+        self.send_json(200, sess.to_wire())
+
+    def route_session(self, parts: list[str]) -> None:
+        """Dispatch /session/<id>/... — the per-session half of the API."""
+        sid, kind, verb = parts[1], parts[2], self.command
+        if (kind, verb) == ("message", "GET"):
+            with STATE_LOCK:
+                entries = State.load().messages.get(sid, [])
+                self.send_json(200, [m.to_wire() for m in entries])
+        elif (kind, verb) == ("prompt_async", "POST"):
+            self.route_prompt(sid)
+        elif (kind, verb) == ("abort", "POST"):
+            self.route_abort(sid)
+        elif (kind, verb) == ("diff", "GET"):
+            self.route_diff()
+        elif kind == "permissions" and len(parts) == PERMISSION_PATH_PARTS and verb == "POST":
+            self.route_permission_reply(parts[3])
+        else:
+            self.no_route()
+
+    def route_prompt(self, sid: str) -> None:
+        body = self.read_json()
+        body_parts = body.get("parts", [])
+        text = ""
+        if isinstance(body_parts, list):
+            for part in body_parts:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    value = part.get("text", "")
+                    if isinstance(value, str):
+                        text += value
+        threading.Thread(target=run_turn, args=(sid, text), daemon=True).start()
+        self.send_response(204)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def route_abort(self, sid: str) -> None:
+        # Resolve any blocked permission so the turn thread finishes.
+        for entry in list(PENDING.values()):
+            if entry.perm.session_id == sid:
+                entry.response = "reject"
+                entry.event.set()
+        BUSY.discard(sid)
+        publish("session.idle", {"sessionID": sid})
+        self.send_json(200, obj=True)
+
+    def route_diff(self) -> None:
+        self.send_json(
+            200,
+            [
+                {
+                    "path": "README.md",
+                    "additions": 3,
+                    "deletions": 1,
+                    "patch": (
+                        "--- a/README.md\n+++ b/README.md\n@@ -1 +1,3 @@\n"
+                        "-old\n+new line one\n+new line two\n+new line three\n"
+                    ),
+                },
+            ],
+        )
+
+    def route_permission_reply(self, permission_id: str) -> None:
+        entry = PENDING.get(permission_id)
+        if entry is None:
+            self.send_json(404, {"error": "unknown permission"})
+            return
+        response = self.read_json().get("response", "reject")
+        entry.response = response if isinstance(response, str) else "reject"
+        entry.event.set()
+        self.send_json(200, obj=True)
 
     def stream_events(self) -> None:
         self.send_response(200)
@@ -484,7 +511,7 @@ class Handler(BaseHTTPRequestHandler):
             while True:
                 while queue:
                     self.write_event(queue.pop(0))
-                if time.time() - last_beat > 5:
+                if time.time() - last_beat > HEARTBEAT_SECONDS:
                     self.write_event({"type": "server.heartbeat", "properties": {}})
                     last_beat = time.time()
                 time.sleep(0.05)
@@ -506,24 +533,27 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         self.handle_any()
 
-    def log_message(self, format: str, *args: object) -> None:
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A002
         pass  # quiet; the harness asserts on behavior, not logs
 
 
 def main() -> None:
-    global CONFIG
+    # The config is process-wide and set exactly once, here.
+    global CONFIG  # noqa: PLW0603
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, required=True)
     ap.add_argument("--dir", required=True, help="the chat volume dir")
     ap.add_argument(
-        "--password", default=os.environ.get("OPENCODE_SERVER_PASSWORD", "mock")
+        "--password", default=os.environ.get("OPENCODE_SERVER_PASSWORD", "mock"),
     )
     args = ap.parse_args()
-    CONFIG = Config(port=int(args.port), dir=str(args.dir), password=str(args.password))
+    CONFIG = Config(
+        port=int(args.port), dir=Path(str(args.dir)), password=str(args.password),
+    )
     server = ThreadingHTTPServer(("127.0.0.1", CONFIG.port), Handler)
     server.daemon_threads = True
-    print(
-        f"mock-opencode-server: 127.0.0.1:{CONFIG.port} dir={CONFIG.dir}", flush=True
+    print(  # noqa: T201 — the harness greps stdout for this line
+        f"mock-opencode-server: 127.0.0.1:{CONFIG.port} dir={CONFIG.dir}", flush=True,
     )
     server.serve_forever()
 

@@ -128,6 +128,10 @@ scripts/verify/test-code-agent-manager.sh
 # ...or keep the same stack up to drive other clients at it
 # (e.g. goose-phone-app: cargo run -p opencode-client --example smoke):
 scripts/verify/test-code-agent-manager.sh --serve
+
+# the two Python gates CI runs on every push — run them before you push
+ruff check .    # strict lint: the whole rule set (ruff.toml)
+mypy            # strict typing over every .py (mypy.ini)
 ```
 
 Tunables (env on the unit, defaults in the manager): `CODE_AGENT_IDLE_SECONDS`

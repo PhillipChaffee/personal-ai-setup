@@ -53,6 +53,9 @@ Three layers, so a single mistake never reaches a public remote:
    pre-commit run --all-files    # baseline check of the whole tree
    ```
 
+   The same config also carries the repo's strict Python lint hook
+   (`ruff-check`), so one `pre-commit install` covers both gates.
+
 3. **CI scan** (`.github/workflows/secret-scan.yml`) — gitleaks runs on every push and
    PR, catching anything committed from a machine without the hook installed.
 

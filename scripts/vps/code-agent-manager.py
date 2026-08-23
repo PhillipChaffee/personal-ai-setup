@@ -51,14 +51,16 @@ Tunables (optional):
                               the tailnet IP (never set on the brain)
     CODE_AGENT_REAPER_INTERVAL  idle-reaper cadence seconds, default 60
 
-Typing: mypy --strict clean (enforced by .github/workflows/python-types.yml).
-Wire boundaries (JSON in/out, subprocess) are the only places `Any` appears,
-immediately validated into the dataclasses below.
+Conventions: dataclasses + full annotations, `mypy --strict` clean and
+`ruff check` clean with the entire rule set enabled (mypy.ini, ruff.toml; CI
+runs both). Wire boundaries (JSON in/out, subprocess) are the only places
+`Any` appears, immediately validated into the dataclasses below.
 """
 
 from __future__ import annotations
 
 import base64
+import contextlib
 import http.client
 import json
 import os
@@ -71,16 +73,18 @@ import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
+from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 # ------------------------------------------------------------- configuration
 
-ROOT = os.environ.get("CODE_AGENT_ROOT", "/data/code-agents")
-CHATS_DIR = os.path.join(ROOT, "chats")
-INDEX_PATH = os.path.join(ROOT, "index.json")
-REPOS_PATH = os.path.join(ROOT, "repos.json")
+ROOT = Path(os.environ.get("CODE_AGENT_ROOT", "/data/code-agents"))
+CHATS_DIR = ROOT / "chats"
+INDEX_PATH = ROOT / "index.json"
+REPOS_PATH = ROOT / "repos.json"
 
 GATEWAY_PORT = int(os.environ.get("CODE_AGENT_PORT", "4300"))
 IDLE_SECONDS = int(os.environ.get("CODE_AGENT_IDLE_SECONDS", "900"))
@@ -89,8 +93,8 @@ MEM_LIMIT = os.environ.get("CODE_AGENT_MEM", "1200m")
 CPU_LIMIT = os.environ.get("CODE_AGENT_CPUS", "1.5")
 ENGINE = os.environ.get("CODE_AGENT_ENGINE", "podman")
 IMAGE = os.environ.get("CODE_AGENT_IMAGE", "code-agent:local")
-TLS_CERT = os.environ.get("CODE_AGENT_TLS_CERT", "/data/tls/cert.pem")
-TLS_KEY = os.environ.get("CODE_AGENT_TLS_KEY", "/data/tls/key.pem")
+TLS_CERT = Path(os.environ.get("CODE_AGENT_TLS_CERT", "/data/tls/cert.pem"))
+TLS_KEY = Path(os.environ.get("CODE_AGENT_TLS_KEY", "/data/tls/key.pem"))
 BIND_OVERRIDE = os.environ.get("CODE_AGENT_BIND", "")
 REAPER_INTERVAL = int(os.environ.get("CODE_AGENT_REAPER_INTERVAL", "60"))
 
@@ -99,14 +103,12 @@ GH_PAT = os.environ.get("GITHUB_CODE_AGENT_PAT", "")
 ZEN_KEY = os.environ.get("OPENCODE_ZEN_API_KEY", "")
 TOGETHER_KEY = os.environ.get("TOGETHER_API_KEY", "")
 
-CONFIG_TEMPLATE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "config",
-    "code-agents",
-    "opencode.json",
+CONFIG_TEMPLATE = (
+    Path(__file__).resolve().parents[2] / "config" / "code-agents" / "opencode.json"
 )
 
 BASE_CHAT_PORT = 4310  # per-chat opencode ports: 4310, 4311, ... on 127.0.0.1
+WAIT_FOR_CHAT_SECONDS = 90  # opencode boot budget, create and wake alike
 
 # Zen's free models train on user data (docs/privacy.md, hard rule 1). Refused
 # unless the repo's allowlist entry sets public_throwaway. The explicit set
@@ -115,7 +117,8 @@ FREE_MODEL_IDS = frozenset({"big-pickle", "muse-spark-contributor"})
 
 
 def log(msg: str) -> None:
-    print(f"code-agent-manager: {msg}", flush=True)
+    # stdout IS the log sink here: systemd routes it to journald.
+    print(f"code-agent-manager: {msg}", flush=True)  # noqa: T201
 
 
 # ----------------------------------------------------------------- the model
@@ -137,9 +140,11 @@ def _float(raw: dict[str, Any], key: str) -> float:
 
 @dataclass
 class Chat:
-    """One code chat's metadata — the index entry. Content lives in the
-    chat's volume; this is everything the manager (and the app's list view)
-    needs without waking anything."""
+    """One code chat's metadata — the index entry.
+
+    Content lives in the chat's volume; this is everything the manager (and
+    the app's list view) needs without waking anything.
+    """
 
     id: str
     repo: str
@@ -179,7 +184,7 @@ class Index:
     @classmethod
     def load(cls) -> Index:
         try:
-            with open(INDEX_PATH, "r", encoding="utf-8") as f:
+            with INDEX_PATH.open(encoding="utf-8") as f:
                 raw: Any = json.load(f)
         except FileNotFoundError:
             return cls()
@@ -192,11 +197,11 @@ class Index:
         return cls(chats=chats)
 
     def save(self) -> None:
-        tmp = INDEX_PATH + ".tmp"
+        tmp = INDEX_PATH.with_name(INDEX_PATH.name + ".tmp")
         payload = {"chats": {cid: chat.to_wire() for cid, chat in self.chats.items()}}
-        with open(tmp, "w", encoding="utf-8") as f:
+        with tmp.open("w", encoding="utf-8") as f:
             json.dump(payload, f, indent=1)
-        os.replace(tmp, INDEX_PATH)
+        tmp.replace(INDEX_PATH)
 
 
 @dataclass(frozen=True)
@@ -252,12 +257,26 @@ class ApiError:
     message: str
 
 
+class ConfigTemplateError(TypeError):
+    """The opencode config template on disk is not a JSON object."""
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(f"config template is not a JSON object: {path}")
+
+
+class ChatLaunchError(RuntimeError):
+    """A chat's container started but its opencode server never answered."""
+
+    def __init__(self, seconds: int) -> None:
+        super().__init__(f"opencode server did not come up in {seconds}s")
+
+
 _lock = threading.Lock()
 
 
 def load_repos() -> dict[str, RepoEntry]:
     try:
-        with open(REPOS_PATH, "r", encoding="utf-8") as f:
+        with REPOS_PATH.open(encoding="utf-8") as f:
             raw: Any = json.load(f)
     except FileNotFoundError:
         return {}
@@ -281,7 +300,9 @@ def engine(
     timeout: int = 120,
 ) -> subprocess.CompletedProcess[str]:
     cmd = [ENGINE, *args]
-    return subprocess.run(
+    # Fixed argv, never a shell string; the engine binary is resolved from
+    # PATH on purpose so CODE_AGENT_ENGINE can swap podman for docker.
+    return subprocess.run(  # noqa: S603
         cmd,
         check=check,
         timeout=timeout,
@@ -296,7 +317,7 @@ def container_name(chat_id: str) -> str:
 
 
 def container_state(chat_id: str) -> str:
-    """running | stopped (exists, not running) | absent"""
+    """Report the container's state: running, stopped (exists) or absent."""
     try:
         result = engine(
             "container",
@@ -319,7 +340,7 @@ def running_count(index: Index) -> int:
 
 def run_container(chat: Chat) -> None:
     """Create + start the chat's container (state lives in the volume)."""
-    chat_dir = os.path.join(CHATS_DIR, chat.id)
+    chat_dir = CHATS_DIR / chat.id
     args: list[str] = [
         "run",
         "-d",
@@ -344,19 +365,23 @@ def run_container(chat: Chat) -> None:
         args += ["-e", f"TOGETHER_API_KEY={TOGETHER_KEY}"]
     if GH_PAT and not chat.probe:
         args += ["-e", f"GH_TOKEN={GH_PAT}"]
-    args += [IMAGE, "serve", "--hostname", "0.0.0.0", "--port", "4096"]
+    # 0.0.0.0 is inside the container's own netns; the host side is published
+    # to 127.0.0.1 only (-p above) and the gateway is the only way in.
+    args += [IMAGE, "serve", "--hostname", "0.0.0.0", "--port", "4096"]  # noqa: S104
     engine(*args)
 
 
 def oneshot(
-    chat_dir: str,
+    chat_dir: Path,
     script: str,
     env_extra: tuple[str, ...] = (),
     timeout: int = 600,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a shell one-shot inside a throwaway container on the chat volume
-    (used for clone/branch/setup so git + gh + the token never need to exist
-    on the host side of this service)."""
+    """Run a shell one-shot inside a throwaway container on the chat volume.
+
+    Used for clone/branch/setup so git + gh + the token never need to exist on
+    the host side of this service.
+    """
     args: list[str] = ["run", "--rm", "--entrypoint", "/bin/sh", "-v", f"{chat_dir}:/chat"]
     for kv in env_extra:
         args += ["-e", kv]
@@ -364,7 +389,7 @@ def oneshot(
     return engine(*args, timeout=timeout)
 
 
-def wait_for_chat(port: int, timeout_s: int = 90) -> bool:
+def wait_for_chat(port: int, timeout_s: int = WAIT_FOR_CHAT_SECONDS) -> bool:
     """Poll the chat's opencode server until it answers (auth'd or 401)."""
     deadline = time.time() + timeout_s
     while time.time() < deadline:
@@ -374,7 +399,7 @@ def wait_for_chat(port: int, timeout_s: int = 90) -> bool:
             resp = conn.getresponse()
             resp.read()
             conn.close()
-            if resp.status in (200, 401):
+            if resp.status in (HTTPStatus.OK, HTTPStatus.UNAUTHORIZED):
                 return True
         except OSError:
             pass
@@ -405,36 +430,38 @@ def is_free_model(model: str | None) -> bool:
     return bare in FREE_MODEL_IDS or "free" in bare
 
 
-def render_chat_config(chat_dir: str, model: str | None, allow_push: bool) -> None:
+def render_chat_config(chat_dir: Path, model: str | None, *, allow_push: bool) -> None:
     """Render the per-chat opencode config from the repo template."""
-    with open(CONFIG_TEMPLATE, "r", encoding="utf-8") as f:
+    with CONFIG_TEMPLATE.open(encoding="utf-8") as f:
         cfg: Any = json.load(f)
     if not isinstance(cfg, dict):
-        raise ValueError(f"config template is not a JSON object: {CONFIG_TEMPLATE}")
+        raise ConfigTemplateError(CONFIG_TEMPLATE)
     cfg.pop("_readme", None)
     if model:
         cfg["model"] = model
     if allow_push:
         cfg.setdefault("permission", {}).setdefault("bash", {})["git push*"] = "allow"
-    dst_dir = os.path.join(chat_dir, "home", ".config", "opencode")
-    os.makedirs(dst_dir, exist_ok=True)
-    with open(os.path.join(dst_dir, "opencode.json"), "w", encoding="utf-8") as f:
+    dst_dir = chat_dir / "home" / ".config" / "opencode"
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    with (dst_dir / "opencode.json").open("w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
 
 
-def seed_auth(chat_dir: str) -> None:
+def seed_auth(chat_dir: Path) -> None:
     """Seed opencode's auth.json so Zen models work headlessly.
+
     NOTE: shape mirrors what `opencode auth login` writes as of the pinned
     version — check-code-agents.sh --probe verifies models actually resolve;
-    if upstream changes the schema, fix it here."""
+    if upstream changes the schema, fix it here.
+    """
     if not ZEN_KEY:
         return
-    d = os.path.join(chat_dir, "home", ".local", "share", "opencode")
-    os.makedirs(d, exist_ok=True)
-    path = os.path.join(d, "auth.json")
-    with open(path, "w", encoding="utf-8") as f:
+    d = chat_dir / "home" / ".local" / "share" / "opencode"
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / "auth.json"
+    with path.open("w", encoding="utf-8") as f:
         json.dump({"opencode": {"type": "api", "key": ZEN_KEY}}, f)
-    os.chmod(path, 0o600)
+    path.chmod(0o600)
 
 
 def shquote(s: str) -> str:
@@ -486,10 +513,10 @@ def create_chat(request: CreateChatRequest) -> Chat | ApiError:
         index.chats[chat_id] = chat
         index.save()
 
-    chat_dir = os.path.join(CHATS_DIR, chat_id)
-    os.makedirs(os.path.join(chat_dir, "workspace"), exist_ok=True)
-    os.makedirs(os.path.join(chat_dir, "home"), exist_ok=True)
-    render_chat_config(chat_dir, request.model, repo.allow_push)
+    chat_dir = CHATS_DIR / chat_id
+    (chat_dir / "workspace").mkdir(parents=True, exist_ok=True)
+    (chat_dir / "home").mkdir(parents=True, exist_ok=True)
+    render_chat_config(chat_dir, request.model, allow_push=repo.allow_push)
     seed_auth(chat_dir)
 
     try:
@@ -521,7 +548,9 @@ def create_chat(request: CreateChatRequest) -> Chat | ApiError:
                 oneshot(chat_dir, f"cd /chat/workspace && {setup}", timeout=1800)
         run_container(chat)
         if not wait_for_chat(chat.port):
-            raise RuntimeError("opencode server did not come up in 90s")
+            # Deliberate: a launch that never answers takes exactly the same
+            # cleanup path as the exceptions below.
+            raise ChatLaunchError(WAIT_FOR_CHAT_SECONDS)
     except (OSError, subprocess.SubprocessError, RuntimeError, ValueError) as e:
         log(f"create {chat_id} failed: {e}")
         notify_failure(f"chat create failed ({chat_id}): launch/setup error")
@@ -577,23 +606,27 @@ def touch(chat_id: str) -> None:
 
 
 def chat_busy(chat: Chat) -> bool:
-    """True if any session on this chat's server is mid-work — a busy chat is
-    never stopped by the idle reaper, whatever the clock says."""
+    """Report whether any session on this chat's server is mid-work.
+
+    A busy chat is never stopped by the idle reaper, whatever the clock says.
+    Anything that makes the answer unknowable counts as busy — the cost of a
+    wrong "idle" is killing a running turn.
+    """
     try:
         conn = http.client.HTTPConnection("127.0.0.1", chat.port, timeout=5)
         conn.request(
-            "GET", "/session/status", headers={"Authorization": basic_auth_header()}
+            "GET", "/session/status", headers={"Authorization": basic_auth_header()},
         )
         resp = conn.getresponse()
         body = resp.read().decode("utf-8", "replace")
         conn.close()
-        if resp.status != 200:
-            return True  # can't tell — err on the side of not stopping
+        if resp.status != HTTPStatus.OK:
+            return True
         data: Any = json.loads(body or "{}")
         blob = json.dumps(data).lower()
-        return '"busy"' in blob or '"retry"' in blob
     except (OSError, ValueError):
         return True
+    return '"busy"' in blob or '"retry"' in blob
 
 
 def reaper_loop() -> None:
@@ -617,21 +650,17 @@ def reaper_loop() -> None:
 
 
 def notify_failure(reason: str) -> None:
-    """Failure alerts ride the standard channel (notify.sh -> ntfy). Component
-    + failure class only — never model output (docs/automations.md)."""
-    notify = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "common",
-        "notify.sh",
-    )
-    try:
-        subprocess.run(
-            [notify, "-t", "Code agent failure", "-p", "high", reason],
+    """Send failure alerts on the standard channel (notify.sh -> ntfy).
+
+    Component + failure class only — never model output (docs/automations.md).
+    """
+    notify = Path(__file__).resolve().parents[1] / "common" / "notify.sh"
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(  # noqa: S603
+            [str(notify), "-t", "Code agent failure", "-p", "high", reason],
             check=False,
             timeout=30,
         )
-    except (OSError, subprocess.SubprocessError):
-        pass
 
 
 # ------------------------------------------------------------------ HTTP
@@ -648,7 +677,7 @@ HOP_HEADERS = frozenset(
         "trailers",
         "host",
         "authorization",
-    }
+    },
 )
 
 _last_touch: dict[str, float] = {}
@@ -700,94 +729,104 @@ class Handler(BaseHTTPRequestHandler):
         return self.rfile.read(n) if n else b""
 
     # ---- routing ----
+    ROUTE_CHAT = re.compile(r"^/chat/([a-zA-Z0-9-]+)(/.*|$)")
+    ROUTE_LIFECYCLE = re.compile(r"^/api/chats/([a-zA-Z0-9-]+)/(wake|stop)$")
+    ROUTE_ONE_CHAT = re.compile(r"^/api/chats/([a-zA-Z0-9-]+)$")
+
     def handle_any(self) -> None:
+        """Authenticate, then dispatch the request to exactly one route."""
         if not self.authed():
             self.deny()
             return
         path = urlparse(self.path).path
-        m = re.match(r"^/chat/([a-zA-Z0-9-]+)(/.*|$)", path)
-        if m:
-            self.proxy(m.group(1), m.group(2) or "/")
+        verb = self.command
+        chat = self.ROUTE_CHAT.match(path)
+        lifecycle = self.ROUTE_LIFECYCLE.match(path)
+        one_chat = self.ROUTE_ONE_CHAT.match(path)
+        if chat:
+            self.proxy(chat.group(1), chat.group(2) or "/")
+        elif (path, verb) == ("/api/health", "GET"):
+            self.route_health()
+        elif (path, verb) == ("/api/repos", "GET"):
+            self.route_repos()
+        elif (path, verb) == ("/api/chats", "GET"):
+            self.route_list_chats()
+        elif (path, verb) == ("/api/chats", "POST"):
+            self.route_create_chat()
+        elif lifecycle and verb == "POST":
+            self.route_wake_or_stop(lifecycle.group(1), lifecycle.group(2))
+        elif one_chat and verb == "DELETE":
+            self.route_delete_chat(one_chat.group(1))
+        else:
+            self.send_json(404, {"error": f"no route: {verb} {path}"})
+
+    def route_health(self) -> None:
+        index = Index.load()
+        self.send_json(
+            200,
+            {
+                "ok": True,
+                "engine": ENGINE,
+                "image": IMAGE,
+                "chats": len(index.chats),
+                "active": running_count(index),
+                "max_active": MAX_ACTIVE,
+                "idle_seconds": IDLE_SECONDS,
+            },
+        )
+
+    def route_repos(self) -> None:
+        self.send_json(200, {"repos": [repo.to_wire() for repo in load_repos().values()]})
+
+    def route_list_chats(self) -> None:
+        index = Index.load()
+        out: list[dict[str, object]] = []
+        for cid, chat in sorted(index.chats.items(), key=lambda kv: -kv[1].last_active):
+            entry = chat.to_wire()
+            entry["status"] = container_state(cid)
+            entry["url"] = f"/chat/{cid}"
+            out.append(entry)
+        self.send_json(200, {"chats": out})
+
+    def route_create_chat(self) -> None:
+        try:
+            raw: Any = json.loads(self.read_body() or b"{}")
+        except json.JSONDecodeError:
+            self.send_json(400, {"error": "invalid JSON body"})
             return
-        if path == "/api/health" and self.command == "GET":
+        if not isinstance(raw, dict):
+            self.send_json(400, {"error": "body must be a JSON object"})
+            return
+        result = create_chat(CreateChatRequest.from_wire(raw))
+        if isinstance(result, ApiError):
+            self.send_json(result.status, {"error": result.message})
+            return
+        entry = result.to_wire()
+        entry["status"] = "running"
+        entry["url"] = f"/chat/{result.id}"
+        self.send_json(201, entry)
+
+    def route_wake_or_stop(self, chat_id: str, action: str) -> None:
+        if action == "wake":
+            code, msg = wake_chat(chat_id)
+            self.send_json(code, {"status": msg})
+            return
+        engine("stop", container_name(chat_id), check=False, timeout=90)
+        self.send_json(200, {"status": "stopped"})
+
+    def route_delete_chat(self, chat_id: str) -> None:
+        purge = "purge=1" in (urlparse(self.path).query or "")
+        with _lock:
             index = Index.load()
-            self.send_json(
-                200,
-                {
-                    "ok": True,
-                    "engine": ENGINE,
-                    "image": IMAGE,
-                    "chats": len(index.chats),
-                    "active": running_count(index),
-                    "max_active": MAX_ACTIVE,
-                    "idle_seconds": IDLE_SECONDS,
-                },
-            )
-            return
-        if path == "/api/repos" and self.command == "GET":
-            self.send_json(
-                200, {"repos": [repo.to_wire() for repo in load_repos().values()]}
-            )
-            return
-        if path == "/api/chats" and self.command == "GET":
-            index = Index.load()
-            out: list[dict[str, object]] = []
-            for cid, chat in sorted(
-                index.chats.items(), key=lambda kv: -kv[1].last_active
-            ):
-                entry = chat.to_wire()
-                entry["status"] = container_state(cid)
-                entry["url"] = f"/chat/{cid}"
-                out.append(entry)
-            self.send_json(200, {"chats": out})
-            return
-        if path == "/api/chats" and self.command == "POST":
-            try:
-                raw: Any = json.loads(self.read_body() or b"{}")
-            except json.JSONDecodeError:
-                self.send_json(400, {"error": "invalid JSON body"})
+            if chat_id not in index.chats:
+                self.send_json(404, {"error": "unknown chat"})
                 return
-            if not isinstance(raw, dict):
-                self.send_json(400, {"error": "body must be a JSON object"})
-                return
-            result = create_chat(CreateChatRequest.from_wire(raw))
-            if isinstance(result, ApiError):
-                self.send_json(result.status, {"error": result.message})
-                return
-            entry = result.to_wire()
-            entry["status"] = "running"
-            entry["url"] = f"/chat/{result.id}"
-            self.send_json(201, entry)
-            return
-        m = re.match(r"^/api/chats/([a-zA-Z0-9-]+)/(wake|stop)$", path)
-        if m and self.command == "POST":
-            cid, action = m.group(1), m.group(2)
-            if action == "wake":
-                code, msg = wake_chat(cid)
-                self.send_json(code, {"status": msg})
-                return
-            engine("stop", container_name(cid), check=False, timeout=90)
-            self.send_json(200, {"status": "stopped"})
-            return
-        m = re.match(r"^/api/chats/([a-zA-Z0-9-]+)$", path)
-        if m and self.command == "DELETE":
-            cid = m.group(1)
-            purge = "purge=1" in (urlparse(self.path).query or "")
-            with _lock:
-                index = Index.load()
-                if cid not in index.chats:
-                    self.send_json(404, {"error": "unknown chat"})
-                    return
-                index.chats.pop(cid)
-                index.save()
-            engine("rm", "-f", container_name(cid), check=False)
-            if purge:
-                shutil.rmtree(os.path.join(CHATS_DIR, cid), ignore_errors=True)
-            self.send_json(
-                200, {"status": "deleted", "volume": "purged" if purge else "kept"}
-            )
-            return
-        self.send_json(404, {"error": f"no route: {self.command} {path}"})
+            index.chats.pop(chat_id)
+            index.save()
+        engine("rm", "-f", container_name(chat_id), check=False)
+        if purge:
+            shutil.rmtree(CHATS_DIR / chat_id, ignore_errors=True)
+        self.send_json(200, {"status": "deleted", "volume": "purged" if purge else "kept"})
 
     # ---- reverse proxy (wake-on-request, SSE-safe) ----
     def proxy(self, chat_id: str, subpath: str) -> None:
@@ -798,7 +837,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if container_state(chat_id) != "running":
             code, msg = wake_chat(chat_id)
-            if code != 200:
+            if code != HTTPStatus.OK:
                 self.send_json(code, {"error": f"wake failed: {msg}"})
                 return
         touch(chat_id)
@@ -832,11 +871,20 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.close_connection = True
         self.end_headers()
+        self.relay_body(conn, resp, chat_id)
+
+    def relay_body(
+        self,
+        conn: http.client.HTTPConnection,
+        resp: http.client.HTTPResponse,
+        chat_id: str,
+    ) -> None:
+        """Stream an upstream body downstream as it arrives (SSE-safe)."""
         # SSE heartbeats arrive every ~10s; 60s of silence means a dead
         # stream. On a `Connection: close` upstream response http.client
         # detaches conn.sock (None) — the response still reads from the
-        # underlying socket, which keeps the 600s timeout set above; tighten
-        # only when the handle is still exposed.
+        # underlying socket, which keeps the 600s timeout set by the caller;
+        # tighten only when the handle is still exposed.
         if conn.sock is not None:
             conn.sock.settimeout(60)
         try:
@@ -871,7 +919,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:
         self.handle_any()
 
-    def log_message(self, format: str, *args: object) -> None:
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A002, ARG002
         # journald gets one concise line; never log query strings (auth_token).
         log(f"{self.command} {urlparse(self.path).path}")
 
@@ -881,8 +929,10 @@ class Handler(BaseHTTPRequestHandler):
 
 def tailnet_ip() -> str:
     try:
+        # The tailscale CLI is resolved from PATH by design (it is the
+        # system's, not ours), with a fixed argv and no shell.
         out = subprocess.run(
-            ["tailscale", "ip", "-4"],
+            ["tailscale", "ip", "-4"],  # noqa: S607
             check=True,
             stdout=subprocess.PIPE,
             text=True,
@@ -898,23 +948,23 @@ def main() -> None:
     if not PASSWORD:
         log(
             "FATAL: OPENCODE_SERVER_PASSWORD is empty — refusing to serve "
-            "an unauthenticated code plane. Set it in /data/secrets.env."
+            "an unauthenticated code plane. Set it in /data/secrets.env.",
         )
         sys.exit(1)
     if not GH_PAT:
         log(
             "WARNING: GITHUB_CODE_AGENT_PAT is empty — private clones and "
-            "agent-side push/PR will fail until it is set."
+            "agent-side push/PR will fail until it is set.",
         )
-    os.makedirs(CHATS_DIR, exist_ok=True)
-    if not os.path.exists(REPOS_PATH):
+    CHATS_DIR.mkdir(parents=True, exist_ok=True)
+    if not REPOS_PATH.exists():
         log(
             f"WARNING: {REPOS_PATH} missing — the allowlist is empty; copy "
-            "config/code-agents/repos.example.json there and edit it."
+            "config/code-agents/repos.example.json there and edit it.",
         )
 
     host = BIND_OVERRIDE or tailnet_ip()
-    have_tls = os.path.exists(TLS_CERT) and os.path.exists(TLS_KEY)
+    have_tls = TLS_CERT.exists() and TLS_KEY.exists()
     if not host:
         # Tailnet-only rule (docs/security.md): the socket must exist on the
         # tailnet interface or not at all. Exit nonzero; the unit's
@@ -925,7 +975,7 @@ def main() -> None:
     if not have_tls:
         log(
             "WARNING: no TLS cert at /data/tls — serving PLAIN HTTP. Run "
-            "scripts/vps/renew-tls-cert.sh (docs/setup/50-vps-brain.md)."
+            "scripts/vps/renew-tls-cert.sh (docs/setup/50-vps-brain.md).",
         )
 
     server = ThreadingHTTPServer((host, GATEWAY_PORT), Handler)
@@ -938,7 +988,7 @@ def main() -> None:
     log(
         f"listening on {host}:{GATEWAY_PORT} "
         f"(tls={'yes' if have_tls else 'NO'}, engine={ENGINE}, image={IMAGE}, "
-        f"idle={IDLE_SECONDS}s, max_active={MAX_ACTIVE})"
+        f"idle={IDLE_SECONDS}s, max_active={MAX_ACTIVE})",
     )
     server.serve_forever()
 

@@ -1,0 +1,28 @@
+# Strict lint gate for every .py file in the repo. Config: ruff.toml at the
+# repo root (`select = ["ALL"]` — every rule on, exceptions justified there or
+# in a `# noqa: RULE` next to the line that needs it).
+#
+# Companion gate: python-types.yml (mypy --strict). Both must be green.
+#
+# The ruff version is PINNED: with the whole rule set enabled, an unpinned
+# ruff would add rules on its own release schedule and turn CI red on a
+# commit that changed nothing. Bump it here and in .pre-commit-config.yaml
+# together, as a deliberate change.
+name: python-lint
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ruff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: pip install --quiet ruff==0.15.8
+      - name: ruff check (strict, whole repo)
+        run: ruff check --output-format=github .
