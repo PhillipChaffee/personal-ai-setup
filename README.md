@@ -1,6 +1,6 @@
 # personal-ai-setup
 
-[![coverage](https://codecov.io/gh/PhillipChaffee/personal-ai-setup/branch/main/graph/badge.svg)](https://codecov.io/gh/PhillipChaffee/personal-ai-setup)
+[![Coverage Status](https://coveralls.io/repos/github/PhillipChaffee/personal-ai-setup/badge.svg?branch=main)](https://coveralls.io/github/PhillipChaffee/personal-ai-setup?branch=main)
 [![python-lint](https://github.com/PhillipChaffee/personal-ai-setup/actions/workflows/python-lint.yml/badge.svg)](https://github.com/PhillipChaffee/personal-ai-setup/actions/workflows/python-lint.yml)
 [![secret-scan](https://github.com/PhillipChaffee/personal-ai-setup/actions/workflows/secret-scan.yml/badge.svg)](https://github.com/PhillipChaffee/personal-ai-setup/actions/workflows/secret-scan.yml)
 
