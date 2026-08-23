@@ -14,10 +14,6 @@ on:
 
 permissions:
   contents: read
-  # Codecov's OIDC upload: authenticates as this repository without a
-  # CODECOV_TOKEN secret. (The token requirement is why this repo's sibling
-  # once dropped Codecov; use_oidc below is what makes it setup-free.)
-  id-token: write
 
 jobs:
   python:
@@ -49,7 +45,18 @@ jobs:
         with:
           files: ./coverage.xml
           flags: python
-          use_oidc: true
-          # An upload problem is a reporting problem, not a reason to fail a
-          # build whose tests all passed.
+          # ONE-TIME SETUP: sign in at codecov.io with GitHub (free for public
+          # repos) so this repository exists there, then add its upload token
+          # as the CODECOV_TOKEN secret. The first run of this workflow proved
+          # the rest of the path works and named what was missing: Codecov
+          # answered "Repository not found".
+          #
+          # That activation is needed whichever way we authenticate, so we take
+          # the token while we are there rather than use_oidc: Codecov also
+          # requires a token for uploads landing on a protected branch (main is
+          # protected here), and codecov-action#1806 / #1817 report the OIDC
+          # path failing on exactly that case.
+          token: ${{ secrets.CODECOV_TOKEN }}
+          # Until that secret exists the upload is a no-op: a reporting
+          # problem must not fail a build whose checks all passed.
           fail_ci_if_error: false
