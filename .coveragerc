@@ -1,0 +1,25 @@
+# Coverage configuration for the manager, measured the only way it is ever
+# exercised: as a live server driven end to end by
+# scripts/verify/test-code-agent-manager.sh (30 checks over the whole chat
+# lifecycle). The harness starts it under `coverage run` when MANAGER_PY says
+# so; CI does that in .github/workflows/coverage.yml.
+#
+# Only shipped code is measured. scripts/verify/ is the test harness itself —
+# the mock OpenCode server and the stub container engine exist to drive this
+# code, so counting them would inflate the number with test-only lines.
+[run]
+source = scripts/vps
+branch = True
+parallel = True
+# The harness stops the manager with SIGTERM (its cleanup trap). Without this
+# the process dies before writing its data file and coverage reads as 0%.
+sigterm = True
+
+[report]
+show_missing = True
+skip_covered = False
+exclude_also =
+    # The server's front door: exercised by running it, not by the harness.
+    if __name__ == .__main__.:
+    # Defensive branches for states the stub engine cannot reproduce.
+    raise NotImplementedError

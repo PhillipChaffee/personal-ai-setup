@@ -59,6 +59,14 @@ cat > "$WORK/root/repos.json" <<EOF
 EOF
 
 # ---- start the manager ------------------------------------------------------
+# MANAGER_PY replaces the interpreter the manager runs under. It exists so CI
+# can measure coverage of a component that is only ever exercised as a live
+# server: MANAGER_PY="coverage run --parallel-mode --data-file=$PWD/.coverage".
+# The env is wiped (env -i) to prove the manager needs nothing but what the
+# unit gives it, so the data file must be named on the command line rather
+# than inherited through COVERAGE_FILE.
+read -r -a MANAGER_PY <<<"${MANAGER_PY:-python3}"
+
 env -i PATH="$PATH" HOME="$HOME" \
   CODE_AGENT_BIND=127.0.0.1 \
   CODE_AGENT_PORT=$PORT \
@@ -75,7 +83,7 @@ env -i PATH="$PATH" HOME="$HOME" \
   OPENCODE_SERVER_PASSWORD="$PASS" \
   GITHUB_CODE_AGENT_PAT="fake-pat-for-tests" \
   OPENCODE_ZEN_API_KEY="fake-zen-key" \
-  python3 "$REPO_ROOT/scripts/vps/code-agent-manager.py" \
+  "${MANAGER_PY[@]}" "$REPO_ROOT/scripts/vps/code-agent-manager.py" \
   > "$WORK/manager.log" 2>&1 &
 MANAGER_PID=$!
 

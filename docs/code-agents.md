@@ -132,6 +132,13 @@ scripts/verify/test-code-agent-manager.sh --serve
 # the two Python gates CI runs on every push — run them before you push
 ruff check .    # strict lint: the whole rule set (ruff.toml)
 mypy            # strict typing over every .py (mypy.ini)
+
+# coverage of the manager: the same harness, with the interpreter swapped.
+# CI does this on every push and reports to Codecov (.coveragerc, codecov.yml).
+MANAGER_PY="coverage run --parallel-mode --data-file=$PWD/.coverage" \
+  scripts/verify/test-code-agent-manager.sh
+coverage combine --data-file="$PWD/.coverage"
+coverage report --data-file="$PWD/.coverage"    # ~81% of the manager today
 ```
 
 Tunables (env on the unit, defaults in the manager): `CODE_AGENT_IDLE_SECONDS`

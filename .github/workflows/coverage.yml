@@ -1,0 +1,55 @@
+# Coverage for the manager — the one long-lived program in this repo.
+#
+# It has no unit tests and does not want them: every interesting path (auth,
+# the allowlist gate, wake/stop/purge, the SSE proxy, the idle reaper) only
+# exists while it is serving. So coverage is measured the way the component is
+# actually exercised — by running the 30-check integration harness against it
+# with the interpreter swapped for `coverage run` (MANAGER_PY), no containers
+# and no VPS required. Config: .coveragerc; report thresholds: codecov.yml.
+name: coverage
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+  # Codecov's OIDC upload: authenticates as this repository without a
+  # CODECOV_TOKEN secret. (The token requirement is why this repo's sibling
+  # once dropped Codecov; use_oidc below is what makes it setup-free.)
+  id-token: write
+
+jobs:
+  python:
+    name: Manager coverage (integration harness)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install coverage.py
+        # Pinned like the other Python tooling: the reported number should
+        # move when the code moves, not when a dependency releases.
+        run: pip install --quiet coverage==7.15.4
+
+      - name: Run the integration harness under coverage
+        run: |
+          MANAGER_PY="coverage run --parallel-mode --data-file=$PWD/.coverage" \
+            scripts/verify/test-code-agent-manager.sh
+
+      - name: Combine and report
+        run: |
+          coverage combine --data-file="$PWD/.coverage"
+          coverage report --data-file="$PWD/.coverage"
+          coverage xml --data-file="$PWD/.coverage" -o coverage.xml
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.xml
+          flags: python
+          use_oidc: true
+          # An upload problem is a reporting problem, not a reason to fail a
+          # build whose tests all passed.
+          fail_ci_if_error: false

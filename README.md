@@ -1,5 +1,9 @@
 # personal-ai-setup
 
+[![coverage](https://codecov.io/gh/PhillipChaffee/personal-ai-setup/branch/main/graph/badge.svg)](https://codecov.io/gh/PhillipChaffee/personal-ai-setup)
+[![python-lint](https://github.com/PhillipChaffee/personal-ai-setup/actions/workflows/python-lint.yml/badge.svg)](https://github.com/PhillipChaffee/personal-ai-setup/actions/workflows/python-lint.yml)
+[![secret-scan](https://github.com/PhillipChaffee/personal-ai-setup/actions/workflows/secret-scan.yml/badge.svg)](https://github.com/PhillipChaffee/personal-ai-setup/actions/workflows/secret-scan.yml)
+
 Build your own personal AI — one agent with one memory, available on your phone and laptop, running your automations around the clock — out of open-source parts and pay-as-you-go inference. No hosted-assistant subscriptions, no lock-in, and your sensitive data only ever reaches zero-data-retention endpoints.
 
 This repo is the complete, reproducible blueprint: Terraform for the server, config templates for every component, ready-made automations, verification scripts for each setup phase, and step-by-step runbooks. Follow it end to end and you'll have the whole thing running in a weekend for **~$15–35/month**.

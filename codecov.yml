@@ -1,0 +1,28 @@
+# Codecov settings. Uploads come from .github/workflows/coverage.yml, which
+# measures scripts/vps/code-agent-manager.py by running the integration
+# harness against it (see .coveragerc for what is in scope and why).
+#
+# Both statuses are informational on purpose: coverage here is a signal to
+# read, not a gate that blocks a merge. Flip `informational: false` on the
+# project status once the number has been stable for a while.
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 2%
+        informational: true
+    patch:
+      default:
+        target: 80%
+        informational: true
+
+comment:
+  layout: "condensed_header, diff, flags, files"
+  require_changes: true
+
+ignore:
+  # The test harness itself: the stub container engine and the mock OpenCode
+  # server exist to drive the manager, so counting their lines would inflate
+  # the number with test-only code.
+  - "scripts/verify/**"
