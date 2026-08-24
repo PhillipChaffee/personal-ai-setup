@@ -146,7 +146,11 @@ if [ -n "$CID" ]; then
     && ok "per-chat opencode config rendered (default model)" || bad "chat config missing/wrong"
   grep -q '"git push\*": "ask"' "$CD/home/.config/opencode/opencode.json" 2>/dev/null \
     && ok "push=ask policy in chat config" || bad "push policy missing"
-  [ "$(stat -c %a "$CD/home/.local/share/opencode/auth.json" 2>/dev/null)" = "600" ] \
+  # stat's mode flag is not portable: -c %a is GNU, -f %A is BSD/macOS. This
+  # asked only the GNU way, so on a Mac it returned nothing and the check has
+  # been failing for a reason that had nothing to do with the file.
+  perms() { stat -c %a "$1" 2>/dev/null || stat -f %A "$1" 2>/dev/null; }
+  [ "$(perms "$CD/home/.local/share/opencode/auth.json")" = "600" ] \
     && ok "zen auth seeded (0600)" || bad "auth.json missing or wrong perms"
   git -C "$CD/workspace" config user.name | grep -q "code-agent" \
     && ok "distinct git identity configured" || bad "git identity not set"
@@ -241,6 +245,19 @@ $CURL --max-time 120 "$BASE/chat/$CID/session/$SID/message" | grep -q "pull/7" \
 # The canned diff is multi-file on purpose, so assert on the shape a client
 # has to cope with — a whole-file patch and a binary entry with no patch at
 # all — rather than on one filename.
+# The agent list is how a client discovers the modes a turn can run in. Only
+# primary/all agents are selectable; a subagent must be present in the payload
+# so a client that fails to filter it can be caught.
+# shellcheck disable=SC2086
+$CURL --max-time 120 "$BASE/chat/$CID/agent" | python3 -c '
+import json, sys
+agents = json.load(sys.stdin)
+by_mode = {a["mode"] for a in agents}
+assert {"primary", "subagent"} <= by_mode, f"need both primary and subagent, got {by_mode}"
+assert any(not a["builtIn"] for a in agents), "no custom agent to test builtIn=false"
+assert all("permission" in a for a in agents), "agent missing permission block"
+' && ok "agent list proxied (primary + subagent)" || bad "agent list failed"
+
 # shellcheck disable=SC2086
 DIFF_JSON="$($CURL --max-time 120 "$BASE/chat/$CID/session/$SID/diff")"
 echo "$DIFF_JSON" | python3 -c '

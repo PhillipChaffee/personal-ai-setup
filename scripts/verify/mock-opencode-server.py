@@ -15,6 +15,8 @@ Implements (Basic auth required, any username + the --password value):
     POST /session/<id>/prompt_async        204; scripted turn over SSE
     POST /session/<id>/abort               cancel the turn
     GET  /session/<id>/diff                canned FileDiff[]
+    GET  /config/providers, GET /provider  model catalogue (same, two keys)
+    GET  /agent                            selectable agents (the "mode")
     GET  /permission                       pending permission asks
     POST /session/<id>/permissions/<pid>   {"response": once|always|reject}
     GET  /event                            SSE (server.connected, heartbeats,
@@ -112,6 +114,7 @@ class Session:
     # client has to reconcile its own pending pick against.
     model: str = ""
     variant: str = ""
+    agent: str = ""
 
     def to_wire(self) -> Wire:
         wire: Wire = {"id": self.id, "title": self.title, "directory": self.directory}
@@ -121,6 +124,8 @@ class Session:
             if self.variant:
                 entry["variant"] = self.variant
             wire["model"] = entry
+        if self.agent:
+            wire["agent"] = self.agent
         return wire
 
     @classmethod
@@ -139,6 +144,7 @@ class Session:
             directory=str(raw.get("directory", "")),
             model=reference,
             variant=variant,
+            agent=str(raw.get("agent", "")),
         )
 
 
@@ -427,6 +433,108 @@ PROVIDERS: list[Wire] = [
 ]
 
 
+# ------------------------------------------------------------ agent catalogue
+#
+# `GET /agent` is how a client discovers the modes it can run a turn in — the
+# agent rides the prompt body alongside the model, so switching costs nothing
+# and needs no restart.
+#
+# The shape follows OpenCode's own Agent type. The field that matters most to
+# a client is `mode`: only `primary` and `all` agents can be selected for a
+# turn, and a `subagent` is something the primary one calls. A picker that
+# offers a subagent is offering something the server will refuse, so one is
+# included here on purpose — a client that filters correctly must not show it.
+
+
+def _agent(
+    name: str,
+    description: str,
+    mode: str,
+    *,
+    grants: dict[str, str] | None = None,
+    extra: Wire | None = None,
+) -> Wire:
+    permission = {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "doom_loop": "ask",
+        "external_directory": "deny",
+    }
+    permission.update(grants or {})
+    entry: Wire = {
+        "name": name,
+        "description": description,
+        "mode": mode,
+        "builtIn": True,
+        "permission": permission,
+        "tools": {},
+        "options": {},
+    }
+    entry.update(extra or {})
+    return entry
+
+
+AGENTS: list[Wire] = [
+    _agent("build", "Full access to edit and run commands", "primary"),
+    _agent(
+        "plan",
+        "Read-only. Produces a plan before making changes",
+        "primary",
+        grants={"edit": "deny", "bash": "ask"},
+    ),
+    _agent(
+        "accept-edits",
+        "Applies file edits without asking",
+        "all",
+        extra={"builtIn": False, "color": "#7C5CFF"},
+    ),
+    # Never selectable for a turn; a picker that shows this one is wrong.
+    _agent("general", "Subagent for open-ended search", "subagent"),
+]
+
+# Routes that answer with a constant. Kept as a table so adding one does not
+# make the dispatcher harder to read.
+CATALOGUE: dict[str, Any] = {
+    "/config/providers": lambda: {"providers": PROVIDERS},
+    "/provider": lambda: {"all": PROVIDERS},
+    "/agent": lambda: AGENTS,
+}
+
+
+def record_turn_choices(sid: str, body: dict[str, Any]) -> None:
+    """Copy what a turn asked to run on onto the session record.
+
+    OpenCode writes these when a turn is SENT, not when they are picked, which
+    is what makes the session record the server's answer to "what will the next
+    turn use" — and so the thing a client has to reconcile an unsent pick
+    against.
+    """
+    agent = body.get("agent")
+    model = body.get("model")
+    variant = body.get("variant")
+    reference = ""
+    if isinstance(model, dict):
+        provider = str(model.get("providerID", ""))
+        model_id = str(model.get("modelID", "") or model.get("id", ""))
+        if provider and model_id:
+            reference = f"{provider}/{model_id}"
+    if not reference and not isinstance(agent, str):
+        return
+    with STATE_LOCK:
+        state = State.load()
+        for session in state.sessions:
+            if session.id != sid:
+                continue
+            if reference:
+                session.model = reference
+                session.variant = variant if isinstance(variant, str) else ""
+            if isinstance(agent, str) and agent:
+                session.agent = agent
+            state.save()
+            return
+
+
 # ------------------------------------------------------- wire-part builders
 
 
@@ -626,10 +734,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {sid: {"type": "busy"} for sid in sorted(BUSY)})
         elif (path, verb) == ("/permission", "GET"):
             self.send_json(200, [entry.perm.to_wire() for entry in PENDING.values()])
-        elif (path, verb) == ("/config/providers", "GET"):
-            self.send_json(200, {"providers": PROVIDERS})
-        elif (path, verb) == ("/provider", "GET"):
-            self.send_json(200, {"all": PROVIDERS})
+        elif verb == "GET" and path in CATALOGUE:
+            self.send_json(200, CATALOGUE[path]())
         elif len(parts) >= SESSION_PATH_PARTS and parts[0] == "session":
             self.route_session(parts)
         else:
@@ -681,21 +787,7 @@ class Handler(BaseHTTPRequestHandler):
                     value = part.get("text", "")
                     if isinstance(value, str):
                         text += value
-        # The turn carries the model; the session record follows it.
-        model = body.get("model")
-        if isinstance(model, dict):
-            provider = str(model.get("providerID", ""))
-            model_id = str(model.get("modelID", "") or model.get("id", ""))
-            variant = body.get("variant")
-            with STATE_LOCK:
-                state = State.load()
-                for session in state.sessions:
-                    if session.id == sid and provider and model_id:
-                        session.model = f"{provider}/{model_id}"
-                        session.variant = variant if isinstance(variant, str) else ""
-                        state.save()
-                        break
-
+        record_turn_choices(sid, body)
         threading.Thread(target=run_turn, args=(sid, text), daemon=True).start()
         self.send_response(204)
         self.send_header("Content-Length", "0")
