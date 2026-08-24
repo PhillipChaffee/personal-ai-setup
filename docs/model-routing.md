@@ -27,6 +27,7 @@ pricing/model pages). Both catalogs churn — re-verify at signup and monthly vi
 | Sensitive long-context (big PDFs) | Goose → `together` | DeepSeek V4 Flash | $0.14/$0.28, 1M ctx |
 | Code agents (brain, per-chat containers) | OpenCode in container → Zen/Together | **owner's choice at kick-off** — default `deepseek-v4-flash` | Zen: peak/off-peak; Together alt $0.14/$0.28 |
 | Backup phone chat (Pal Chat) | Together direct | gpt-oss-120b / Qwen3.5 | cheap, ZDR |
+| Image/screenshot chats | Goose → `together` | `google/gemma-4-31B-it` | serverless vision, ZDR |
 | Embeddings (roadmap RAG) | Together | M2-BERT-80M-32K | ~$0.01 |
 
 Notes on reading the table:

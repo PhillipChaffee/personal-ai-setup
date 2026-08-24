@@ -91,6 +91,17 @@ Mind the routing rules when adding models: only ZDR/no-training endpoints
 belong in `together` and the Zen open-model set; never add a Zen free model
 here as a default for anything personal (docs/model-routing.md, hard rule 1).
 
+## Together's catalog mixes serverless and dedicated-only models
+
+A model returning **400 "Unable to access non-serverless model …"** is
+dedicated-endpoint-only (hourly GPU pricing) — not broken, just not
+pay-as-you-go. Together's `/v1/models` does not flag which is which, so
+`sync-models.sh` cannot filter them out; expect some picker entries to fail
+with that message and simply pick another. Vision in particular: as of
+2026-08-21 the serverless vision-capable pick is `google/gemma-4-31B-it`
+(verified with a real image request); the Qwen-VL / Llama-vision families
+are dedicated-only.
+
 ## `context_limit` is best-effort
 
 The values shipped here are taken from provider catalogs as of 2026-08-20 and

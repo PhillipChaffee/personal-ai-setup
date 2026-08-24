@@ -1,7 +1,7 @@
 {
   "name": "together",
   "engine": "openai",
-  "display_name": "Together AI",
+  "display_name": "Together AI — ZDR, sensitive-safe",
   "api_key_env": "TOGETHER_API_KEY",
   "base_url": "https://api.together.xyz/v1/chat/completions",
   "models": [
@@ -114,10 +114,6 @@
       "context_limit": 16384
     },
     {
-      "name": "Qwen/Qwen2.5-VL-72B-Instruct",
-      "context_limit": 32768
-    },
-    {
       "name": "Qwen/Qwen3-0.6B",
       "context_limit": 40960
     },
@@ -179,18 +175,6 @@
     },
     {
       "name": "Qwen/Qwen3-Next-80B-A3B-Thinking",
-      "context_limit": 262144
-    },
-    {
-      "name": "Qwen/Qwen3-VL-235B-A22B-Instruct-FP8",
-      "context_limit": 262144
-    },
-    {
-      "name": "Qwen/Qwen3-VL-32B-Instruct",
-      "context_limit": 262144
-    },
-    {
-      "name": "Qwen/Qwen3-VL-8B-Instruct",
       "context_limit": 262144
     },
     {
@@ -636,10 +620,6 @@
     {
       "name": "zai-org/GLM-4.5-Air-FP8",
       "context_limit": 131072
-    },
-    {
-      "name": "zai-org/GLM-4.5V",
-      "context_limit": 65536
     },
     {
       "name": "zai-org/GLM-4.6",
