@@ -593,11 +593,15 @@ def merge_chat_pull(chat: Chat, number: int, method: str) -> dict[str, object]:
         if e.status in (405, 409, 422):
             raise GitHubError(422, e.message) from e
         raise
+    # Re-read WITH checks. Skipping them saves two calls on an action the
+    # reader just took deliberately, and costs the row its check status: it
+    # repaints from "checks passing" to "checks unknown" the instant the merge
+    # lands, which reads as information lost rather than work done.
     after = gh("GET", f"/repos/{slug}/pulls/{number}")
     return {
         "merged": True,
         "sha": _str(result if isinstance(result, dict) else {}, "sha"),
-        "pull": pull_to_wire(slug, after, with_checks=False) if isinstance(after, dict) else None,
+        "pull": pull_to_wire(slug, after) if isinstance(after, dict) else None,
     }
 
 
