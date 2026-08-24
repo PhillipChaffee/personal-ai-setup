@@ -101,21 +101,44 @@ class PendingPermission:
 PENDING: dict[str, PendingPermission] = {}
 
 
-@dataclass(frozen=True)
+@dataclass
 class Session:
     id: str
     title: str
     directory: str
+    # What the last turn asked to run on. OpenCode records this when a TURN
+    # IS SENT, not when a model is picked, and the session record is then the
+    # server's answer to "what will the next turn use" — which is the thing a
+    # client has to reconcile its own pending pick against.
+    model: str = ""
+    variant: str = ""
 
     def to_wire(self) -> Wire:
-        return {"id": self.id, "title": self.title, "directory": self.directory}
+        wire: Wire = {"id": self.id, "title": self.title, "directory": self.directory}
+        if self.model:
+            provider, _, model_id = self.model.partition("/")
+            entry: Wire = {"providerID": provider, "id": model_id}
+            if self.variant:
+                entry["variant"] = self.variant
+            wire["model"] = entry
+        return wire
 
     @classmethod
     def from_wire(cls, raw: dict[str, Any]) -> Session:
+        model = raw.get("model")
+        reference = variant = ""
+        if isinstance(model, dict):
+            provider = str(model.get("providerID", ""))
+            model_id = str(model.get("id", ""))
+            if provider and model_id:
+                reference = f"{provider}/{model_id}"
+            variant = str(model.get("variant", ""))
         return cls(
             id=str(raw.get("id", "")),
             title=str(raw.get("title", "")),
             directory=str(raw.get("directory", "")),
+            model=reference,
+            variant=variant,
         )
 
 
@@ -222,29 +245,40 @@ def _whole_file_patch(
     path: str,
     lines: list[str],
     edits: dict[int, list[str] | None],
+    status: str,
 ) -> tuple[str, int, int]:
     """Build a full-context unified patch, the way `Snapshot.diffFull` writes one.
 
     `edits` maps a 0-based index in `lines` to its replacement lines, or to
-    `None` for a deletion. Everything else comes through as context.
+    `None` for a deletion. Everything else comes through as context. A file
+    that was added has no old side at all, so `edits` is ignored for it and
+    every line is an addition — a client that trusts the counts should never
+    see an added file reporting deletions.
     """
     body: list[str] = []
     added = removed = 0
-    for i, line in enumerate(lines):
-        if i not in edits:
-            body.append(f" {line}")
-            continue
-        body.append(f"-{line}")
-        removed += 1
-        for new in edits[i] or []:
-            body.append(f"+{new}")
-            added += 1
-    old_n, new_n = len(lines), len(lines) - removed + added
+    if status == "added":
+        body = [f"+{line}" for line in lines]
+        added = len(lines)
+        old_start, old_n = 0, 0
+    else:
+        for i, line in enumerate(lines):
+            if i not in edits:
+                body.append(f" {line}")
+                continue
+            body.append(f"-{line}")
+            removed += 1
+            for new in edits[i] or []:
+                body.append(f"+{new}")
+                added += 1
+        old_start, old_n = 1, len(lines)
+    new_n = len(lines) - removed + added if status != "added" else len(lines)
+    new_start = 0 if new_n == 0 else 1
     head = (
         f"Index: {path}\n"
         "===================================================================\n"
         f"--- a/{path}\n+++ b/{path}\n"
-        f"@@ -1,{old_n} +1,{new_n} @@\n"
+        f"@@ -{old_start},{old_n} +{new_start},{new_n} @@\n"
     )
     return head + "\n".join(body) + "\n", added, removed
 
@@ -255,7 +289,7 @@ def _entry(
     edits: dict[int, list[str] | None],
     status: str = "modified",
 ) -> Wire:
-    patch, added, removed = _whole_file_patch(path, lines, edits)
+    patch, added, removed = _whole_file_patch(path, lines, edits, status)
     return {
         "path": path,
         "patch": patch,
@@ -333,6 +367,63 @@ DIFF: list[Wire] = [
         },
     ),
     {"path": "assets/icon.png", "patch": "", "additions": 0, "deletions": 0, "status": "modified"},
+]
+
+
+# ------------------------------------------------------- model catalogue
+#
+# `GET /config/providers` and `GET /provider` carry the same providers under
+# different keys; the client tries the first and falls back to the second, so
+# both are served. Models are picked to cover what a client has to handle
+# rather than to be realistic about any one vendor:
+#
+#   - a model with thinking-effort variants, and one with none at all (the
+#     minimax/qwen/glm/kimi families genuinely return no variants)
+#   - variants deliberately out of ladder order, since the wire shape is a
+#     JSON object and a client sorting them alphabetically would put `high`
+#     before `low`
+#   - context windows spanning three orders of magnitude, including one
+#     declared as a float
+#   - a name long enough to overflow a chip, and a free model, which the app
+#     must withhold from a repo that is not a public throwaway
+
+
+def _model(
+    name: str,
+    context: float,
+    variants: list[str] | None = None,
+) -> Wire:
+    return {
+        "name": name,
+        "limit": {"context": context},
+        "variants": {v: {} for v in variants or []},
+    }
+
+
+PROVIDERS: list[Wire] = [
+    {
+        "id": "opencode",
+        "models": {
+            "deepseek-v4-flash": _model("DeepSeek V4 Flash", 128000),
+            "claude-sonnet-4-5": _model(
+                "Claude Sonnet 4.5",
+                200000,
+                ["high", "low", "medium", "none"],
+            ),
+            "qwen3-coder-480b": _model("Qwen3 Coder 480B A35B Instruct", 262144),
+            "grok-code-fast-free": _model("Grok Code Fast (free)", 256000),
+        },
+    },
+    {
+        "id": "anthropic",
+        "models": {
+            "claude-opus-4-1": _model(
+                "Claude Opus 4.1",
+                1000000.0,
+                ["max", "medium", "xhigh"],
+            ),
+        },
+    },
 ]
 
 
@@ -535,6 +626,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {sid: {"type": "busy"} for sid in sorted(BUSY)})
         elif (path, verb) == ("/permission", "GET"):
             self.send_json(200, [entry.perm.to_wire() for entry in PENDING.values()])
+        elif (path, verb) == ("/config/providers", "GET"):
+            self.send_json(200, {"providers": PROVIDERS})
+        elif (path, verb) == ("/provider", "GET"):
+            self.send_json(200, {"all": PROVIDERS})
         elif len(parts) >= SESSION_PATH_PARTS and parts[0] == "session":
             self.route_session(parts)
         else:
@@ -586,6 +681,21 @@ class Handler(BaseHTTPRequestHandler):
                     value = part.get("text", "")
                     if isinstance(value, str):
                         text += value
+        # The turn carries the model; the session record follows it.
+        model = body.get("model")
+        if isinstance(model, dict):
+            provider = str(model.get("providerID", ""))
+            model_id = str(model.get("modelID", "") or model.get("id", ""))
+            variant = body.get("variant")
+            with STATE_LOCK:
+                state = State.load()
+                for session in state.sessions:
+                    if session.id == sid and provider and model_id:
+                        session.model = f"{provider}/{model_id}"
+                        session.variant = variant if isinstance(variant, str) else ""
+                        state.save()
+                        break
+
         threading.Thread(target=run_turn, args=(sid, text), daemon=True).start()
         self.send_response(204)
         self.send_header("Content-Length", "0")
