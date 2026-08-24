@@ -149,9 +149,14 @@ class StoredMessage:
     def from_wire(cls, raw: dict[str, Any]) -> StoredMessage:
         info_raw = raw.get("info")
         parts_raw = raw.get("parts")
-        parts: list[Wire] = [p for p in parts_raw if isinstance(p, dict)] if isinstance(
-            parts_raw, list,
-        ) else []
+        parts: list[Wire] = (
+            [p for p in parts_raw if isinstance(p, dict)]
+            if isinstance(
+                parts_raw,
+                list,
+            )
+            else []
+        )
         return cls(
             info=MessageInfo.from_wire(info_raw if isinstance(info_raw, dict) else {}),
             parts=parts,
@@ -178,11 +183,7 @@ class State:
             return cls()
         if not isinstance(raw, dict):
             return cls()
-        sessions = [
-            Session.from_wire(s)
-            for s in raw.get("sessions", [])
-            if isinstance(s, dict)
-        ]
+        sessions = [Session.from_wire(s) for s in raw.get("sessions", []) if isinstance(s, dict)]
         messages: dict[str, list[StoredMessage]] = {}
         raw_messages = raw.get("messages", {})
         if isinstance(raw_messages, dict):
@@ -197,8 +198,7 @@ class State:
         payload: Wire = {
             "sessions": [s.to_wire() for s in self.sessions],
             "messages": {
-                sid: [m.to_wire() for m in entries]
-                for sid, entries in self.messages.items()
+                sid: [m.to_wire() for m in entries] for sid, entries in self.messages.items()
             },
         }
         path = self.path()
@@ -206,6 +206,134 @@ class State:
         with tmp.open("w", encoding="utf-8") as f:
             json.dump(payload, f, indent=1)
         tmp.replace(path)
+
+
+# ------------------------------------------------------------- canned diff
+#
+# Shaped like the real thing rather than minimally: OpenCode's `Snapshot`
+# asks jsdiff for `context: Number.MAX_SAFE_INTEGER`, so every entry is one
+# `@@` hunk carrying the *whole* file. A client that renders this has to
+# re-hunk it, and a one-line canned patch never exercises that — nor the
+# per-file collapse, the gap expansion, the render cap, the binary case, or
+# a deletion with nothing to show. This does.
+
+
+def _whole_file_patch(
+    path: str,
+    lines: list[str],
+    edits: dict[int, list[str] | None],
+) -> tuple[str, int, int]:
+    """Build a full-context unified patch, the way `Snapshot.diffFull` writes one.
+
+    `edits` maps a 0-based index in `lines` to its replacement lines, or to
+    `None` for a deletion. Everything else comes through as context.
+    """
+    body: list[str] = []
+    added = removed = 0
+    for i, line in enumerate(lines):
+        if i not in edits:
+            body.append(f" {line}")
+            continue
+        body.append(f"-{line}")
+        removed += 1
+        for new in edits[i] or []:
+            body.append(f"+{new}")
+            added += 1
+    old_n, new_n = len(lines), len(lines) - removed + added
+    head = (
+        f"Index: {path}\n"
+        "===================================================================\n"
+        f"--- a/{path}\n+++ b/{path}\n"
+        f"@@ -1,{old_n} +1,{new_n} @@\n"
+    )
+    return head + "\n".join(body) + "\n", added, removed
+
+
+def _entry(
+    path: str,
+    lines: list[str],
+    edits: dict[int, list[str] | None],
+    status: str = "modified",
+) -> Wire:
+    patch, added, removed = _whole_file_patch(path, lines, edits)
+    return {
+        "path": path,
+        "patch": patch,
+        "additions": added,
+        "deletions": removed,
+        "status": status,
+    }
+
+
+# A short file with two separate edits far enough apart to leave a gap that
+# has to be collapsed and can then be expanded.
+_CONFIG = [
+    "[package]",
+    'name = "goose-mobile"',
+    'version = "0.1.0"',
+    'edition = "2021"',
+    "",
+    "[dependencies]",
+    'dioxus = { version = "0.7", features = ["router"] }',
+    'serde = { version = "1", features = ["derive"] }',
+    'serde_json = "1"',
+    'tokio = { version = "1", features = ["rt", "macros"] }',
+    "",
+    "[dev-dependencies]",
+    'pretty_assertions = "1"',
+    "",
+    "[profile.release]",
+    "lto = true",
+    'panic = "abort"',
+]
+
+# Long enough to run past the renderer's cap, so the "not all of this is
+# shown" path is reachable at all.
+_LONG = [f"    let row_{i} = table.row({i});" for i in range(1200)]
+
+DIFF: list[Wire] = [
+    _entry(
+        "Cargo.toml",
+        _CONFIG,
+        {2: ['version = "0.2.0"'], 15: ['lto = "fat"', "codegen-units = 1"]},
+    ),
+    _entry(
+        "src/diff.rs",
+        [
+            "//! Re-hunking a whole-file patch.",
+            "",
+            "pub fn parse(patch: &str) -> Vec<DiffLine> {",
+            "    patch.lines().skip(4).map(DiffLine::from).collect()",
+            "}",
+        ],
+        {
+            3: [
+                "    patch",
+                "        .lines()",
+                '        .skip_while(|l| !l.starts_with("@@"))',
+                "        .skip(1)",
+                "        .map(DiffLine::from)",
+                "        .collect()",
+            ],
+        },
+        status="added",
+    ),
+    _entry(
+        "src/legacy_tabs.rs",
+        ["pub fn tab_bar() -> Element {", '    rsx! { nav { class: "tabs" } }', "}"],
+        {0: None, 1: None, 2: None},
+        status="deleted",
+    ),
+    _entry(
+        "src/table.rs",
+        _LONG,
+        {
+            40: ["    let row_40 = table.row(40).cached();"],
+            900: ["    let row_900 = table.row(900).cached();"],
+        },
+    ),
+    {"path": "assets/icon.png", "patch": "", "additions": 0, "deletions": 0, "status": "modified"},
+]
 
 
 # ------------------------------------------------------- wire-part builders
@@ -252,7 +380,9 @@ def run_turn(session_id: str, prompt: str) -> None:
     BUSY.add(session_id)
     try:
         user_msg = MessageInfo(
-            id=f"msg_{secrets.token_hex(4)}", role="user", session_id=session_id,
+            id=f"msg_{secrets.token_hex(4)}",
+            role="user",
+            session_id=session_id,
         )
         user_part = text_part(user_msg.id, session_id, prompt)
         with STATE_LOCK:
@@ -265,7 +395,9 @@ def run_turn(session_id: str, prompt: str) -> None:
         publish("message.part.updated", {"part": user_part})
 
         asst = MessageInfo(
-            id=f"msg_{secrets.token_hex(4)}", role="assistant", session_id=session_id,
+            id=f"msg_{secrets.token_hex(4)}",
+            role="assistant",
+            session_id=session_id,
         )
         publish("message.updated", {"info": asst.to_wire()})
 
@@ -470,20 +602,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(200, obj=True)
 
     def route_diff(self) -> None:
-        self.send_json(
-            200,
-            [
-                {
-                    "path": "README.md",
-                    "additions": 3,
-                    "deletions": 1,
-                    "patch": (
-                        "--- a/README.md\n+++ b/README.md\n@@ -1 +1,3 @@\n"
-                        "-old\n+new line one\n+new line two\n+new line three\n"
-                    ),
-                },
-            ],
-        )
+        self.send_json(200, DIFF)
 
     def route_permission_reply(self, permission_id: str) -> None:
         entry = PENDING.get(permission_id)
@@ -544,16 +663,20 @@ def main() -> None:
     ap.add_argument("--port", type=int, required=True)
     ap.add_argument("--dir", required=True, help="the chat volume dir")
     ap.add_argument(
-        "--password", default=os.environ.get("OPENCODE_SERVER_PASSWORD", "mock"),
+        "--password",
+        default=os.environ.get("OPENCODE_SERVER_PASSWORD", "mock"),
     )
     args = ap.parse_args()
     CONFIG = Config(
-        port=int(args.port), dir=Path(str(args.dir)), password=str(args.password),
+        port=int(args.port),
+        dir=Path(str(args.dir)),
+        password=str(args.password),
     )
     server = ThreadingHTTPServer(("127.0.0.1", CONFIG.port), Handler)
     server.daemon_threads = True
     print(  # noqa: T201 — the harness greps stdout for this line
-        f"mock-opencode-server: 127.0.0.1:{CONFIG.port} dir={CONFIG.dir}", flush=True,
+        f"mock-opencode-server: 127.0.0.1:{CONFIG.port} dir={CONFIG.dir}",
+        flush=True,
     )
     server.serve_forever()
 

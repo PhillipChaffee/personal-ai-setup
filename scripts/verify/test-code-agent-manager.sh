@@ -21,6 +21,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/code-agent-test.XXXXXX")"
 PORT=4399
+# The assertions want a reaper that fires while the test is still watching.
+# `--serve` does not: a 4-second idle timeout means a client being driven by
+# hand re-wakes the container between every tap. Override for that case.
+IDLE_SECONDS="${IDLE_SECONDS:-4}"
 PASS="test-secret-$$"
 BASE="http://127.0.0.1:$PORT"
 CURL="curl -sS --max-time 30 -u opencode:$PASS"
@@ -73,7 +77,7 @@ env -i PATH="$PATH" HOME="$HOME" \
   CODE_AGENT_ROOT="$WORK/root" \
   CODE_AGENT_ENGINE="$HERE/stub-engine.sh" \
   CODE_AGENT_IMAGE=mock \
-  CODE_AGENT_IDLE_SECONDS=4 \
+  CODE_AGENT_IDLE_SECONDS="$IDLE_SECONDS" \
   CODE_AGENT_REAPER_INTERVAL=2 \
   CODE_AGENT_MAX_ACTIVE=2 \
   CODE_AGENT_TLS_CERT="$WORK/no-cert" \
@@ -234,9 +238,19 @@ kill "$SSE_PID" 2>/dev/null || true
 # shellcheck disable=SC2086
 $CURL --max-time 120 "$BASE/chat/$CID/session/$SID/message" | grep -q "pull/7" \
   && ok "PR flow completed (URL in transcript)" || bad "no PR URL in messages"
+# The canned diff is multi-file on purpose, so assert on the shape a client
+# has to cope with — a whole-file patch and a binary entry with no patch at
+# all — rather than on one filename.
 # shellcheck disable=SC2086
-$CURL --max-time 120 "$BASE/chat/$CID/session/$SID/diff" | grep -q '"README.md"' \
-  && ok "diff endpoint proxied" || bad "diff failed"
+DIFF_JSON="$($CURL --max-time 120 "$BASE/chat/$CID/session/$SID/diff")"
+echo "$DIFF_JSON" | python3 -c '
+import json, sys
+entries = json.load(sys.stdin)
+assert len(entries) >= 4, f"expected a multi-file diff, got {len(entries)}"
+assert any(len(e["patch"].splitlines()) > 1000 for e in entries), "no whole-file patch"
+assert any(not e["patch"] for e in entries), "no binary entry"
+assert {e["status"] for e in entries} >= {"added", "deleted", "modified"}, "missing a status"
+' && ok "diff endpoint proxied (multi-file, whole-file patches)" || bad "diff failed"
 
 # ---- 6. idle spin-down + wake with state intact -----------------------------
 STOPPED="no"
