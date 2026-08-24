@@ -36,8 +36,10 @@ jget() { python3 -c "import json,sys; d=json.load(sys.stdin); print(eval(sys.arg
 cstate() { STUB_ENGINE_STATE="$WORK/stub" "$HERE/stub-engine.sh" container inspect --format '{{.State.Status}}' "code-agent-$1" 2>/dev/null || echo absent; }
 
 MANAGER_PID=""
+GITHUB_PID=""
 cleanup() {
   [ -n "$MANAGER_PID" ] && kill "$MANAGER_PID" 2>/dev/null || true
+  [ -n "$GITHUB_PID" ] && kill "$GITHUB_PID" 2>/dev/null || true
   for pid in "$WORK"/stub/*.pid; do
     [ -f "$pid" ] && kill "$(cat "$pid")" 2>/dev/null || true
   done
@@ -71,6 +73,17 @@ EOF
 # than inherited through COVERAGE_FILE.
 read -r -a MANAGER_PY <<<"${MANAGER_PY:-python3}"
 
+# A fake GitHub, so the manager's pull-request routes exercise real request
+# building and real error mapping instead of going untested.
+GH_PORT=4398
+FAKE_GITHUB_BRANCH="agent/testrepo-fixture" \
+  python3 "$HERE/fake-github.py" --port "$GH_PORT" &
+GITHUB_PID=$!
+for _ in $(seq 1 20); do
+  curl -sS -o /dev/null "http://127.0.0.1:$GH_PORT/repos/testowner/testrepo/pulls" && break
+  sleep 0.3
+done
+
 env -i PATH="$PATH" HOME="$HOME" \
   CODE_AGENT_BIND=127.0.0.1 \
   CODE_AGENT_PORT=$PORT \
@@ -86,6 +99,7 @@ env -i PATH="$PATH" HOME="$HOME" \
   STUB_ENGINE_MOCK="$HERE/mock-opencode-server.py" \
   OPENCODE_SERVER_PASSWORD="$PASS" \
   GITHUB_CODE_AGENT_PAT="fake-pat-for-tests" \
+  GITHUB_API_BASE="http://127.0.0.1:$GH_PORT" \
   OPENCODE_ZEN_API_KEY="fake-zen-key" \
   "${MANAGER_PY[@]}" "$REPO_ROOT/scripts/vps/code-agent-manager.py" \
   > "$WORK/manager.log" 2>&1 &
@@ -268,6 +282,119 @@ assert any(len(e["patch"].splitlines()) > 1000 for e in entries), "no whole-file
 assert any(not e["patch"] for e in entries), "no binary entry"
 assert {e["status"] for e in entries} >= {"added", "deleted", "modified"}, "missing a status"
 ' && ok "diff endpoint proxied (multi-file, whole-file patches)" || bad "diff failed"
+
+# ---- 5b. pull requests ------------------------------------------------------
+# These are GitHub calls the MANAGER makes. They must never proxy into the
+# container, so they must work against a chat whose branch is the fixture's
+# and must not count as chat activity.
+PR_CHAT="$(echo "$CHAT" | jget "d.get('id','')")"
+python3 - "$WORK/root" "$PR_CHAT" <<'EOP'
+import json, sys, pathlib
+# Point the chat at the branch the fake GitHub has pull requests for.
+index = pathlib.Path(sys.argv[1]) / "index.json"
+data = json.loads(index.read_text())
+data["chats"][sys.argv[2]]["branch"] = "agent/testrepo-fixture"
+index.write_text(json.dumps(data))
+EOP
+# shellcheck disable=SC2086
+PULLS="$($CURL "$BASE/api/chats/$PR_CHAT/pulls")"
+echo "$PULLS" | python3 -c '
+import json, sys
+pulls = json.load(sys.stdin)["pulls"]
+got = {p["number"]: p for p in pulls}
+assert 7 not in got, "listed a pull request from another branch"
+assert set(got) == {12, 11, 10, 9, 8}, f"wrong set: {sorted(got)}"
+assert got[12]["mergeable"] is True, "mergeable lost — the detail call is missing"
+assert got[12]["checks"] == "passing", got[12]["checks"]
+assert got[11]["checks"] == "failing", got[11]["checks"]
+assert got[10]["mergeable"] is None, "null mergeable was coerced"
+assert got[10]["checks"] == "pending", got[10]["checks"]
+assert got[9]["draft"] is True
+assert got[8]["state"] == "merged", got[8]["state"]
+' && ok "pulls listed for this branch only, with mergeable and checks" \
+  || bad "pulls payload wrong: $PULLS"
+
+# shellcheck disable=SC2086
+BODY="$($CURL -X POST -H 'Content-Type: application/json' -d '{}' \
+  "$BASE/api/chats/$PR_CHAT/pulls/7/merge")"
+echo "$BODY" | grep -q "not from this chat" \
+  && ok "merging another branch's pull request is refused" || bad "cross-branch merge: $BODY"
+
+# shellcheck disable=SC2086
+BODY="$($CURL -X POST -H 'Content-Type: application/json' -d '{}' \
+  "$BASE/api/chats/$PR_CHAT/pulls/9/merge")"
+echo "$BODY" | grep -q "still a draft" \
+  && ok "merging a draft is refused" || bad "draft merge: $BODY"
+
+# shellcheck disable=SC2086
+BODY="$($CURL -X POST -H 'Content-Type: application/json' -d '{}' \
+  "$BASE/api/chats/$PR_CHAT/pulls/10/merge")"
+echo "$BODY" | grep -q "not finished computing" \
+  && ok "merging an uncomputed pull request is refused" || bad "null-mergeable merge: $BODY"
+
+# shellcheck disable=SC2086
+BODY="$($CURL -X POST -H 'Content-Type: application/json' -d '{}' \
+  "$BASE/api/chats/$PR_CHAT/pulls/12/merge")"
+echo "$BODY" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert d.get("merged") is True, d
+assert d.get("sha"), "no sha"
+assert d.get("pull", {}).get("state") == "merged", d.get("pull")
+' && ok "merge succeeds and returns the re-read pull" || bad "merge: $BODY"
+
+# shellcheck disable=SC2086
+BODY="$($CURL "$BASE/api/chats/does-not-exist/pulls")"
+echo "$BODY" | grep -q "unknown chat" \
+  && ok "pulls for an unknown chat is a clean 404" || bad "unknown chat: $BODY"
+
+# The degradation paths, which are the ones that fail silently if they are
+# wrong. Restart the fake GitHub misbehaving on purpose.
+restart_github() {
+  kill "$GITHUB_PID" 2>/dev/null || true
+  sleep 0.4
+  FAKE_GITHUB_BRANCH="agent/testrepo-fixture" FAKE_GITHUB_MODE="$1" \
+    python3 "$HERE/fake-github.py" --port "$GH_PORT" &
+  GITHUB_PID=$!
+  for _ in $(seq 1 20); do
+    curl -sS -o /dev/null "http://127.0.0.1:$GH_PORT/repos/testowner/testrepo/pulls" && break
+    sleep 0.3
+  done
+}
+
+# The documented PAT carries neither Checks:read nor Commit statuses:read, so
+# a private repo answers 403 there. That must degrade one field, not the route.
+restart_github noscope
+# shellcheck disable=SC2086
+PULLS="$($CURL "$BASE/api/chats/$PR_CHAT/pulls")"
+echo "$PULLS" | python3 -c '
+import json, sys
+pulls = json.load(sys.stdin)["pulls"]
+assert pulls, "the list itself failed when only the check scopes were missing"
+assert all(p["checks"] == "unknown" for p in pulls), [p["checks"] for p in pulls]
+assert any(p["mergeable"] is True for p in pulls), "mergeable lost with checks"
+' && ok "missing check scopes degrade checks, not the list" || bad "noscope: $PULLS"
+
+# GitHub says 405 for branch protection; the app wants one "GitHub said no"
+# case carrying GitHub's own sentence.
+restart_github blocked
+# shellcheck disable=SC2086
+CODE="$($CURL -o /tmp/merge-blocked.$$ -w '%{http_code}' -X POST \
+  -H 'Content-Type: application/json' -d '{}' \
+  "$BASE/api/chats/$PR_CHAT/pulls/11/merge")"
+BODY="$(cat /tmp/merge-blocked.$$; rm -f /tmp/merge-blocked.$$)"
+[ "$CODE" = "422" ] && echo "$BODY" | grep -q "approving review" \
+  && ok "a blocked merge is 422 carrying GitHub's sentence" \
+  || bad "blocked merge: $CODE $BODY"
+
+# Unreachable GitHub must be a clean 502, not a stack trace.
+restart_github down
+# shellcheck disable=SC2086
+CODE="$($CURL -o /tmp/pulls-down.$$ -w '%{http_code}' "$BASE/api/chats/$PR_CHAT/pulls")"
+BODY="$(cat /tmp/pulls-down.$$; rm -f /tmp/pulls-down.$$)"
+[ "$CODE" = "502" ] && echo "$BODY" | grep -q "unreachable" \
+  && ok "unreachable GitHub is a clean 502" || bad "github down: $CODE $BODY"
+restart_github ""
 
 # ---- 6. idle spin-down + wake with state intact -----------------------------
 STOPPED="no"

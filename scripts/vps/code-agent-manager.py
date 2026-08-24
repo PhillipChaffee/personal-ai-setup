@@ -100,12 +100,15 @@ REAPER_INTERVAL = int(os.environ.get("CODE_AGENT_REAPER_INTERVAL", "60"))
 
 PASSWORD = os.environ.get("OPENCODE_SERVER_PASSWORD", "")
 GH_PAT = os.environ.get("GITHUB_CODE_AGENT_PAT", "")
+# Overridable so the GitHub integration can be exercised at all: the verify
+# harness points this at a fake GitHub on localhost. Nothing else about the
+# calls changes, so what the tests exercise is the real request-building and
+# the real error mapping.
+GH_API = os.environ.get("GITHUB_API_BASE", "https://api.github.com")
 ZEN_KEY = os.environ.get("OPENCODE_ZEN_API_KEY", "")
 TOGETHER_KEY = os.environ.get("TOGETHER_API_KEY", "")
 
-CONFIG_TEMPLATE = (
-    Path(__file__).resolve().parents[2] / "config" / "code-agents" / "opencode.json"
-)
+CONFIG_TEMPLATE = Path(__file__).resolve().parents[2] / "config" / "code-agents" / "opencode.json"
 
 BASE_CHAT_PORT = 4310  # per-chat opencode ports: 4310, 4311, ... on 127.0.0.1
 WAIT_FOR_CHAT_SECONDS = 90  # opencode boot budget, create and wake alike
@@ -310,6 +313,238 @@ def engine(
         stderr=subprocess.STDOUT if capture else None,
         text=True,
     )
+
+
+# --------------------------------------------------------------- github
+
+# The pull requests a chat has opened are the deliverable, so the app shows
+# them. Every call here is made BY the manager, never proxied into the chat's
+# container — listing pull requests must not wake a sleeping chat, and is not
+# chat activity, so these routes never touch `touch()` either.
+
+
+class GitHubError(RuntimeError):
+    """A GitHub call the caller has to turn into a status for the app."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
+def gh(
+    method: str,
+    path: str,
+    body: dict[str, Any] | None = None,
+) -> Any:  # noqa: ANN401 -- parsed JSON is genuinely Any; every caller narrows it
+    """One GitHub REST call, with this manager's error vocabulary."""
+    url = urlparse(GH_API + path)
+    payload = json.dumps(body).encode() if body is not None else None
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "code-agent-manager",
+    }
+    if GH_PAT:
+        headers["Authorization"] = f"Bearer {GH_PAT}"
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+    cls = http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection
+    try:
+        conn = cls(url.hostname or "", url.port, timeout=20)
+        conn.request(method, url.path + (f"?{url.query}" if url.query else ""), payload, headers)
+        resp = conn.getresponse()
+        raw = resp.read().decode("utf-8", "replace")
+        conn.close()
+    except (OSError, http.client.HTTPException) as e:
+        raise GitHubError(502, "GitHub is unreachable") from e
+    if resp.status in (401, 403):
+        raise GitHubError(502, "GitHub refused the credential - the PAT may have expired")
+    if resp.status >= HTTP_SERVER_ERROR:
+        raise GitHubError(502, "GitHub is unreachable")
+    try:
+        parsed = json.loads(raw) if raw else None
+    except json.JSONDecodeError as e:
+        raise GitHubError(502, "GitHub is unreachable") from e
+    if resp.status >= HTTP_BAD_REQUEST:
+        # GitHub's own sentence is the most useful thing we can show, so it
+        # travels to the app unchanged rather than being replaced by ours.
+        said = ""
+        if isinstance(parsed, dict):
+            said = _str(parsed, "message")
+        raise GitHubError(resp.status, said or f"GitHub answered {resp.status}")
+    return parsed
+
+
+def repo_slug(chat: Chat) -> str:
+    """`owner/name` for a chat's repo, from the allowlist entry it was made from."""
+    entry = load_repos().get(chat.repo)
+    if entry is None or not entry.url:
+        raise GitHubError(409, f"repo '{chat.repo}' is not in the allowlist any more")
+    # Accept the shapes an allowlist actually holds: an https clone URL, an
+    # scp-style ssh remote, or a bare owner/name.
+    url = entry.url.removesuffix(".git")
+    if url.startswith(("http://", "https://")):
+        parts = [p for p in urlparse(url).path.split("/") if p]
+    elif ":" in url and not url.startswith("/"):
+        parts = [p for p in url.split(":", 1)[1].split("/") if p]
+    else:
+        parts = [p for p in url.split("/") if p]
+    if len(parts) < SLUG_PARTS:
+        raise GitHubError(409, f"repo '{chat.repo}' has no GitHub remote to read")
+    return f"{parts[-2]}/{parts[-1]}"
+
+
+# http.client gives us ints; naming them keeps the comparisons readable.
+HTTP_BAD_REQUEST = 400
+HTTP_SERVER_ERROR = 500
+SLUG_PARTS = 2
+
+CHECKS_FAILING = {"failure", "timed_out", "action_required", "cancelled"}
+CHECKS_PENDING = {"queued", "in_progress", "waiting", "pending", "requested"}
+CHECKS_PASSING = {"success", "neutral", "skipped"}
+
+
+def summarise_checks(slug: str, sha: str) -> str:
+    """Check runs UNION commit statuses on one commit, as one word.
+
+    `unknown` is a real answer, not a failure: check runs need `Checks: read`
+    and commit statuses need `Commit statuses: read`, and the documented PAT
+    carries neither, so a private repo answers 403 here. Degrading to
+    "unknown" keeps the list working; granting the two scopes upgrades it with
+    no change on either side.
+    """
+    outcomes: list[str] = []
+    try:
+        runs = gh("GET", f"/repos/{slug}/commits/{sha}/check-runs?per_page=100")
+        listed = runs.get("check_runs", []) if isinstance(runs, dict) else []
+        outcomes.extend(
+            _str(run, "conclusion") or _str(run, "status")
+            for run in listed
+            if isinstance(run, dict)
+        )
+        combined = gh("GET", f"/repos/{slug}/commits/{sha}/status")
+        if isinstance(combined, dict):
+            state = _str(combined, "state")
+            # A combined state of "pending" with no statuses behind it is
+            # GitHub's way of saying nothing has reported, not that something
+            # is running.
+            if (state and state != "pending") or combined.get("statuses"):
+                outcomes.append(state)
+    except GitHubError:
+        return "unknown"
+    if not outcomes:
+        return "none"
+    if any(o in CHECKS_FAILING or o == "error" for o in outcomes):
+        return "failing"
+    if any(o in CHECKS_PENDING for o in outcomes):
+        return "pending"
+    if all(o in CHECKS_PASSING for o in outcomes):
+        return "passing"
+    return "unknown"
+
+
+def pull_to_wire(slug: str, raw: dict[str, Any], *, with_checks: bool = True) -> dict[str, object]:
+    """One pull request in the shape the app reads.
+
+    `mergeable` is only present on the detail form, and GitHub computes it
+    asynchronously — null means "not worked out yet", which the app treats as
+    a wait rather than as a refusal. It is never coerced to false.
+    """
+    number = int(raw.get("number") or 0)
+    merged = bool(raw.get("merged_at"))
+    head = raw.get("head") if isinstance(raw.get("head"), dict) else {}
+    base = raw.get("base") if isinstance(raw.get("base"), dict) else {}
+    sha = _str(head, "sha")
+    mergeable = raw.get("mergeable")
+    checks = "unknown"
+    if with_checks and sha:
+        checks = summarise_checks(slug, sha)
+    return {
+        "number": number,
+        "title": _str(raw, "title"),
+        "state": "merged" if merged else _str(raw, "state", "open"),
+        "draft": bool(raw.get("draft")),
+        "mergeable": mergeable if isinstance(mergeable, bool) else None,
+        "checks": checks,
+        "url": _str(raw, "html_url"),
+        "head": _str(head, "ref"),
+        "base": _str(base, "ref"),
+        "created_at": _str(raw, "created_at"),
+        "updated_at": _str(raw, "updated_at"),
+    }
+
+
+def chat_pulls(chat: Chat) -> list[dict[str, object]]:
+    """Every pull request off THIS chat's branch — never the repo's others."""
+    slug = repo_slug(chat)
+    owner = slug.split("/")[0]
+    listed = gh(
+        "GET",
+        f"/repos/{slug}/pulls?head={owner}:{chat.branch}"
+        "&state=all&per_page=20&sort=created&direction=desc",
+    )
+    out: list[dict[str, object]] = []
+    for entry in listed if isinstance(listed, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        number = int(entry.get("number") or 0)
+        # The list form omits `mergeable`, so without this every row would
+        # arrive null and the Merge button could never appear. A flaky detail
+        # call degrades one row rather than blanking the list.
+        detail: dict[str, Any] = entry
+        try:
+            fetched = gh("GET", f"/repos/{slug}/pulls/{number}")
+            if isinstance(fetched, dict):
+                detail = fetched
+        except GitHubError:
+            pass
+        out.append(pull_to_wire(slug, detail))
+    return out
+
+
+def merge_chat_pull(chat: Chat, number: int, method: str) -> dict[str, object]:
+    """Merge one of this chat's pull requests, after proving it is one."""
+    slug = repo_slug(chat)
+    detail = gh("GET", f"/repos/{slug}/pulls/{number}")
+    if not isinstance(detail, dict):
+        raise GitHubError(502, "GitHub is unreachable")
+    head = detail.get("head") if isinstance(detail.get("head"), dict) else {}
+    # Without this the route is "merge any pull request in the repo" with a
+    # chat id in front of it.
+    if _str(head, "ref") != chat.branch:
+        raise GitHubError(404, f"pull {number} is not from this chat's branch")
+    if detail.get("merged_at"):
+        raise GitHubError(409, f"#{number} is already merged.")
+    if _str(detail, "state") != "open":
+        raise GitHubError(409, f"#{number} is closed.")
+    if detail.get("draft"):
+        raise GitHubError(409, f"#{number} is still a draft.")
+    mergeable = detail.get("mergeable")
+    if mergeable is None:
+        raise GitHubError(409, f"GitHub has not finished computing whether #{number} can merge.")
+    if mergeable is False:
+        base = _str(detail.get("base") if isinstance(detail.get("base"), dict) else {}, "ref")
+        raise GitHubError(409, f"#{number} conflicts with {base} - it needs a rebase.")
+    try:
+        result = gh(
+            "PUT",
+            f"/repos/{slug}/pulls/{number}/merge",
+            {"merge_method": method},
+        )
+    except GitHubError as e:
+        # Branch protection, a required review, a required check, a head that
+        # moved: GitHub says 405 or 409. One "GitHub said no" case for the
+        # app, carrying GitHub's own sentence.
+        if e.status in (405, 409, 422):
+            raise GitHubError(422, e.message) from e
+        raise
+    after = gh("GET", f"/repos/{slug}/pulls/{number}")
+    return {
+        "merged": True,
+        "sha": _str(result if isinstance(result, dict) else {}, "sha"),
+        "pull": pull_to_wire(slug, after, with_checks=False) if isinstance(after, dict) else None,
+    }
 
 
 def container_name(chat_id: str) -> str:
@@ -615,7 +850,9 @@ def chat_busy(chat: Chat) -> bool:
     try:
         conn = http.client.HTTPConnection("127.0.0.1", chat.port, timeout=5)
         conn.request(
-            "GET", "/session/status", headers={"Authorization": basic_auth_header()},
+            "GET",
+            "/session/status",
+            headers={"Authorization": basic_auth_header()},
         )
         resp = conn.getresponse()
         body = resp.read().decode("utf-8", "replace")
@@ -732,6 +969,8 @@ class Handler(BaseHTTPRequestHandler):
     ROUTE_CHAT = re.compile(r"^/chat/([a-zA-Z0-9-]+)(/.*|$)")
     ROUTE_LIFECYCLE = re.compile(r"^/api/chats/([a-zA-Z0-9-]+)/(wake|stop)$")
     ROUTE_ONE_CHAT = re.compile(r"^/api/chats/([a-zA-Z0-9-]+)$")
+    ROUTE_PULLS = re.compile(r"^/api/chats/([a-zA-Z0-9-]+)/pulls$")
+    ROUTE_MERGE = re.compile(r"^/api/chats/([a-zA-Z0-9-]+)/pulls/([0-9]+)/merge$")
 
     def handle_any(self) -> None:
         """Authenticate, then dispatch the request to exactly one route."""
@@ -743,6 +982,8 @@ class Handler(BaseHTTPRequestHandler):
         chat = self.ROUTE_CHAT.match(path)
         lifecycle = self.ROUTE_LIFECYCLE.match(path)
         one_chat = self.ROUTE_ONE_CHAT.match(path)
+        pulls = self.ROUTE_PULLS.match(path)
+        merge = self.ROUTE_MERGE.match(path)
         if chat:
             self.proxy(chat.group(1), chat.group(2) or "/")
         elif (path, verb) == ("/api/health", "GET"):
@@ -757,6 +998,8 @@ class Handler(BaseHTTPRequestHandler):
             self.route_wake_or_stop(lifecycle.group(1), lifecycle.group(2))
         elif one_chat and verb == "DELETE":
             self.route_delete_chat(one_chat.group(1))
+        elif pulls or merge:
+            self.route_pull_requests(pulls, merge, verb)
         else:
             self.send_json(404, {"error": f"no route: {verb} {path}"})
 
@@ -813,6 +1056,60 @@ class Handler(BaseHTTPRequestHandler):
             return
         engine("stop", container_name(chat_id), check=False, timeout=90)
         self.send_json(200, {"status": "stopped"})
+
+    def route_pull_requests(
+        self,
+        pulls: re.Match[str] | None,
+        merge: re.Match[str] | None,
+        verb: str,
+    ) -> None:
+        """Dispatch the two pull-request routes, kept out of handle_any."""
+        if pulls and verb == "GET":
+            self.route_pulls(pulls.group(1))
+        elif merge and verb == "POST":
+            self.route_merge(merge.group(1), int(merge.group(2)))
+        else:
+            self.send_json(404, {"error": f"no route: {verb} {urlparse(self.path).path}"})
+
+    def chat_or_404(self, chat_id: str) -> Chat | None:
+        """Return the index entry, or send a 404 and return None."""
+        chat = Index.load().chats.get(chat_id)
+        if chat is None:
+            self.send_json(404, {"error": "unknown chat"})
+        return chat
+
+    def route_pulls(self, chat_id: str) -> None:
+        """List this chat's pull requests.
+
+        Deliberately not a proxy: these are GitHub calls the manager makes, so
+        listing them never wakes a sleeping chat, and it is not chat activity
+        so it never defers the reaper either.
+        """
+        chat = self.chat_or_404(chat_id)
+        if chat is None:
+            return
+        try:
+            self.send_json(200, {"pulls": chat_pulls(chat)})
+        except GitHubError as e:
+            self.send_json(e.status, {"error": e.message})
+
+    def route_merge(self, chat_id: str, number: int) -> None:
+        chat = self.chat_or_404(chat_id)
+        if chat is None:
+            return
+        try:
+            raw: Any = json.loads(self.read_body() or b"{}")
+        except json.JSONDecodeError:
+            raw = {}
+        method = _str(raw, "method") if isinstance(raw, dict) else ""
+        # An agent branch is a pile of work-in-progress commits, so the
+        # default flattens it rather than pouring all of them onto the base.
+        if method not in ("merge", "squash", "rebase"):
+            method = "squash"
+        try:
+            self.send_json(200, merge_chat_pull(chat, number, method))
+        except GitHubError as e:
+            self.send_json(e.status, {"error": e.message})
 
     def route_delete_chat(self, chat_id: str) -> None:
         purge = "purge=1" in (urlparse(self.path).query or "")
