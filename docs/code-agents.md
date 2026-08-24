@@ -134,7 +134,7 @@ ruff check .    # strict lint: the whole rule set (ruff.toml)
 mypy            # strict typing over every .py (mypy.ini)
 
 # coverage of the manager: the same harness, with the interpreter swapped.
-# CI does this on every push and reports to Codecov (.coveragerc, codecov.yml).
+# CI does this on every push and reports to Coveralls (see .coveragerc).
 MANAGER_PY="coverage run --parallel-mode --data-file=$PWD/.coverage" \
   scripts/verify/test-code-agent-manager.sh
 coverage combine --data-file="$PWD/.coverage"

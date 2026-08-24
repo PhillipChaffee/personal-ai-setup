@@ -38,25 +38,14 @@ jobs:
         run: |
           coverage combine --data-file="$PWD/.coverage"
           coverage report --data-file="$PWD/.coverage"
-          coverage xml --data-file="$PWD/.coverage" -o coverage.xml
+          coverage lcov --data-file="$PWD/.coverage" -o lcov.info
 
-      - name: Upload to Codecov
-        uses: codecov/codecov-action@v5
+      # Coveralls authenticates with the GITHUB_TOKEN that Actions provides
+      # automatically: no account to create, no repository secret, and it
+      # registers the repo on its first upload. Codecov was tried first and
+      # needs both — it answered "Repository not found" and reported nothing.
+      - name: Upload to Coveralls
+        uses: coverallsapp/github-action@v2
         with:
-          files: ./coverage.xml
-          flags: python
-          # ONE-TIME SETUP: sign in at codecov.io with GitHub (free for public
-          # repos) so this repository exists there, then add its upload token
-          # as the CODECOV_TOKEN secret. The first run of this workflow proved
-          # the rest of the path works and named what was missing: Codecov
-          # answered "Repository not found".
-          #
-          # That activation is needed whichever way we authenticate, so we take
-          # the token while we are there rather than use_oidc: Codecov also
-          # requires a token for uploads landing on a protected branch (main is
-          # protected here), and codecov-action#1806 / #1817 report the OIDC
-          # path failing on exactly that case.
-          token: ${{ secrets.CODECOV_TOKEN }}
-          # Until that secret exists the upload is a no-op: a reporting
-          # problem must not fail a build whose checks all passed.
-          fail_ci_if_error: false
+          file: lcov.info
+          format: lcov
