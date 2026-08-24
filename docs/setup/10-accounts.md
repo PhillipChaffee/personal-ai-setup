@@ -96,9 +96,33 @@ No todo app is wired in by default: the `todoist` extension ships
 tasks. If you later pick Todoist as your todo app:
 
 1. Create an account at <https://todoist.com>. Free tier is fine.
-2. That's it — **no API key**. Todoist's first-party MCP server at
-   `https://ai.todoist.net/mcp` initiates OAuth in your browser the first time
-   Goose connects to it (Phase 2), so there is nothing to copy or store.
+2. In Todoist's account settings, find the **personal API token** (Developer /
+   API section) and copy it. This is `TODOIST_API_KEY`.
+3. Store it like any other key — Mac Keychain via
+   `scripts/mac/keychain-secrets.sh`, brain via `/data/secrets.env`. Never paste
+   it into `config/goose/config.yaml`; that file references it as
+   `${TODOIST_API_KEY}` and the value stays in the secret store.
+4. Before you flip `enabled: true`: add a **Doist row to
+   [`docs/privacy.md`](../privacy.md)** (retention, training, where task text
+   lands). There isn't one yet, and a task list is a diary with verbs — "call
+   oncologist", "pay the ER bill" — so a sweep of it must route to a
+   zero-retention paid model, never a free one.
+
+**It is a bearer token, not OAuth.** Doist's hosted MCP server accepts a Todoist
+personal API token directly in an `Authorization: Bearer …` header, confirmed by
+a Doist maintainer in `Doist/todoist-mcp` issue #492. That matters more than it
+sounds: goose's OAuth flow **cannot be completed from a phone at all** — the
+callback binds to the brain's loopback interface and the authorization URL never
+leaves the brain — so a bearer token is what makes Todoist the one connector in
+this repo you can finish entirely from the phone. Earlier revisions of this doc
+said "no API key, browser OAuth on first connect"; that was wrong. The full
+record is [`config/connectors/todoist.yaml`](../../config/connectors/todoist.yaml).
+
+The token is **full-account read/write** and cannot be scoped — goose 1.46.0 has
+no `scopes` field to narrow it with. The `available_tools` allowlist in
+`config/goose/config.yaml` narrows the *agent* to 8 tools (four reads, four
+non-destructive writes; the endpoint publishes no delete tool), but it does not
+narrow the *token*. Revoke it in Todoist's settings if it ever leaks.
 
 ## 5. Hetzner (VPS provider)
 
@@ -195,7 +219,7 @@ means stored via `scripts/mac/keychain-secrets.sh`; "secrets.env" means
 | goose serve shared secret | `GOOSE_SERVER__SECRET_KEY` | yes (Desktop connects with it) | yes | Goose iOS app (pairing) | Phase 3 |
 | Google OAuth client | `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` | yes | yes | — | Phase 2 ([30-google-oauth.md](30-google-oauth.md)) |
 | LUKS passphrase | (passphrase) | no | no | password manager **only** | Phase 3 |
-| Todoist (optional) | none — browser OAuth on first MCP connect | — | — | — | §4 |
+| Todoist personal API token (optional) | `TODOIST_API_KEY` | yes | yes | — | §4 |
 
 Cross-check before moving on: everything in the "now" rows exists, the two Zen
 cost-control settings are flipped, the Together privacy toggles are verified

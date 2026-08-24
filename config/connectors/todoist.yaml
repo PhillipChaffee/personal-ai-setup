@@ -1,0 +1,219 @@
+# Todoist — the worked example of a phone-completable connector.
+#
+# Ships DISABLED: docs/roadmap.md has not picked a todo app. Everything else is ready —
+# the docs/privacy.md row exists, the credential path is verified, the allowlist is written
+# out. This manifest exists so that adopting Todoist — or reading how a bearer-token
+# connector is supposed to look — is one step, not a research project.
+#
+# It is also the repo's reference for the http wire shape, which is where the fatal
+# mistake lives: `headers` is a LIST of {name, value} on the ACP wire and a MAPPING in
+# config.yaml on disk. Copying between the two layers is the usual cause. Unlike the
+# available_tools trap this one fails CLOSED — the frame is rejected outright — so the
+# error you get is the error you want. See config/connectors/README.md.
+
+# ---- identity -------------------------------------------------------------
+id: todoist
+display_name: Todoist
+summary: >-
+  Tasks and projects through Doist's own hosted MCP server, authenticated with a
+  personal API token in an Authorization header. No OAuth, no local server, no
+  browser — the only connector in this repo verified finishable entirely from the phone.
+
+manifest_version: 1
+verified_on: 2026-08-23
+goose_version_verified: 1.46.0
+
+# ---- what it is -----------------------------------------------------------
+archetype: first_party_remote_mcp
+capabilities: [tasks, projects]
+
+# ---- can this be finished from a phone? -----------------------------------
+first_run_auth: phone_secret
+phone_completable: "yes"          # quoted: bare yes is a YAML 1.1 boolean, not the enum value
+auth_notes: >-
+  Paste one personal API token from your Todoist account settings, and that is the whole
+  ceremony. The hosted endpoint accepts a Todoist API token directly as a bearer token —
+  confirmed by Doist maintainer scottlovegrove in Doist/todoist-mcp issue #492 — so goose's
+  OAuth machinery, which cannot be driven from a phone at all (docs/connecting.md §"Why
+  OAuth cannot be completed from a phone"), never enters the picture. Three places in this
+  repo described Todoist as "browser OAuth on first connect, no API key"; two are now
+  corrected against this manifest (docs/setup/10-accounts.md §4 and the todoist entry in
+  config/goose/config.yaml). The third, docs/roadmap.md line 46 ("OAuth, zero key
+  management"), is STILL WRONG as of 2026-08-23 and needs the same correction. This file
+  is the current answer.
+
+# ---- privacy --------------------------------------------------------------
+privacy:
+  tier: 2
+  notes: >-
+    Task titles are life logistics — Tier 2 by docs/privacy.md's own examples ("email
+    triage, calendar, todos"). But a task list is a diary with verbs: "call oncologist",
+    "pay the ER bill", an account number in a task description. Classify by the most
+    sensitive content present, so a sweep that reads the whole inbox of tasks pins to a
+    zero-retention paid model exactly like inbox-triage does, and never to a Zen free model.
+  row_added: true                 # The Doist row now exists in docs/privacy.md, tagged
+                                  # <!-- connector: todoist -->. Confirmed 2026-08-23.
+
+# ---- the vetting bar (docs/providers.md), as data -------------------------
+vetting:
+  maintenance:
+    verdict: pass
+    evidence: >-
+      First-party: ai.todoist.net/mcp is operated by Doist itself, and maintainer
+      scottlovegrove answers on Doist/todoist-mcp (issue #492, the source of the bearer-token
+      confirmation). A hosted endpoint publishes no version string, so "released within the
+      last few months" is UNVERIFIABLE by construction — there is nothing to pin.
+  self_hosted_auth:
+    verdict: pass
+    evidence: >-
+      Only two parties: you and Doist. No aggregator proxying your tasks. The credential is
+      your own personal API token, revocable in Todoist settings. Bar 2's "runs locally"
+      clause is waived for first_party_remote_mcp per config/connectors/README.md's archetype
+      table — the tradeoff being that the server runs on Doist's infrastructure, not the brain.
+  relocatable_state:
+    verdict: pass
+    evidence: >-
+      There is no state to relocate. A remote extension spawns no child process and writes no
+      token file; the only artifact is TODOIST_API_KEY in <config_dir>/secrets.yaml (0600),
+      which GOOSE_PATH_ROOT=/data/goose already puts on the LUKS volume.
+  restrictable_tools:
+    verdict: partial
+    evidence: >-
+      available_tools pins the agent to an exact 8-tool surface (asserted by the smoke test).
+      The credential itself is NOT scopeable: a Todoist personal API token is full-account
+      read/write, and goose 1.46.0 has no clientId/scopes fields to narrow it with. So the
+      allowlist narrows the agent, never the token — a stolen token is full account access.
+      This is the gap docs/connecting.md warns about when it says both layers must be set.
+  privacy_row:
+    verdict: pass
+    evidence: >-
+      docs/privacy.md carries a Todoist row (tagged <!-- connector: todoist -->) as of
+      2026-08-23: task and project names, notes, due dates and labels, Tier 2, routed to
+      Zen paid open or Together and never a free model, with the escalation rule that a
+      task title carrying health or money detail makes the whole session Tier 3.
+
+# ---- what this cannot do --------------------------------------------------
+blockers:
+  - >-
+    ${VAR} in a header FAILS OPEN. ${TODOIST_API_KEY} substitution is applied to a remote
+    extension's uri, headers and socket — but an unresolved ${VAR} is left LITERAL in the
+    header, so a missing or misspelled key ships `Authorization: Bearer ${TODOIST_API_KEY}`
+    and earns a 401 that reads like a Todoist outage rather than a config typo. Declaring the
+    key in envKeys is the mitigation: at goose 1.46.0 a missing env key is a hard
+    extension-startup failure, which turns the silent 401 into a loud refusal to start.
+  - >-
+    A token stored as a non-string is silently dropped. goose logs "Secret value is not a
+    string; skipping" and starts the extension WITHOUT the credential. Todoist tokens are hex
+    so YAML is unlikely to coerce one to a number, but the symptom if it happens is — again —
+    an unexplained 401.
+  - >-
+    Deletion is unreachable, by omission. The endpoint publishes no delete tool, so a task can
+    be completed or rescheduled but never removed. This aligns with
+    config/goose/goosehints.example ("deletions need confirmation") for free, and it is why
+    the allowlist below can include every published tool without granting a destructive one.
+  - >-
+    The tool set cannot be pinned. A hosted endpoint has no version to freeze: Doist can add,
+    rename or remove tools with no release event on your side, which would break the exact-8
+    assertion in smoke_test. That break is the feature — it fails loudly instead of silently
+    widening what the agent can reach.
+  - >-
+    Coverage beyond these 8 tools is UNKNOWN. Labels, filters, sections, comments and
+    collaborator operations are not represented in the verified tool list; whether the
+    endpoint exposes them under other names was not established on 2026-08-23.
+  - >-
+    Nothing pushes. Todoist reminders and due-date alerts cannot reach the brain — zero public
+    inbound ports is a security invariant (docs/security.md), so due-task awareness is polling
+    (find-tasks-by-date on a schedule), never a notification.
+
+# ---- credentials, BY NAME ONLY --------------------------------------------
+secrets:
+  - key: TODOIST_API_KEY
+    # The exact settings path in Todoist's UI was not re-verified on 2026-08-23; ask for
+    # "the personal API token" rather than naming a menu that may have moved.
+    prompt: "Todoist personal API token (from your Todoist account settings, Developer/API section)"
+    secret: true
+
+# ---- the payload sent to _goose/unstable/config/extensions/add ------------
+# ACP wire shape. goose translates on write: type http -> streamable_http, url -> uri,
+# envKeys -> env_keys. Do not copy this block into config.yaml verbatim.
+acp_extension:
+  type: mcp
+  server:
+    type: http                    # NOT sse — goose's ACP layer rejects sse outright
+    name: todoist
+    url: https://ai.todoist.net/mcp
+    # headers is a LIST of HttpHeader {name, value} — NOT a mapping. This is the
+    # opposite failure mode to available_tools: a mapping here does not fail open, it
+    # fails DEAD. HttpHeader has no map representation, so serde rejects the frame and
+    # extensions/add errors out before the extension exists. Loud, and therefore safe.
+    # (On disk, config.yaml spells the same thing as a mapping. goose translates; you
+    # do not. See config/connectors/README.md, "The two layers that spell things
+    # differently".)
+    headers:
+      - name: Authorization
+        value: "Bearer ${TODOIST_API_KEY}"
+    # No `env` key: the http variant has no env field at all (its schema is exactly
+    # {type, name, url, headers, _meta}). env is stdio-only — goose would drop it, and
+    # a credential does not belong there anyway. It belongs in the header above.
+  envKeys: [TODOIST_API_KEY]
+  description: Todoist tasks via Doist's first-party remote MCP
+  timeout: 300
+  # snake_case. Non-empty. Never omitted. See config/connectors/README.md — the camelCase
+  # spelling is silently dropped and an empty allowlist means EVERY tool is allowed.
+  # All 8 published tools are listed: read plus non-destructive writes. There is no delete
+  # tool to withhold. If you want this read-only, cut the last four and change
+  # smoke_test.expect_tools_exactly to 4.
+  available_tools:
+    - get-overview
+    - find-tasks
+    - find-tasks-by-date
+    - find-projects
+    - add-tasks                   # write
+    - update-tasks                # write
+    - complete-tasks              # write
+    - reschedule-tasks            # write
+  # No clientId / clientSecretKey / scopes: absent at goose 1.46.0, and `scopes` without
+  # `clientId` is a hard config error. Auth is the bearer header above, nothing else.
+
+# ---- proof it works -------------------------------------------------------
+# What --smoke proves, stated precisely. It reads THIS FILE and talks to the endpoint
+# directly; it never goes through goose, so it cannot see how goose spelled
+# available_tools. Its distinct job is (a) every name in the allowlist EXISTS on the
+# server — goose accepts a name matching nothing in total silence, granting less than
+# you think forever — and (b) quantifying the surface OUTSIDE the allowlist, i.e. what
+# would go live if the allowlist were ever inert. The camelCase spelling itself is
+# caught elsewhere: by the validator's client-side schema check, and by the
+# extensions/add -> extensions/list roundtrip in the connect workflow.
+#
+# This connector is the case where --smoke earns its keep most: a hosted endpoint has no
+# version to pin, so Doist can rename a tool with no release event on your side, and the
+# name check is the only thing that would notice.
+smoke_test:
+  kind: tools_list
+  # Count AND set. The count alone would still pass if two tools were swapped.
+  expect_tools_exactly: 8
+  expect_tools_set:
+    - get-overview
+    - find-tasks
+    - find-tasks-by-date
+    - find-projects
+    - add-tasks
+    - update-tasks
+    - complete-tasks
+    - reschedule-tasks
+  command: >-
+    scripts/verify/check-connectors.sh --smoke todoist
+  # PROSE, not an assertion — deliberately under `notes`, the one free-text key the
+  # validator knows. A made-up key like `token_preflight` sits in the file looking like a
+  # check and asserts nothing, forever: the same trap as availableTools, one level up.
+  notes: >-
+    MANUAL credential preflight, if you need to separate "bad token" from "bad manifest"
+    by hand. Prints an HTTP status code and nothing else — never the token, never a
+    response body:
+    curl -s -o /dev/null -w '%{http_code}\n'
+    -H "Authorization: Bearer $TODOIST_API_KEY" https://ai.todoist.net/mcp
+    A 401 means the credential was rejected. The status for a bare GET against a
+    streamable-HTTP MCP endpoint is UNKNOWN and deliberately not asserted here; anything
+    other than 401 means the header was accepted and the problem is elsewhere.
+
+runbook: docs/setup/10-accounts.md

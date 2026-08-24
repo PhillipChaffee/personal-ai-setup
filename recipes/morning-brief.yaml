@@ -1,4 +1,8 @@
-# Morning brief — daily digest of calendar + important unread email + due tasks.
+# Morning brief — daily digest of calendar + important unread email.
+# NOT tasks: the gathering steps below read Calendar and Gmail only, so the
+# extension asks for no tasks permission and the description says neither.
+# If you add a tasks step, add `tasks:readonly` to --permissions and put the
+# claim back in the description — all three move together or none do.
 # Scheduled on the brain: goose schedule add --schedule-id morning-brief \
 #   --cron "0 0 7 * * *" --recipe-source recipes/morning-brief.yaml
 # The recipe delivers its own result: its explicit final step emails the
@@ -12,7 +16,7 @@
 # (docs/setup/30-google-oauth.md §8).
 version: 1.0.0
 title: Morning Brief
-description: Daily digest of today's calendar, unread important email, and due tasks.
+description: Daily digest of today's calendar and unread important email.
 
 parameters:
   - key: google_accounts
@@ -78,15 +82,28 @@ prompt: |
   step, then end by printing the digest itself as your final message.
 
 extensions:
+  # Gathers today's events and unread mail, then sends one self-addressed
+  # digest. calendar:readonly matches "Calendar is read-only in this run" — it
+  # drops the calendar write scopes and removes manage_event from the tool list,
+  # so the rule can't be broken by a confused model. VERIFIED 2026-08-23 by
+  # running the server over stdio: `calendar:readonly` is a valid level (the
+  # server enumerates gmail: readonly|organize|drafts|send|full, calendar:
+  # readonly|full, tasks: readonly|manage|full when handed a bogus one), and
+  # `--permissions gmail:send calendar:readonly --tool-tier core` registers 6
+  # tools — get_events and list_calendars present, manage_event gone. This
+  # recipe passes no --tool-tier, so it gets the wider Gmail read set too.
+  # gmail:send is the lowest level that can send at all (levels are cumulative).
+  # Tasks is not requested: the gathering steps never touch it.
+  # Version pinned so the tool surface and consent scopes stay reproducible.
   - type: stdio
     name: workspace-mcp
-    description: Google Workspace MCP (Gmail + Calendar; one self-addressed delivery email)
+    description: Google Workspace MCP (Gmail + read-only Calendar; one self-addressed delivery email)
     cmd: uvx
     args:
-      - workspace-mcp
-      - --tools
-      - gmail
-      - calendar
+      - workspace-mcp@1.25.0
+      - --permissions
+      - gmail:send
+      - calendar:readonly
     timeout: 300
     env_keys:
       - GOOGLE_OAUTH_CLIENT_ID

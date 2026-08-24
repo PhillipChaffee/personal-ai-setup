@@ -1,0 +1,236 @@
+# ---- identity -------------------------------------------------------------
+id: imap-caldav
+display_name: IMAP + CalDAV (generic)
+summary: >-
+  Mail and calendar for any standards-compliant host — Fastmail, mailbox.org,
+  and the long tail — over IMAP and CalDAV with a provider app password.
+  Two stdio MCP servers, no OAuth anywhere.
+
+manifest_version: 1
+verified_on: 2026-08-23
+goose_version_verified: 1.46.0
+
+# ---- what it is -----------------------------------------------------------
+archetype: standard_protocol_bridge
+capabilities: [mail, calendar, tasks]
+
+# ---- can this be finished from a phone? -----------------------------------
+first_run_auth: phone_secret
+phone_completable: partial
+auth_notes: >-
+  The credential half is phone-native: generate an app password in the
+  provider's web UI, type it into the phone client, and it lands in goose's
+  secret store via config/upsert. `partial`, not `yes`, for two reasons that
+  have nothing to do with the credential — (1) the servers' non-secret
+  connection settings (IMAP host/port, CalDAV base URL) are per-account and
+  their exact env-var names are UNVERIFIED at the pinned server releases, so
+  first run needs one confirmation against each server's README; (2) any
+  second account of the same protocol needs a wrapper binary on the brain's
+  filesystem (see `blockers.secret_key_collision`), which a phone cannot
+  create. No OAuth is involved at any point — goose's ACP layer refuses OAuth
+  fields on stdio extensions outright ("OAuth client fields are only supported
+  for streamable_http MCP extensions"), which here is a feature.
+
+# ---- privacy --------------------------------------------------------------
+privacy:
+  tier: 2
+  notes: >-
+    Mail and calendar are Tier 2 by label and routinely Tier 3 by content — a
+    bill, an appointment letter, a lab result. Classify by content: anything
+    sweeping this connector pins to a zero-retention paid model, per
+    docs/privacy.md. Note this connector is *more* leaky at rest than the
+    Workspace one: `list_emails_metadata` persists mailbox metadata (senders,
+    subjects, dates) into a SQLite database owned by the mail server, outside
+    goose's own state tree — see `blockers.offbox_state`.
+  row_added: true                 # docs/privacy.md "Connector data sources" table, anchored <!-- connector: imap-caldav -->
+
+# ---- the vetting bar (docs/providers.md), as data -------------------------
+vetting:
+  maintenance:
+    verdict: pass
+    evidence: >-
+      Wh1isper/mcp-email-server 1.4.2 on PyPI, BSD-3-Clause, 315 stars,
+      released 2026-08-23, 0 open issues. dominik1001/caldav-mcp 0.10.0 on npm
+      — maintained, but carries open functional bug #81 (relative hrefs break
+      `list-calendars` → `calendarUrl`).
+  self_hosted_auth:
+    verdict: pass
+    evidence: >-
+      Both servers run as stdio children on the brain. Credential is a provider
+      app password presented over IMAP LOGIN and HTTP Basic. No third-party
+      relay, no OAuth client, no vendor MCP host in the path.
+  relocatable_state:
+    verdict: partial
+    evidence: >-
+      goose's own state moves with GOOSE_PATH_ROOT=/data/goose, but these two
+      children do not inherit that. mcp-email-server writes a persistent SQLite
+      metadata DB (populated by `list_emails_metadata`) plus its account file
+      under its own XDG paths, i.e. the unencrypted root disk by default.
+      Relocation requires XDG_* in the child's environment, and goose sets `cwd`
+      to None over ACP — so it takes the wrapper binary from
+      `blockers.secret_key_collision`. Not done by this manifest as written.
+  restrictable_tools:
+    verdict: partial
+    evidence: >-
+      `available_tools` is present, non-empty and snake_case, so the agent-side
+      allowlist bites (asserted by the smoke test). But neither server has
+      scope flags, and an IMAP/CalDAV app password is unscoped by construction:
+      a stolen credential reads and deletes the whole mailbox regardless of the
+      allowlist. Only one of the two layers docs/connecting.md requires exists.
+  privacy_row:
+    verdict: pass
+    evidence: >-
+      docs/privacy.md carries a generic IMAP + CalDAV row in the "Connector data sources"
+      table, anchored `<!-- connector: imap-caldav -->` — the exact marker
+      check-connectors.sh greps for. It records that scope is whatever the account can
+      read, with no server-side filter, which is why the tier is 2-routinely-surfaces-3.
+
+# ---- credentials, BY NAME ONLY --------------------------------------------
+# Never a value. These become GooseExtension.envKeys, resolved per-extension
+# from goose's secret store. Two of these four names are the servers' OWN fixed
+# names and cannot be renamed to the repo's <PROVIDER>_* convention — see
+# blockers.secret_key_collision.
+secrets:
+  - key: MCP_EMAIL_SERVER_PASSWORD
+    prompt: "IMAP/SMTP app password from your mail provider (Fastmail: Settings → Privacy & Security → App passwords)"
+    secret: true
+  - key: CALDAV_BASE_URL          # UNVERIFIED name at caldav-mcp 0.10.0 — confirm before first run
+    prompt: "CalDAV base URL (Fastmail: https://caldav.fastmail.com/dav/)"
+    secret: false
+  - key: CALDAV_USERNAME          # UNVERIFIED name at caldav-mcp 0.10.0 — confirm before first run
+    prompt: "CalDAV username, usually your full email address"
+    secret: false
+  - key: CALDAV_PASSWORD
+    prompt: "CalDAV app password (a separate app password from the mail one, if your provider issues per-service passwords)"
+    secret: true
+
+# ---- the payload sent to _goose/unstable/config/extensions/add ------------
+# Two protocols, two servers, and goose has no multi-server extension: this
+# manifest emits TWO extensions/add calls. Each element below is one complete
+# ACP-wire payload, in the schema's field order.
+#
+# On tool-name casing: the FIELD is `available_tools` (snake_case, load-bearing,
+# see README). The tool-name STRINGS are whatever each server publishes —
+# snake_case for the mail server, kebab-case for caldav-mcp. Do not "normalize"
+# them; a name that matches no tool is silently filtered out, which the smoke
+# test's exact count exists to catch.
+acp_extension:
+  - type: mcp
+    server:
+      type: stdio
+      name: mail-imap             # per-account instances are named mail-fastmail, mail-mailboxorg, …
+      command: uvx
+      # UNVERIFIED: the `stdio` subcommand is taken from the project's published
+      # usage, not observed at 1.4.2 under goose 1.46.0. Confirm on first run.
+      args: [mcp-email-server@1.4.2, stdio]
+      env: []                     # keep EMPTY — envKeys instead, see README
+    envKeys: [MCP_EMAIL_SERVER_PASSWORD]
+    description: IMAP/SMTP mail via a provider app password
+    timeout: 300
+    available_tools:              # snake_case field. Non-empty. Never omitted.
+      # Read-biased, not read-only: `mark_emails_as_read` and `save_to_mailbox`
+      # mutate flags and drafts. Neither sends nor deletes, and no send/delete
+      # tool appears here — the allowlist IS the enforcement, so it matches the
+      # prose exactly.
+      - list_available_accounts
+      - list_mailboxes
+      - list_emails_metadata
+      - get_emails_content
+      - mark_emails_as_read
+      - save_to_mailbox
+
+  - type: mcp
+    server:
+      type: stdio
+      name: cal-caldav            # per-account instances are named cal-fastmail, …
+      command: npx
+      args: ["--yes", "caldav-mcp@0.10.0"]
+      env: []
+    envKeys: [CALDAV_BASE_URL, CALDAV_USERNAME, CALDAV_PASSWORD]
+    description: CalDAV calendar and tasks via a provider app password
+    timeout: 300
+    available_tools:              # read-only: no create-event / update-event here
+      - list-calendars
+      - list-events
+      - list-todos
+
+# ---- proof it works -------------------------------------------------------
+# Proves the ALLOWLIST bit, not merely that the servers start. Both servers
+# publish more tools than these nine; an inert allowlist (camelCase field,
+# omitted field, empty list) yields a longer list and fails this assertion.
+smoke_test:
+  kind: tools_list
+  expect_tools_exactly: 9
+  expect_tools_set:
+    - list_available_accounts
+    - list_mailboxes
+    - list_emails_metadata
+    - get_emails_content
+    - mark_emails_as_read
+    - save_to_mailbox
+    - list-calendars
+    - list-events
+    - list-todos
+  command: >-
+    scripts/verify/check-connectors.sh --smoke imap-caldav
+
+# ---- the honest limitations -----------------------------------------------
+blockers:
+  - id: secret_key_collision
+    severity: blocking_for_second_account
+    detail: >-
+      MCP_EMAIL_SERVER_PASSWORD and CALDAV_PASSWORD are the servers' own fixed
+      env-var names and CANNOT be renamed to the repo's <PROVIDER>_*
+      convention: goose applies ${VAR} substitution only to a remote
+      extension's uri/headers/socket — never to stdio env values — and `cwd` is
+      hardcoded None over ACP, so a relative wrapper script cannot rename them
+      either. Consequence: two providers of the same protocol (Fastmail and
+      mailbox.org) collide on one key. The answer today is one extension
+      instance per account, each pointing `command` at an absolute-path wrapper
+      binary on the brain that exports the right value for that account and
+      exec's uvx/npx. That wrapper is also where XDG_* relocation goes (see
+      offbox_state). A phone cannot create it.
+  - id: offbox_state
+    severity: blocking_before_tier3_traffic
+    detail: >-
+      The claim that an envKeys-only extension does zero disk writes is FALSE
+      here. `list_emails_metadata` creates a persistent SQLite database holding
+      mailbox metadata — senders, subjects, dates — and mcp-email-server also
+      keeps an account file. Both live under the child process's own XDG paths,
+      which GOOSE_PATH_ROOT does not touch, i.e. the unencrypted root disk.
+      That path must be moved onto /data (via the wrapper's XDG_DATA_HOME /
+      XDG_CONFIG_HOME) before this connector sees real mail.
+  - id: caldav_mcp_open_bugs
+    severity: functional_risk
+    detail: >-
+      caldav-mcp open issue #81: relative hrefs returned by some CalDAV servers
+      break `list-calendars`, producing an unusable `calendarUrl`. Since
+      `list-calendars` is the entry point for every other calendar call, a
+      provider that returns relative hrefs makes the calendar half inert. Test
+      against your actual host before trusting it.
+  - id: connection_settings_unverified
+    severity: unknown
+    detail: >-
+      Only MCP_EMAIL_SERVER_PASSWORD and CALDAV_PASSWORD are confirmed key
+      names. CALDAV_BASE_URL, CALDAV_USERNAME, the mail server's `stdio`
+      subcommand, and where mcp-email-server expects host/port/username (env vs
+      its own config file) are UNVERIFIED at 1.4.2 / 0.10.0 and are marked so
+      inline. This fails in the safe direction: a missing env_key is a hard
+      extension-startup failure in goose 1.46.0, so a wrong name fails closed
+      and loudly rather than silently starting without a credential.
+  - id: numeric_app_password
+    severity: footgun
+    detail: >-
+      A secret whose stored value is not a JSON string — an all-digit app
+      password like 12345678 — makes goose log "Secret value is not a string;
+      skipping" and start the extension WITHOUT its credential. Some providers
+      issue numeric-looking passwords. If a smoke test fails with an auth error
+      and the secret is set, this is why; store it quoted.
+  - id: no_push
+    severity: out_of_scope
+    detail: >-
+      IMAP IDLE / CalDAV push cannot reach the brain — zero public inbound
+      ports is a security invariant (docs/security.md). Anything time-sensitive
+      here is poll-driven from an automation, not pushed.
+
+runbook: null   # UNWRITTEN — no docs/setup page for this connector yet

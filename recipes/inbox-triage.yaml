@@ -95,14 +95,33 @@ prompt: |
   exactly.
 
 extensions:
+  # Gmail only — this recipe never reads the calendar. gmail:send is the floor,
+  # not a widening: the levels are cumulative (readonly < organize < drafts <
+  # send), and this job genuinely needs all four rungs — read the inbox, apply
+  # Triage/* labels, save drafts, and send the one self-addressed summary. It
+  # still drops gmail.settings.basic, which the old `--tools gmail` requested.
+  # No --tool-tier here on purpose: label and draft tools are `extended` tier,
+  # so `core` would silently remove the tools this recipe is built around.
+  # VERIFIED 2026-08-23 over stdio, both directions. WITH `--tool-tier core`,
+  # gmail:send registers exactly 4 tools — search_gmail_messages,
+  # get_gmail_message_content, get_gmail_messages_content_batch,
+  # send_gmail_message. No label tool. No draft tool. That is a triage run whose
+  # only possible write is the thing the recipe forbids: sending. WITHOUT the
+  # tier flag (this file) the same permission registers 13, adding
+  # list_gmail_labels, manage_gmail_label, modify_gmail_message_labels,
+  # batch_modify_gmail_message_labels, draft_gmail_message,
+  # get_gmail_thread_content, get_gmail_threads_content_batch,
+  # get_gmail_attachment_content and start_google_auth. Adding `--tool-tier core`
+  # here would not fail loudly — it would quietly invert the recipe. Do not.
+  # Version pinned so the tool surface and consent scopes stay reproducible.
   - type: stdio
     name: workspace-mcp
     description: Google Workspace MCP (Gmail — labels, drafts, one self-addressed summary email)
     cmd: uvx
     args:
-      - workspace-mcp
-      - --tools
-      - gmail
+      - workspace-mcp@1.25.0
+      - --permissions
+      - gmail:send
     timeout: 300
     env_keys:
       - GOOGLE_OAUTH_CLIENT_ID

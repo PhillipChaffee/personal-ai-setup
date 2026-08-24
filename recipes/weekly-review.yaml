@@ -1,4 +1,8 @@
-# Weekly review — Sunday synthesis of the week's calendar, email, and tasks.
+# Weekly review — Sunday synthesis of the week's calendar and email.
+# NOT tasks: the review steps below read Calendar and Gmail only (the sole
+# mention of tasks in the instructions is a prohibition on writing them), so
+# the extension asks for no tasks permission and neither the title nor the
+# description claims one.
 # Scheduled on the brain: goose schedule add --schedule-id weekly-review \
 #   --cron "0 0 17 * * SUN" --recipe-source recipes/weekly-review.yaml
 # The recipe emails the report to yourself (one self-addressed email via
@@ -78,15 +82,26 @@ prompt: |
   step, and end by printing the report as your final message.
 
 extensions:
+  # Reads the past and coming week from Calendar and Gmail, then sends one
+  # self-addressed report. calendar:readonly enforces "do not modify calendar
+  # events" in the wiring — it drops the calendar write scopes and removes
+  # manage_event from the tool list. VERIFIED 2026-08-23 by running the server
+  # over stdio: `calendar:readonly` is a valid level, and `--permissions
+  # gmail:send calendar:readonly --tool-tier core` registers 6 tools with
+  # get_events and list_calendars present and manage_event absent. gmail:send is
+  # the lowest level that can send (levels are cumulative). Tasks is not
+  # requested: the review steps never touch it, so "do not modify tasks" in the
+  # instructions is belt to the wiring's braces.
+  # Version pinned so the surface stays reproducible.
   - type: stdio
     name: workspace-mcp
-    description: Google Workspace MCP (Gmail + Calendar; only write is the self-addressed report email)
+    description: Google Workspace MCP (Gmail + read-only Calendar; only write is the self-addressed report email)
     cmd: uvx
     args:
-      - workspace-mcp
-      - --tools
-      - gmail
-      - calendar
+      - workspace-mcp@1.25.0
+      - --permissions
+      - gmail:send
+      - calendar:readonly
     timeout: 300
     env_keys:
       - GOOGLE_OAUTH_CLIENT_ID

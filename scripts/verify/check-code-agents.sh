@@ -190,7 +190,7 @@ if [ "$PROBE" = "yes" ] && [ -n "$AUTH" ]; then
 
     # Isolation: host paths must not exist inside the container.
     ISOLATED="yes"
-    for p in /data/secrets.env /data/life-vault /data/goose-data; do
+    for p in /data/secrets.env /data/life-vault /data/goose /data/goose-data; do
       if podman exec "$CN" sh -c "test -e $p" >/dev/null 2>&1; then ISOLATED="no"; note "reachable: $p"; fi
     done
     if [ "$ISOLATED" = "yes" ]; then

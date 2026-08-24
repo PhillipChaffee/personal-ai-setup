@@ -50,8 +50,8 @@ more MCP tools eating context.)
    Pages: repo Settings → Pages → Deploy from branch → `main`, `/docs`).
    Under **Authorized domains**, add `<you>.github.io` — `github.io`
    subdomains count as domains you own.
-4. You do **not** need to pre-register scopes — workspace-mcp requests what
-   its enabled tools need at auth time.
+4. You do **not** need to pre-register scopes — workspace-mcp requests
+   exactly what its `--permissions` levels declare, at auth time (§5).
 
 > **⚠️ Publish to "In production" NOW — do not leave the app in "Testing".**
 >
@@ -109,10 +109,65 @@ permanently.
 The wiring lives in two template files the bootstrap already put in place:
 
 - `config/goose/config.yaml` — the `workspace-mcp` stdio extension entry:
-  `uvx workspace-mcp --tool-tier core`. The **`core` tool tier** keeps the
-  tool count down (the full tier is 120+ tools and would flood every
-  prompt's context); note it trims the tool *count*, not the services — the
-  extension is not restricted to Gmail/Calendar/Tasks.
+
+  ```
+  uvx workspace-mcp@1.25.0 --permissions gmail:send calendar:full tasks:manage --tool-tier core
+  ```
+
+  Three things in that line earn their place:
+
+  | Piece | Why |
+  |---|---|
+  | `@1.25.0` | `uvx workspace-mcp` resolves to whatever is newest *at spawn time*. Pinning is what makes the tool list and the consent screen below reproducible instead of "whatever shipped this week". |
+  | `--permissions <service>:<level>` | Selects the services **and** the OAuth scopes. Levels are cumulative per service — gmail: `readonly < organize < drafts < send < full`; calendar: `readonly < full`; tasks: `readonly < manage < full`. |
+  | `--tool-tier core` | Caps per-request context. Measured at these permissions on 2026-08-23: `core` = **10** tools, `extended` = 20, `complete` = 26 — and **omitting the flag is the same as `complete`**, not a middle ground. 120+ across all services. |
+
+  `--permissions` **replaces** the older `--tool-tier core --tools gmail
+  calendar tasks`, which was inverted least privilege: `--tools` picks
+  *services*, so consent asked for all 14 scopes those three services can use
+  while the recipes need far fewer. The two flags are mutually exclusive
+  upstream — passing both is a startup error, so don't reintroduce `--tools`.
+
+  **This entry is deliberately write-capable**, and that is the one judgement
+  call in the line. `calendar:full` + `tasks:manage` mean the interactive
+  session — the phone chat, Goose Desktop — can actually move a meeting and
+  tick a task, which is most of the point of having it. The `available_tools`
+  allowlist grants exactly the matching write tools (`manage_event`,
+  `manage_task`), so credential and allowlist agree: a tight allowlist over a
+  broad token would surrender the capability while keeping the risk.
+
+  Each recipe narrows further than this entry does, because a scheduled job
+  should not inherit the interactive session's reach. `morning-brief`,
+  `weekly-review` and `health-followups` each declare their **own**
+  workspace-mcp block with `calendar:readonly`; `inbox-triage` /
+  `budget-checkin` ask for no calendar at all. Verified over stdio on
+  2026-08-23: `calendar:readonly` is a real level (hand the server a bogus one
+  and it prints its own table — gmail `readonly|organize|drafts|send|full`,
+  calendar `readonly|full`, tasks `readonly|manage|full` — then exits 1), and
+  `--permissions gmail:send calendar:readonly --tool-tier core` registers 6
+  tools with `get_events` and `list_calendars` present and `manage_event`
+  **gone**. So "the calendar is read-only in this run" is a property of the
+  wiring, not a promise in a prompt.
+
+  The entry also carries a snake_case `available_tools` allowlist naming those
+  10 tools. **The spelling is load bearing** — goose silently discards a
+  camelCase `availableTools`, and an absent or empty allowlist means *every*
+  tool is allowed, so the typo fails open. The mechanics and the proof are in
+  [`config/connectors/README.md`](../../config/connectors/README.md).
+
+  One consequence of writing out all 10: the allowlist equals the server's
+  entire published surface at these args, so a tool *count* can no longer tell
+  "the allowlist bit" apart from "the allowlist was dropped" — both come back
+  as 10. What catches the camelCase typo here is the connector validator
+  (client-side schema check) and the `extensions/add` → `extensions/list`
+  roundtrip, not the count.
+
+  One caveat, verified at 1.25.0: at `core` tier, `list_tasks` / `get_task` /
+  `manage_task` all require a `task_list_id`, and the only tools that hand one
+  out (`list_task_lists`, `get_task_list`) are `complete` tier — so Tasks is
+  reachable only via the API's `@default` list alias. No recipe uses Tasks
+  today. If one starts to, drop `--tool-tier core` rather than widening
+  `--permissions`.
 - `config/mcp/workspace-mcp.env.example` — the env vars the server reads:
   `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` (from §4, via the
   Keychain exports). Nothing pins a credentials directory — token files go
@@ -147,12 +202,20 @@ alive**. Two ways:
   ```
 
 In the browser: pick your account → the **unverified-app interstitial** (§3 —
-Advanced → continue) → review scopes (only Gmail/Calendar/Tasks, thanks to
-`--tools`) → **Allow** → a localhost "you can close this window" page means
+Advanced → continue) → review scopes (13 of them: Gmail, Calendar, Tasks and
+sign-in — nothing else, thanks to `--permissions`) → **Allow** → a localhost
+"you can close this window" page means
 the token was written. Expect Google's "Security alert" email about the new
 grant — that's normal. This was the one-time consent; workspace-mcp now holds
 a long-lived refresh token (because the app is in production) and refreshes
 access tokens silently from here on.
+
+**Do this consent from a goose session, not from a recipe run.** The stored
+token holds whatever scopes the *granting* process asked for, and the
+`config/goose/config.yaml` entry asks for the superset. A broader stored token
+satisfies every recipe's narrower request; consenting from, say, `inbox-triage`
+first would store a Gmail-only token and force a second consent round the next
+time anything reads the calendar.
 
 **Where the tokens live:** workspace-mcp writes its token files to its
 default state dir — `~/.google_workspace_mcp/` (documented upstream as of

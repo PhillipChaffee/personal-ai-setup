@@ -27,7 +27,10 @@ User=agent
 EnvironmentFile=/data/secrets.env
 WorkingDirectory=/home/agent/personal-ai-setup
 # Same runtime environment as goose-serve.service: goose + uvx in
-# ~/.local/bin, npx in /usr/bin, and no keyring on a headless box.
+# ~/.local/bin, npx in /usr/bin, no keyring on a headless box, and the same
+# path root — a fallback run must read the same config.yaml and write its
+# session and llm_request logs to the same encrypted place as the primary.
 Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=GOOSE_DISABLE_KEYRING=1
+Environment=GOOSE_PATH_ROOT=/data/goose
 ExecStart=/home/agent/personal-ai-setup/scripts/common/run-recipe.sh %i

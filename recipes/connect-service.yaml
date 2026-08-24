@@ -1,0 +1,227 @@
+# Connect a service — on-demand, INTERACTIVE. Connects the brain to one
+# external service and leaves a connector manifest behind
+# (config/connectors/<id>.yaml).
+#
+# NOT scheduled. It owns no cron slot, it is deliberately absent from
+# scripts/vps/register-schedules.sh, and it has no fallback timer: a human has
+# to be in the conversation to answer questions and to put a credential into
+# the client's credential field (never into the chat — see hard rule 2), so a
+# headless fire could only ever fail. Start it yourself:
+#   goose run --recipe recipes/connect-service.yaml --interactive
+# or from Goose Desktop connected to the brain (the activities below become
+# buttons). From the phone there is no recipe launcher — ask the brain to
+# run the connect-service skill instead; the skill IS the procedure, and this
+# file is only its launchable form.
+#
+# It also does NOT email its result. The scheduled recipes each end with one
+# self-addressed email because nobody is watching them; this one reports into
+# the session you are already sitting in. Do not bolt delivery onto it.
+version: 1.0.0
+title: Connect a Service
+description: Connects the brain to one external service over ACP and writes the connector manifest that makes the next connection to it a no-op.
+
+parameters:
+  - key: service
+    input_type: string
+    requirement: user_prompt
+    description: Which service do you want to connect? (name it, and paste its docs/repo URL if you have one)
+
+  - key: intent
+    input_type: string
+    requirement: user_prompt
+    description: >-
+      What should the agent be able to DO with it? Be specific — this becomes
+      the available_tools allowlist, so "read and search my tasks" and "manage
+      my tasks" produce very different connectors.
+
+  - key: archetype
+    input_type: select
+    requirement: user_prompt
+    default: unknown
+    description: >-
+      How the service is reached (config/connectors/README.md "Archetypes").
+      Leave "unknown" to let the research path decide; a named value is a hint
+      you must still verify.
+    options:
+      - unknown
+      - first_party_remote_mcp
+      - self_hosted_mcp_stdio
+      - standard_protocol_bridge
+      - local_cli_wrapper
+      - browser_automation
+      - periodic_export
+
+  - key: surface
+    input_type: select
+    requirement: optional
+    default: phone
+    description: >-
+      What you are driving this from. Decides whether a brain_browser /
+      laptop_oob connection can be finished at all in this session.
+    options:
+      - phone
+      - mac
+
+  - key: dry_run
+    input_type: boolean
+    requirement: optional
+    default: false
+    description: Plan only — research and write the manifest, but make no credential or extension writes.
+
+instructions: |
+  You are connecting the brain to ONE external service, with a human present.
+  Unlike this repo's scheduled recipes, asking questions is the point: ask
+  whenever a fact is missing or ambiguous, and never invent one to keep moving.
+
+  THE PROCEDURE IS NOT IN THIS FILE. Before anything else, read in full and
+  then execute:
+
+      /home/agent/personal-ai-setup/config/skills/connect-service/SKILL.md
+
+  That is the in-repo copy, which the brain always has because it is the same
+  checkout this recipe is read from — the same form the two contracts below
+  use. Fall back to ~/.agents/skills/connect-service/SKILL.md only if the repo
+  path is not readable: that installed copy exists on the Mac
+  (scripts/mac/bootstrap-mac.sh puts it there) but NOT on the brain, where
+  scripts/vps/deploy-vps.sh installs no skills at all. If neither path
+  resolves, STOP and say so — do not reconstruct the procedure from the hard
+  rules below; they are a summary of it, not a substitute for it.
+
+  This recipe supplies the launch parameters and the guardrails below; the
+  skill owns the steps. Where the two appear to disagree, the SKILL wins, and
+  this file must never grow a copy of its procedure — they stay in sync by
+  reference, not by duplication.
+
+  Two contracts to read before you author or edit a manifest (both are in the
+  repo checkout, /home/agent/personal-ai-setup on the brain):
+    config/connectors/README.md   the manifest schema, and the available_tools trap
+    docs/connecting.md            archetypes, first_run_auth, the privacy gate
+
+  This run's inputs:
+    service   : {{ service }}
+    intent    : {{ intent }}
+    archetype : {{ archetype }}   ("unknown" = run the research path and decide)
+    surface   : {{ surface }}
+    dry_run   : {{ dry_run }}
+
+  Start by checking whether config/connectors/ already has a manifest for this
+  service. If it does, that is the answer to most of the research — reuse it,
+  correct it only where reality has moved, and go straight to authentication
+  and verification.
+
+  Hard rules. These are the ones that have already cost someone a broken
+  assumption, so they are restated here rather than left to the skill:
+
+  1. available_tools is snake_case, non-empty, and never omitted. It is the
+     only snake_case field among camelCase siblings, goose sets no
+     deny_unknown_fields, so "availableTools" is silently discarded — and an
+     absent or empty allowlist means EVERY tool is allowed. Least privilege
+     here fails OPEN. After every extensions/add, list the extensions back and
+     assert the allowlist returned equals what you sent. A mismatch is a hard
+     failure: stop and say so. Never warn and continue.
+
+  2. Secrets move by reference, never by value — and the reference is never
+     this chat. The credential path is the phone client's credential field for
+     the connector, which sends _goose/unstable/config/upsert with the secret
+     flag set; goose writes the value to <config_dir>/secrets.yaml at mode 0600
+     on the encrypted volume, out of band from you. On a client with no such
+     field the fallback is `goose configure` on the brain over SSH — still out
+     of band. NEVER ask the human to paste a token or app password into the
+     conversation, and never echo, repeat, quote or summarise one: a value in
+     this transcript is a value in sessions.db AND in llm_request.*.jsonl,
+     both of which outlive the session and neither of which can be unsent. If a
+     secret would have to travel through the chat for this connection to
+     proceed, that is a hard stop — say so and stop. Never read a secret back
+     to "confirm" it either: goose's config read returns the first characters
+     IN CLEAR plus the exact length. Verify by handshake instead: enable the
+     extension, list its tools, call one cheap read-only tool. Keep server.env
+     empty and declare envKeys, so the value never crosses the ACP frame at
+     all.
+
+  3. Refuse what this session cannot finish. Establish first_run_auth BEFORE
+     collecting anything. OAuth cannot be completed from a phone — the
+     callback is loopback-bound on the brain and the authorization URL never
+     leaves it — so with surface=phone, a brain_browser or laptop_oob service
+     stops here: write (or keep) the manifest recording that fact, name the
+     runbook and the exact step that needs a laptop, and hand it back. Do not
+     strand the user forty minutes in.
+
+  4. Privacy is a gate. No connector's data routes anywhere until it has a row
+     in the connector data-source table of docs/privacy.md — the table about
+     what a connector pulls IN, not the provider table about where data GOES —
+     carrying the "<!-- connector: <id> -->" marker that
+     scripts/verify/check-connectors.sh greps for. privacy.row_added: true
+     before that marker exists is a claim the validator fails. Classify by the
+     most sensitive content the connector can surface, not by its label — a
+     files connector is Tier 3 the moment a lab PDF or a tax return is
+     reachable through it. Tier is a property of the session, decided before
+     the first call, not a filter applied afterwards.
+
+  5. Verify, don't assume. Never invent a repo, release, package version, CLI
+     flag, scope string or tool name. Each one comes from the server's own
+     --help, its tool list, or its release page — and anything you could not
+     verify is written into the manifest explicitly marked unverified.
+
+  Scope of writes:
+  - You may write config/connectors/<id>.yaml, add the docs/privacy.md row,
+    and change goose's own configuration through the ACP methods the skill
+    names.
+  - Leave the repo changes UNCOMMITTED. The vetting bar is not
+    self-certifying: a human confirms maintenance and self_hosted_auth before
+    the manifest is committed.
+  - Touch nothing else — no recipes/, no schedules, no other connector's
+    config, and no email. This workflow reports in chat.
+  - If dry_run is true, make NO writes of any kind beyond the manifest and no
+    credential or extension changes at all: research, write the manifest, and
+    present the plan.
+
+  Finish with a short report in chat: the archetype and why, first_run_auth
+  and whether it completed, the exact available_tools allowlist you set and
+  the read-back that confirmed it, the privacy tier and row, the smoke-test
+  result, and what a human still has to do (vetting confirmation, commit, or
+  the laptop step).
+
+prompt: |
+  Connect {{ service }}. What I want to be able to do with it: {{ intent }}.
+  I'm on {{ surface }}. Read
+  /home/agent/personal-ai-setup/config/skills/connect-service/SKILL.md (or
+  ~/.agents/skills/connect-service/SKILL.md if that path isn't there) and run
+  it. Tell me early if this one can't be finished from here. Don't ask me to
+  type any token into this chat.
+
+extensions:
+  # Shell + file tools: reading the contracts and existing manifests, writing
+  # the new one, probing a candidate server (--help, its tool list) and running
+  # scripts/verify/check-connectors.sh. No workspace-mcp — this recipe sends no
+  # email — and no tavily: it is disabled by default and a missing env_key is a
+  # hard extension-startup failure, so research falls back to the shell.
+  - type: builtin
+    name: developer
+    timeout: 300
+
+settings:
+  # Tier-1/2 work by content (config plumbing, public docs), but pinned to the
+  # sensitive-tier route on purpose, for two reasons. First, verification is a
+  # real read: the workflow ends by calling one cheap read-only tool and showing
+  # the result, so live mailbox subjects, task titles or calendar entries land
+  # in this transcript — that belongs on Together's ZDR posture, never on a
+  # 30-day retention route (docs/model-routing.md hard rule 2). The credential
+  # itself never appears here at all: it goes from the client's credential
+  # field to config/upsert, out of band from the model (hard rule 2 above), so
+  # this pin is about what the connector SURFACES, not about the secret.
+  # Second, the job
+  # reasons about which privacy tier a connector lands in, and deciding a tier
+  # on a model that may not hold that tier's data is exactly backwards. This is
+  # also the hub default, so no surprise: together / Qwen3.5-397B-A17B, the
+  # flagship with verified function calling — which this recipe leans on hard.
+  goose_provider: together
+  # model id verified as of 2026-08-20 — confirm with scripts/verify/pin-models.sh
+  goose_model: Qwen/Qwen3.5-397B-A17B
+  temperature: 0.1
+
+activities:
+  - Connect a service that takes an API token I can enter from my phone's credential field
+  - What can I connect from my phone right now, and what needs a laptop?
+  - Plan a connection without changing anything yet
+  - Check that an existing connector's tool allowlist actually bit
+  - Narrow an existing connector down to fewer tools

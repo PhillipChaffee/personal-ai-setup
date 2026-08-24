@@ -79,15 +79,26 @@ extensions:
   - type: builtin
     name: developer
     timeout: 300
+  # This job reads the calendar and sends exactly one self-addressed email, so
+  # calendar stays at :readonly — that drops the calendar/calendar.events write
+  # scopes AND removes manage_event from the tool list entirely, making "the
+  # calendar is read-only for this job" a property of the wiring rather than a
+  # promise in the prompt. VERIFIED 2026-08-23 by running the server over stdio:
+  # `calendar:readonly` is a valid level (a bogus one makes the server print
+  # "Valid levels: ['readonly', 'full']" and exit 1), and `--permissions
+  # gmail:send calendar:readonly --tool-tier core` registers 6 tools — get_events
+  # and list_calendars present, manage_event gone. gmail:send is the lowest level
+  # that can send (levels are cumulative, so it carries read/labels/compose too).
+  # Version pinned so the tool surface and the consent scopes can't drift under us.
   - type: stdio
     name: workspace-mcp
-    description: Google Workspace MCP (Calendar only, read-only use here)
+    description: Google Workspace MCP (Calendar read-only; one self-addressed Gmail send)
     cmd: uvx
     args:
-      - workspace-mcp
-      - --tools
-      - calendar
-      - gmail
+      - workspace-mcp@1.25.0
+      - --permissions
+      - gmail:send
+      - calendar:readonly
     timeout: 300
     env_keys:
       - GOOGLE_OAUTH_CLIENT_ID

@@ -1,0 +1,217 @@
+# Health records — the archetype fallback, not a connector to a health service.
+#
+# There is no MCP server for "your medical records", and there should not be one:
+# the API surface a patient actually has is a browser session with their own
+# provider's portal. So the flow is deliberately dumb and credential-free:
+#
+#   portal (you, in a browser, on the Mac)
+#     -> download C-CDA / FHIR JSON / PDF
+#     -> DETERMINISTIC conversion to markdown on the Mac (60-vault-setup.md §3)
+#     -> commit both files into /data/life-vault/health/records/
+#     -> this extension reads them back, read-only, on the brain
+#
+# Zero credentials and zero third parties is the strongest available reading of
+# vetting bar 2 — there is no vendor to vet. What that buys in privacy it pays
+# for in reach: see `blockers`, which is most of the value of this file.
+
+# ---- identity -------------------------------------------------------------
+id: health-records
+display_name: Health Records
+summary: >-
+  Patient-portal exports, converted on the Mac and committed into the life
+  vault, exposed to the brain as a read-only directory. No API, no credential,
+  no third party.
+
+manifest_version: 1
+verified_on: 2026-08-23
+goose_version_verified: 1.46.0
+
+# ---- what it is -----------------------------------------------------------
+archetype: periodic_export
+capabilities: [health_records]
+
+# ---- can this be finished from a phone? -----------------------------------
+first_run_auth: none
+phone_completable: "no"          # quoted: bare `no` is a YAML 1.1 boolean
+auth_notes: >-
+  goose never holds a health credential. You authenticate to your own portal as
+  a human, in a browser, and the export lands on the Mac's disk. `none` here
+  means "no secret to type", not "nothing to do" — and it is the export step,
+  not the auth step, that the phone cannot perform (blockers[0]).
+
+# ---- privacy --------------------------------------------------------------
+privacy:
+  tier: 3
+  notes: >-
+    Clinical documents, whole. Tier 3 routing is a property of the session, not
+    a filter applied afterwards: any session with this extension attached must
+    be pinned to Together AI or a Zen paid open model before the first call —
+    never Claude/GPT via Zen (30-day retention), never free models. Raw request
+    bodies are written to <state>/logs/llm_request.*.jsonl regardless of tier,
+    which is why GOOSE_PATH_ROOT=/data/goose is load bearing here. Any delivery
+    (email, notification, final message) stays PHI-free — counts and neutral
+    titles only, the same rule recipes/health-followups.yaml already enforces.
+  row_added: true                 # docs/privacy.md Tier-3 row already names the
+                                  # life vault and "Medical records Q&A"; this
+                                  # connector introduces no provider, so no new
+                                  # provider-table row is owed.
+
+# ---- the vetting bar (docs/providers.md), as data -------------------------
+vetting:
+  maintenance:
+    verdict: pass
+    evidence: "@modelcontextprotocol/server-filesystem 2026.7.10, published 2026-07-10 (npm registry, checked 2026-08-23); MIT, Anthropic-maintained"
+  self_hosted_auth:
+    verdict: pass
+    evidence: "stdio on the brain, over a local directory; no credential of any kind and no network egress from the extension — nothing is shared with anyone"
+  relocatable_state:
+    verdict: pass
+    evidence: "the server is stateless; the only state is /data/life-vault itself, already on the LUKS volume (docs/setup/60-vault-setup.md)"
+  restrictable_tools:
+    verdict: pass
+    evidence: "two independent narrowings — a single allowed-directory argv root, plus available_tools cut to 7 of the server's 14 registered tools (dist/index.js at 2026.7.10)"
+  privacy_row:
+    verdict: pass
+    evidence: "docs/privacy.md Tier-3 row: 'Anything from the life vault or that belongs there … Together (ZDR default, HIPAA/BAA posture) or Zen paid open models only'"
+
+# ---- credentials, BY NAME ONLY --------------------------------------------
+# There are none, and that is the design, not an omission. No key means no key
+# to leak, no envKeys collision (README §"The stdio naming collision"), and no
+# secrets.yaml entry.
+secrets: []
+
+# ---- the payload sent to _goose/unstable/config/extensions/add ------------
+# Read-biased on purpose: the agent may find, list and read converted records;
+# it may not create, edit, move or overwrite them. Deposits happen on the Mac,
+# under git, by a human. available_tools is the enforcement — snake_case, since
+# camelCase is silently dropped and an empty allowlist allows everything.
+acp_extension:
+  type: mcp
+  server:
+    type: stdio
+    name: health-records
+    command: npx
+    args:
+      - -y
+      - "@modelcontextprotocol/server-filesystem@2026.7.10"
+      - /data/life-vault/health/records
+    env: []
+  envKeys: []
+  description: Read-only view of the converted health records in the life vault
+  timeout: 300
+  available_tools:                # snake_case. Non-empty. Never omitted.
+    - read_text_file
+    - read_multiple_files
+    - list_directory
+    - directory_tree
+    - search_files
+    - get_file_info
+    - list_allowed_directories
+  # Excluded, deliberately, from the 14 tools the server registers:
+  #   write_file, edit_file, create_directory, move_file  — the four with
+  #     readOnlyHint: false. A mutating tool here would let a model rewrite a
+  #     lab result.
+  #   read_media_file  — returns base64 media, i.e. it would put the raw
+  #     scanned PDF into an LLM request body (and into llm_request.*.jsonl).
+  #     The markdown conversion is what models are supposed to read.
+  #   read_file  — deprecated alias of read_text_file; two names for one
+  #     capability only widens the surface.
+  #   list_directory_with_sizes  — redundant with list_directory here.
+
+# ---- proof it works -------------------------------------------------------
+# The point of this smoke test is the allowlist, not the process. A server that
+# starts happily with all 14 tools live is the exact failure mode a camelCase
+# availableTools produces, and it looks identical to success.
+#
+# One assertion this connector needs is NOT automatable here. --smoke speaks
+# initialize + tools/list and nothing else — it never issues tools/call — so it
+# cannot check what list_allowed_directories *returns*. That check is manual;
+# it is written down in `notes` below rather than dressed up as a key the runner
+# would silently ignore. See blockers[5]: the server will *replace* its argv
+# roots with the client's MCP roots if the client advertises that capability
+# with a non-empty set.
+smoke_test:
+  kind: tools_list
+  expect_tools_exactly: 7
+  expect_tools_set:               # the key check-connectors.sh actually reads —
+                                  # any other spelling is silently ignored, and
+                                  # an ignored assertion proves nothing
+    - read_text_file
+    - read_multiple_files
+    - list_directory
+    - directory_tree
+    - search_files
+    - get_file_info
+    - list_allowed_directories
+  expect_tools_absent:            # the server publishes these; the allowlist
+                                  # must withhold them
+    - write_file
+    - edit_file
+    - create_directory
+    - move_file
+    - read_media_file
+  command: >-
+    scripts/verify/check-connectors.sh --smoke health-records
+  notes: >-
+    MANUAL step, not performed by --smoke: with the extension enabled, call
+    list_allowed_directories once and confirm it returns exactly
+    /data/life-vault/health/records. Nothing in this repo automates that — it is
+    a tools/call, and the smoke runner only lists tools — so until someone does
+    it by hand the argv root scoping is unconfirmed (blockers[5]).
+
+# ---- what this cannot do --------------------------------------------------
+blockers:
+  - >-
+    Mac-only, and precisely one link is missing: getting the exported file from
+    the phone to /data. The mobile client can send only text content blocks;
+    there is no attachment path at the client, at ACP, or in goose
+    (docs/connecting.md §"What is deliberately not supported"). Everything
+    after the file exists on disk — conversion, commit, read — works from the
+    phone. The download and the deposit do not. Not "partial": no phone can
+    complete a first run.
+  - >-
+    No existing recipe reads health/records/. recipes/health-followups.yaml
+    reads exactly one file, /data/life-vault/health/appointments.md, and its
+    hard rules make that the only file it may modify — records are outside its
+    scope entirely. recipes/vault-qa.yaml can already answer over these files,
+    but through the developer extension's shell, not through this extension.
+    Consuming records as an extension therefore needs a new or extended recipe;
+    until then this manifest's honest claim is "the files are deposited and
+    greppable", not "an automation uses them".
+  - >-
+    Conversion is unsolved as a turnkey step. No maintained C-CDA -> markdown
+    MCP server exists (survey as of 2026-08-23; treat as unverified rather than
+    proven-absent). microsoft/FHIR-Converter (MIT, 525 stars, default branch
+    pushed 2026-06-03; last tagged release v5.1.0, 2022-11-29 — active but
+    release-stale) handles C-CDA -> FHIR deterministically; FHIR JSON ->
+    markdown remains a hand-rolled step. Prefer any deterministic path over an
+    LLM pass: a model reading the record to reformat it *is itself* a Tier-3
+    inference call, subject to every routing rule above, and buys nothing that
+    pdftotext/markitdown (60-vault-setup.md §3) does not.
+  - >-
+    Portal capability is per-organization and cannot be promised. "Download My
+    Record" in Epic MyChart is an organization-level toggle, not a guaranteed
+    feature of every deployment — UNVERIFIED for any specific provider until
+    you look. Where it is absent the fallback is whatever PDF the portal will
+    print, which needs OCR when the scan is image-only.
+  - >-
+    CMS Blue Button 2.0 is not a substitute. It exposes Medicare *claims* data
+    only — not clinical documents — and its widely-quoted "13 months" is the
+    lifetime of the beneficiary's authorization, not a personal-use access
+    lane.
+  - >-
+    Roots hazard, UNVERIFIED at goose 1.46.0. The filesystem server requests
+    the client's MCP roots after initialize and, on a non-empty response,
+    replaces its argv-supplied allowed directories with them (dist/index.js at
+    2026.7.10, updateAllowedDirectoriesFromRoots). Whether goose advertises a
+    roots capability to stdio children — and with what set — has not been
+    tested here. The directory scoping is therefore only as trustworthy as the
+    MANUAL list_allowed_directories check in smoke_test.notes — --smoke proves
+    the tool is *reachable*, never what it returns — and that check has not been
+    run yet.
+  - >-
+    Nothing here is push. Records appear when you export them, which means the
+    vault is stale by construction and no agent can tell how stale. Date-first
+    filenames (60-vault-setup.md §2) are the only recency signal available.
+
+runbook: docs/setup/60-vault-setup.md

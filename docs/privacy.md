@@ -54,15 +54,88 @@ During Together signup, confirm in Organization Settings → Privacy that the
 store-prompts and share-for-training toggles are **off** (they default off; see
 `docs/setup/10-accounts.md`).
 
+## Connector data sources (the other axis)
+
+The table above is about **inference routes**: where data *goes* once a session sends it,
+and what the provider on the far end may keep. This table is about **data sources**: where
+data *comes from* — what a connected service can pull into a session in the first place.
+They are genuinely different questions, and a connector answers only the second one. Adding
+Todoist introduces no new inference route; it introduces a new pile of your text that the
+existing routes can now be handed.
+
+Every connector needs a row here **before its first call** — that is what
+`privacy.row_added: true` in a [connector manifest](../config/connectors/README.md) asserts,
+and `scripts/verify/check-connectors.sh` fails any manifest whose row is missing (a Tier 3
+manifest fails twice over). The row is what makes the tier a decision recorded in advance
+rather than a label applied to data already in a request log.
+
+Each row carries an HTML comment holding the connector's `id:`. That marker — spelled
+`<!-- connector: ID -->` — is the exact string the validator greps for, so a row keeps
+counting through a retitled display name, a reworded description, or a reformatted table.
+Add the marker in the same edit as the row; a row without one does not exist as far as the
+gate is concerned.
+
+| Connector | What it can surface | Tier | Route and delivery rule |
+|---|---|---|---|
+| **Google Workspace** <!-- connector: google-workspace --> | Gmail message bodies and attachments' metadata, Calendar events and attendees, Tasks — across every account on the `USER_GOOGLE_EMAILS` roster | 2, routinely surfaces 3 | Zen **paid open** models or Together. Never Zen free; never Claude/GPT via Zen for a sweep, because a bill or a lab result drifts through inbox triage by design. Digests carry subjects and summaries, never bodies |
+| **Todoist** <!-- connector: todoist --> | Task and project names, notes, due dates, labels. Doist hosts the MCP server itself, so this text transits Doist — the party that already stores it, and no fourth one | 2 | Tier 1–2 routes (Zen paid, Together). Never free models. If health or money detail ends up in a task title, that session is Tier 3 and routes as Tier 3 |
+| **IMAP + CalDAV (generic)** <!-- connector: imap-caldav --> | Whole message bodies from any mailbox it is pointed at, plus CalDAV event titles, times and attendees. Scope is whatever the account can read — there is no server-side filter | 2, routinely surfaces 3 | Same as Google Workspace: Zen paid open or Together, never free, never a 30-day-retention route for a sweep |
+| **Proton Mail** <!-- connector: proton-mail --> | Read-only Proton mailbox contents, message bodies included, decrypted by a Proton Bridge running on the brain — so the plaintext exists on the encrypted `/data` volume and nowhere else at rest | 2, routinely surfaces 3 | Same as above. The Bridge adds no third party; the mail content itself is what sets the tier |
+| **Health Records** <!-- connector: health-records --> | Clinical documents exported from your own patient portal and committed to the life vault: visit notes, lab results, medication lists, diagnoses, insurance and billing | **3** | **Together (ZDR, HIPAA/BAA posture) or a Zen paid open model only**, pinned before the first call — never Claude/GPT via Zen, never free models. Delivery stays PHI-free: counts and neutral titles only, no condition, medication, provider or dollar amount |
+
+Two things this table deliberately does *not* do. It does not re-tier per message: a
+connector is classified by the most sensitive content it **can** surface, so "2, routinely
+surfaces 3" means the sweep that reads it is pinned as if it were 3. And it does not replace
+the provider table: a connector whose data reaches a *new* provider needs a row in both, and
+the bar for that provider is in [providers.md](providers.md).
+
 ## The encryption model
 
 **At rest.** Everything stateful on the brain lives on a dedicated Hetzner Volume
-encrypted with LUKS2 and mounted at `/data`: the Goose data directory
-(`~/.local/share/goose` symlinked to `/data/goose-data`, so `sessions.db` — your entire
-chat history — is encrypted), the private life-vault clone, `/data/secrets.env`, and the
-Google OAuth tokens. The unencrypted root disk holds only the OS and this public repo's
-code. Hetzner snapshots, disk reuse, and hardware disposal therefore never expose
-plaintext state. Details in [security.md](security.md).
+encrypted with LUKS2 and mounted at `/data`: goose's own state, the private life-vault
+clone, `/data/secrets.env`, and the Google OAuth tokens. Hetzner snapshots, disk reuse,
+and hardware disposal therefore never expose plaintext state. Details in
+[security.md](security.md).
+
+"goose's own state" is three directories, not one — and that distinction was, for a
+while, the hole in this section:
+
+| goose dir | Default location | What is in it |
+|---|---|---|
+| config | `~/.config/goose` | `config.yaml`, `.goosehints`, `memory/`, and `secrets.yaml` (mode 0600) — where a credential goes when there is no keyring |
+| data | `~/.local/share/goose` | `sessions.db` — your entire chat history, including every tool result — and `schedule.json` |
+| state | `~/.local/state/goose` | `logs/llm_request.*.jsonl` — described by goose's own documentation as the raw request and response data sent to language-model providers |
+
+Only **data** was relocated originally, by a `~/.local/share/goose → /data/goose-data`
+symlink. Config and state stayed where they defaulted, on the **unencrypted root disk** —
+which meant `llm_request` logs holding verbatim email bodies and life-vault text, and a
+`secrets.yaml` holding connector credentials, sat outside the LUKS volume. Until this was
+fixed, this document's claim that the root disk "holds only the OS and this public repo's
+code" was **false**, and it is recorded here rather than quietly deleted because the class
+of mistake — an application splitting its state across three XDG directories while you
+relocate one — will recur with the next thing installed on the brain.
+
+What makes the claim true is one line in
+[`goose-serve.service`](../scripts/vps/systemd/goose-serve.service):
+
+```
+Environment=GOOSE_PATH_ROOT=/data/goose
+```
+
+which relocates config, data **and** state together under one absolute root (verified
+against goose 1.46.0). `scripts/vps/deploy-vps.sh` migrates an existing brain into that
+layout without touching session history, and additionally points
+`~/.config/goose`, `~/.local/share/goose` and `~/.local/state/goose` at it as symlinks —
+because `goose` run by hand over SSH does *not* inherit the systemd unit's environment,
+and would otherwise quietly recreate the split. `scripts/verify/check-security.sh --local`
+asserts that all three resolve under `/data`.
+
+Two honest residuals. Migration is a cross-device move: it unlinks the root-disk copy but
+does not wipe the freed blocks, so anything logged *before* the migration may remain
+recoverable from the unencrypted disk until it is overwritten. And `llm_request` logging
+is unconditional — it happens regardless of tier, which is why the tier of a session has
+to be decided by the routing before the call, never as a filter afterwards
+([connecting.md](connecting.md)).
 
 **In transit.** The brain is reachable only over your Tailscale tailnet — WireGuard
 encryption end to end, no public inbound ports. On top of that, `goose serve` runs TLS

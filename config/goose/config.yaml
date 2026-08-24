@@ -89,14 +89,72 @@ extensions:
     enabled: true
     timeout: 300
 
-  # Gmail + Google Calendar (+ Drive/Docs/Tasks) via taylorwilsdon/google_workspace_mcp.
+  # goose's `apps` platform extension — ENABLED BY DEFAULT upstream in 1.46.0,
+  # turned off here deliberately. Tool calls an app initiates are dispatched
+  # WITHOUT passing through the permission manager, so an imported app is an
+  # unreviewed route to every other extension's tools: gmail send, the shell,
+  # the life vault. The brain gives up nothing — its clients are Goose Desktop,
+  # the iOS app and the scheduler, none of which need the apps surface
+  # (`_goose/unstable/apps/{list,export,import,delete}` over ACP).
+  # docs/security.md. Verify it took on an older brain: `goose configure` ->
+  # Toggle Extensions, or the ACP call _goose/unstable/config/extensions/list.
+  apps:
+    name: apps
+    type: platform
+    enabled: false
+
+  # Gmail + Google Calendar + Google Tasks via taylorwilsdon/google_workspace_mcp.
   # https://github.com/taylorwilsdon/google_workspace_mcp
-  # --tool-tier core keeps the tool count (and per-request context cost) down;
-  # raise to `extended` only if a workflow needs it.
-  # --tools restricts SERVICES — and, critically, the OAuth scopes requested
-  # at consent (verified live: without it, workspace-mcp asks for Drive,
-  # Docs, Sheets, Chat, Apps Script, contacts, and more). Keep it to what
-  # the setup actually uses.
+  #
+  # VERSION IS PINNED. `uvx workspace-mcp` resolves to whatever is newest at
+  # spawn time, so an upstream release could widen the tool surface and the
+  # OAuth scopes requested at consent without a single line changing here.
+  # Everything below was verified against exactly 1.25.0 on 2026-08-23 by
+  # running the server over stdio and reading `tools/list` back.
+  #
+  # --permissions <service>:<level> is the narrowing flag. Levels are
+  # CUMULATIVE per service (gmail: readonly < organize < drafts < send < full;
+  # calendar: readonly < full; tasks: readonly < manage < full) and they drive
+  # BOTH which service modules load AND which OAuth scopes appear on the
+  # consent screen. `gmail:send` therefore also carries labels/modify/compose
+  # — there is no send-without-read level — but it does drop
+  # gmail.settings.basic, which the old `--tools gmail` asked for.
+  #
+  # The previous `--tool-tier core --tools gmail calendar tasks` was inverted
+  # least privilege: `--tools` selects SERVICES, so consent requested all 14
+  # scopes those three services can use while the recipes need far fewer.
+  # `--permissions` and `--tools` are mutually exclusive upstream — passing
+  # both is a startup error. Never put `--tools` back.
+  #
+  # --tool-tier core caps per-request context. Measured at these permissions on
+  # 2026-08-23: core = 10 tools, extended = 20, complete = 26, and omitting
+  # --tool-tier entirely is the same as `complete`. KNOWN LIMITATION at 1.25.0
+  # — `list_tasks`, `get_task` and `manage_task` all take a REQUIRED
+  # task_list_id, and the only tools that hand one out (list_task_lists,
+  # get_task_list) sit in the `complete` tier, confirmed by the same run.
+  # At core tier Tasks is reachable only through the Google Tasks API's
+  # "@default" list alias. No recipe uses Tasks today; if one starts to, drop
+  # `--tool-tier core` from this entry rather than widening --permissions.
+  #
+  # WRITE POSTURE (decided deliberately; config/connectors/google-workspace.yaml
+  # says the same thing and the two must not drift). This entry is the
+  # INTERACTIVE session — the phone chat and Goose Desktop — and it is
+  # write-capable on Calendar and Tasks: `calendar:full` + `tasks:manage` in the
+  # credential, `manage_event` + `manage_task` in the allowlist. Credential and
+  # allowlist match exactly, which is the point: a tight allowlist over a broad
+  # token would give up the capability and keep the risk. Narrower levels do
+  # exist and were run on 2026-08-23 (`calendar:readonly`, `tasks:readonly` are
+  # both valid), and every UNATTENDED job uses them — each scheduled recipe
+  # declares its own workspace-mcp block with `calendar:readonly` or no calendar
+  # at all, so nothing on cron inherits the reach configured here.
+  #
+  # One consequence, so it is not discovered by surprise: at these args the
+  # server publishes exactly 10 tools and the allowlist grants exactly those 10,
+  # so a tool COUNT can no longer tell "the allowlist bit" apart from "the
+  # allowlist was silently dropped". For this entry the camelCase detector is
+  # the connector validator plus the extensions/add -> extensions/list roundtrip,
+  # NOT the count.
+  #
   # env_keys are resolved from goose's secret store / process environment —
   # values never live in this file. See config/mcp/workspace-mcp.env.example
   # and docs/setup/30-google-oauth.md (publish the OAuth app "In production"
@@ -108,13 +166,13 @@ extensions:
     enabled: true
     cmd: uvx
     args:
-      - workspace-mcp
+      - workspace-mcp@1.25.0
+      - --permissions
+      - gmail:send
+      - calendar:full
+      - tasks:manage
       - --tool-tier
       - core
-      - --tools
-      - gmail
-      - calendar
-      - tasks
     envs:
       # Replace with your PRIMARY Gmail address — the default account for
       # tool calls that don't name one. More accounts? Run one consent dance
@@ -125,12 +183,64 @@ extensions:
     env_keys:
       - GOOGLE_OAUTH_CLIENT_ID
       - GOOGLE_OAUTH_CLIENT_SECRET
+    # THE SPELLING IS LOAD BEARING: snake_case `available_tools`, never
+    # `availableTools`. goose's GooseExtension carries
+    # #[serde(tag = "type", rename_all = "snake_case")], which renames
+    # VARIANTS, not fields — only env_keys has an explicit rename — and there
+    # is no deny_unknown_fields, so a camelCase key is dropped SILENTLY: no
+    # error, no warning, no key in the written config. An absent or empty
+    # allowlist then means EVERY tool is allowed, so the mistake fails OPEN.
+    # Verified against goose 1.46.0 on 2026-08-23; the empirical proof is in
+    # config/connectors/README.md ("the one field that must not be typed from
+    # memory"). If you edit this list, re-read the file afterwards and check
+    # the key survived.
+    #
+    # These are exactly the 10 tools `--permissions … --tool-tier core`
+    # registers at workspace-mcp 1.25.0, written out so a future upstream
+    # release cannot widen the agent's reach without an explicit edit here.
+    available_tools:
+      - search_gmail_messages
+      - get_gmail_message_content
+      - get_gmail_messages_content_batch
+      - send_gmail_message
+      - list_calendars
+      - get_events
+      - manage_event
+      - list_tasks
+      - get_task
+      - manage_task
     timeout: 300
 
-  # Todoist first-party remote MCP — initiates OAuth on first connect,
-  # no API key. https://github.com/Doist/todoist-mcp
-  # DISABLED: no todo app chosen yet. Flip enabled: true to adopt Todoist,
-  # or swap the uri for your chosen app's MCP server (docs/roadmap.md).
+  # Todoist first-party remote MCP. https://github.com/Doist/todoist-mcp
+  #
+  # AUTH IS A BEARER TOKEN, NOT OAUTH. Doist's hosted endpoint accepts a Todoist
+  # personal API token directly in an Authorization header, which is why this is
+  # the one connector in the repo that can be finished entirely from the phone —
+  # goose's OAuth path cannot be (the callback binds to the brain's loopback and
+  # the auth URL never leaves it). Put the token in goose's secret store under
+  # TODOIST_API_KEY; ${TODOIST_API_KEY} below is substituted at connect time,
+  # because goose applies ${VAR} to a remote extension's uri/headers/socket.
+  # Full rationale and the vetting record: config/connectors/todoist.yaml.
+  #
+  # DISABLED: no todo app chosen yet. docs/privacy.md already carries the Todoist
+  # row (Tier 2, never a free model), so adopting it is just: store the token,
+  # flip enabled: true. Or swap the uri for your chosen app's MCP server
+  # (docs/roadmap.md) — in which case replace available_tools too, or you ship a
+  # blank cheque.
+  #
+  # available_tools is pre-populated ON PURPOSE. An absent or empty allowlist
+  # means EVERY tool is allowed, so shipping this entry without one would turn
+  # `enabled: true` into a blank cheque. These are the 8 tools the manifest
+  # records: four reads, four non-destructive writes. The endpoint publishes no
+  # delete tool, so nothing destructive is being withheld — there is nothing to
+  # withhold. Want it read-only? Cut the last four and change the manifest's
+  # smoke_test to match.
+  #
+  # Note the spelling asymmetry between this file and a manifest: on disk goose
+  # writes `type: streamable_http` / `uri` / `env_keys` / `headers` as a mapping,
+  # while the ACP wire wants `type: http` / `url` / `envKeys` / headers as a LIST
+  # of {name, value}. Do not copy this block into a manifest verbatim, or the
+  # reverse. config/connectors/README.md has the table.
   todoist:
     name: todoist
     display_name: Todoist
@@ -138,12 +248,40 @@ extensions:
     enabled: false
     uri: https://ai.todoist.net/mcp
     envs: {}
-    headers: {}
+    env_keys:
+      # Declared even though the credential travels in the header: at goose
+      # 1.46.0 a missing env key is a hard extension-startup failure, whereas an
+      # unresolved ${VAR} is left LITERAL in the header and earns a 401 that
+      # reads like a Todoist outage rather than a config typo.
+      - TODOIST_API_KEY
+    headers:
+      Authorization: "Bearer ${TODOIST_API_KEY}"
+    available_tools:
+      - get-overview
+      - find-tasks
+      - find-tasks-by-date
+      - find-projects
+      - add-tasks                 # write
+      - update-tasks              # write
+      - complete-tasks            # write
+      - reschedule-tasks          # write
     timeout: 300
 
   # Browser automation (microsoft/playwright-mcp). Disabled by default:
   # it is heavyweight (downloads browsers on first run) and only needed for
-  # workflows that actually drive the web — flip enabled: true when one does.
+  # workflows that actually drive the web.
+  #
+  # BEFORE YOU FLIP enabled: true — add a non-empty snake_case `available_tools`
+  # list, the way workspace-mcp and todoist above have one. An extension with no
+  # allowlist can call EVERY tool its server registers; for a browser driver that
+  # is the whole machine's web surface. Derive the real list instead of guessing:
+  #   scripts/verify/check-connectors.sh --smoke <id>   (or a raw tools/list)
+  # scripts/verify/check-security.sh FAILS on any enabled extension missing one,
+  # so this is enforced rather than merely advised.
+  #
+  # Version pinned for the same reason workspace-mcp is: `@latest` lets an
+  # upstream release widen the tool surface between two runs of the same config.
+  # 0.0.79 was current on 2026-08-23; bump deliberately.
   playwright:
     name: playwright
     display_name: Playwright
@@ -152,14 +290,18 @@ extensions:
     cmd: npx
     args:
       - -y
-      - "@playwright/mcp@latest"
+      - "@playwright/mcp@0.0.79"
     envs: {}
     env_keys: []
+    # available_tools: [...]   # REQUIRED before enabling — see the note above
     timeout: 300
 
   # Web search via Tavily (1,000 free credits/mo as of 2026-08-20).
   # Disabled by default — enable after putting TAVILY_API_KEY in your secret
   # store (Keychain on Mac, /data/secrets.env on the brain).
+  #
+  # Same two conditions as playwright: pin the version, and add a non-empty
+  # snake_case `available_tools` before enabling. 0.2.22 was current 2026-08-23.
   tavily:
     name: tavily
     display_name: Tavily Search
@@ -168,8 +310,9 @@ extensions:
     cmd: npx
     args:
       - -y
-      - tavily-mcp
+      - tavily-mcp@0.2.22
     envs: {}
     env_keys:
       - TAVILY_API_KEY
+    # available_tools: [...]   # REQUIRED before enabling — see the note above
     timeout: 300

@@ -55,7 +55,17 @@ The brain's agent endpoint (`goose serve`, port 3284, systemd unit
   via systemd `EnvironmentFile`, required from every client.
 - **`RequiresMountsFor=/data`** — the service cannot start (and cannot write plaintext
   state to the root disk) unless the encrypted volume is unlocked and mounted.
+- **`GOOSE_PATH_ROOT=/data/goose`** — config, data *and* state on the encrypted volume.
+  See [the LUKS section](#goose-keeps-state-in-three-places-and-only-one-of-them-was-relocated).
 - **`Restart=always`** — survives crashes; `--enable-scheduler` keeps automations alive.
+- **The `apps` platform extension is turned off.** goose 1.46.0 ships it *enabled by
+  default* (its ACP surface, `_goose/unstable/apps/{list,export,import,delete}`, is listed
+  in `crates/goose/acp-meta.json` at the v1.46.0 tag). Tool calls an app initiates are
+  dispatched without passing through the permission manager, which makes an imported app
+  an unreviewed route to every other extension's tools — Gmail send, the shell, the vault.
+  `config/goose/config.yaml` sets `apps: enabled: false`; the brain loses nothing, since
+  its clients are Goose Desktop, the iOS app and the scheduler. On a brain deployed before
+  that template landed, confirm with `goose configure` → Toggle Extensions.
 
 ## Disk: the LUKS design
 
@@ -65,13 +75,19 @@ mounted at `/data`. Everything stateful lives there:
 ```
 /data
 ├── secrets.env          # all runtime secrets, chmod 600
-├── goose-data/          # symlink target of ~/.local/share/goose
-│   └── sessions.db      # the shared chat history — encrypted at rest
-├── life-vault/          # clone of the SEPARATE private vault repo
-└── (Google OAuth tokens, MCP state)
+├── goose/               # GOOSE_PATH_ROOT — goose's config, data AND state (0700)
+│   ├── config/          # config.yaml, .goosehints, memory/, secrets.yaml (0600)
+│   ├── data/            # sessions.db — the shared chat history — and schedule.json
+│   └── state/           # logs/llm_request.*.jsonl — raw provider request/response bodies
+├── goose-data -> goose/data   # the old path, kept as a symlink
+├── workspace-mcp/       # Google OAuth tokens
+├── code-agents/         # per-chat OpenCode volumes + repos.json
+└── life-vault/          # clone of the SEPARATE private vault repo
 ```
 
-The root disk holds only the OS and this repo's code — nothing on it is sensitive. The
+The root disk holds only the OS and this repo's code — nothing *written from now on* is
+sensitive — though that is true only because of the path root, the subsection just below,
+and only going forward: see the residual note there. The
 volume is `noauto` in crypttab/fstab: it does **not** unlock at boot (no passphrase is
 stored on the machine). After a reboot the stack is down until you run one command over
 SSH:
@@ -84,6 +100,42 @@ which prompts for the passphrase, opens and mounts the volume, and starts `goose
 Manual unlock is the accepted cost of not storing the key server-side; reboots are rare
 (unattended-upgrades only forces them for kernel updates).
 
+### goose keeps state in three places, and only one of them was relocated
+
+Worth its own heading because it was wrong for a while, and "the root disk holds nothing
+sensitive" was therefore false as written. goose splits its state across three XDG
+directories — `~/.config/goose`, `~/.local/share/goose`, `~/.local/state/goose` — and the
+original design symlinked only the middle one. Config (including `secrets.yaml`) and state
+(including `logs/llm_request.*.jsonl`, the **raw request and response bodies** exchanged
+with inference providers) were left on the unencrypted root disk.
+
+`GOOSE_PATH_ROOT=/data/goose` in `goose-serve.service` relocates all three together
+(verified against goose 1.46.0); the fallback `goose-recipe@.service` and the
+`goose-telegram-gateway.service` set the same value — every unit that runs a goose process
+does, or that unit alone would keep writing `llm_request` logs to the root disk and quietly
+undo the rest. Because a `goose` invoked by hand over SSH inherits no unit's environment,
+`deploy-vps.sh` additionally leaves all three home-directory paths as symlinks into
+`/data/goose` — and `scripts/verify/check-security.sh --local` fails if any of them
+resolves outside `/data`.
+
+**Residual: the migration does not erase the past.** The move is a cross-device copy plus
+unlink; unlinking frees blocks, it does not overwrite them. Anything goose logged before
+the path root existed — chat sessions, `secrets.yaml`, raw provider request/response bodies
+— may remain **recoverable from the unencrypted root disk until those blocks are reused**.
+`deploy-vps.sh` prints this at migration time, and [privacy.md](privacy.md) records it in
+the residual-risk section. Treat it as a reason to rotate anything that was in
+`secrets.yaml` pre-migration, and to destroy (not resell/hand back) the root volume if the
+server is ever decommissioned — a snapshot of it taken earlier is likewise still
+plaintext.
+
+This matters more once connectors exist, not less: a credential typed on the phone is
+written by goose to `<config_dir>/secrets.yaml`, mode 0600. That is deliberate —
+per-extension `envKeys` are what keep one connector's credential out of every other
+connector's process environment (goose does no `env_clear`) — but it is only an acceptable
+trade with the config dir on the LUKS volume. Full write-up in [privacy.md](privacy.md);
+the manifest-side contract is in
+[`config/connectors/README.md`](../config/connectors/README.md).
+
 ## Secrets handling, per platform
 
 - **Mac** — everything in the macOS Keychain via `scripts/mac/keychain-secrets.sh`
@@ -91,10 +143,14 @@ Manual unlock is the accepted cost of not storing the key server-side; reboots a
   never puts the secret in shell history). Goose itself keeps provider keys in the
   Keychain by default — **never set `GOOSE_DISABLE_KEYRING`** on the Mac, which would
   downgrade to a plaintext `secrets.yaml`.
-- **Brain** — headless Linux has no keyring, so secrets live in `/data/secrets.env`,
-  `chmod 600`, owned by `agent`, on the encrypted volume, injected via systemd
-  `EnvironmentFile`. The variable roster (names only) is
-  `config/env/secrets.env.example`.
+- **Brain** — headless Linux has no keyring, so stack-wide secrets live in
+  `/data/secrets.env`, `chmod 600`, owned by `agent`, on the encrypted volume, injected
+  via systemd `EnvironmentFile`. The variable roster (names only) is
+  `config/env/secrets.env.example`. Per-extension credentials go somewhere else on
+  purpose — goose's own store, `/data/goose/config/secrets.yaml` (0600), reached through
+  each extension's `env_keys` — so that one connector's credential is not in every other
+  connector's environment. Both files are on `/data`; neither is ever read back to a
+  client (`config/read` on a secret returns a usable prefix in clear).
 - **Git** — nothing, ever. Enforced by `.gitignore`, the gitleaks pre-commit hook, and
   CI; audited by the [public-repo.md](public-repo.md) checklist.
 
