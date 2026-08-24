@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import json
 import os
 import secrets
@@ -548,6 +549,61 @@ def text_part(msg_id: str, session_id: str, text: str, part_id: str | None = Non
     }
 
 
+def file_part(msg_id: str, session_id: str, attachment: Wire) -> Wire:
+    """One attachment, echoed back on the user's message as OpenCode does."""
+    part: Wire = {
+        "id": f"prt_{secrets.token_hex(4)}",
+        "messageID": msg_id,
+        "sessionID": session_id,
+        "type": "file",
+        "mime": attachment.get("mime", "application/octet-stream"),
+        "url": attachment.get("url", ""),
+    }
+    if attachment.get("filename"):
+        part["filename"] = attachment["filename"]
+    return part
+
+
+def expand_text_attachment(msg_id: str, session_id: str, attachment: Wire) -> list[Wire]:
+    """Reproduce what OpenCode does to a text/plain attachment.
+
+    It does not simply keep the file part: it decodes the file and persists
+    TWO extra parts onto the user's own message — a synthetic line claiming a
+    read tool ran, and the whole file's contents as text. Both carry
+    `synthetic: true`.
+
+    A client that renders every part of a user message gets two bubbles it
+    never sent, containing a tool call that never happened and a copy of the
+    file. That is a real thing to have to defend against, so the mock does it
+    rather than pretending attachments come back the way they went out.
+    """
+    raw = str(attachment.get("url", ""))
+    marker = ";base64,"
+    body = ""
+    if marker in raw:
+        with contextlib.suppress(ValueError, UnicodeDecodeError):
+            body = base64.b64decode(raw.split(marker, 1)[1]).decode("utf-8", "replace")
+    name = attachment.get("filename") or "attachment"
+    return [
+        {
+            "id": f"prt_{secrets.token_hex(4)}",
+            "messageID": msg_id,
+            "sessionID": session_id,
+            "type": "text",
+            "text": f"Called the Read tool with the following input: {{'filePath': '{name}'}}",
+            "synthetic": True,
+        },
+        {
+            "id": f"prt_{secrets.token_hex(4)}",
+            "messageID": msg_id,
+            "sessionID": session_id,
+            "type": "text",
+            "text": body,
+            "synthetic": True,
+        },
+    ]
+
+
 def tool_part(msg_id: str, session_id: str, status: str, title: str, output: str = "") -> Wire:
     state: Wire = {"status": status, "title": title}
     if output:
@@ -575,7 +631,7 @@ def publish(event_type: str, properties: Wire) -> None:
 # ------------------------------------------------------------- the turn
 
 
-def run_turn(session_id: str, prompt: str) -> None:
+def run_turn(session_id: str, prompt: str, files: list[Wire] | None = None) -> None:
     BUSY.add(session_id)
     try:
         user_msg = MessageInfo(
@@ -583,15 +639,20 @@ def run_turn(session_id: str, prompt: str) -> None:
             role="user",
             session_id=session_id,
         )
-        user_part = text_part(user_msg.id, session_id, prompt)
+        parts = [text_part(user_msg.id, session_id, prompt)]
+        for attachment in files or []:
+            parts.append(file_part(user_msg.id, session_id, attachment))
+            if str(attachment.get("mime", "")).startswith("text/"):
+                parts.extend(expand_text_attachment(user_msg.id, session_id, attachment))
         with STATE_LOCK:
             state = State.load()
             state.messages.setdefault(session_id, []).append(
-                StoredMessage(info=user_msg, parts=[user_part]),
+                StoredMessage(info=user_msg, parts=list(parts)),
             )
             state.save()
         publish("message.updated", {"info": user_msg.to_wire()})
-        publish("message.part.updated", {"part": user_part})
+        for part in parts:
+            publish("message.part.updated", {"part": part})
 
         asst = MessageInfo(
             id=f"msg_{secrets.token_hex(4)}",
@@ -781,14 +842,19 @@ class Handler(BaseHTTPRequestHandler):
         body = self.read_json()
         body_parts = body.get("parts", [])
         text = ""
+        files: list[Wire] = []
         if isinstance(body_parts, list):
             for part in body_parts:
-                if isinstance(part, dict) and part.get("type") == "text":
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
                     value = part.get("text", "")
                     if isinstance(value, str):
                         text += value
+                elif part.get("type") == "file":
+                    files.append(part)
         record_turn_choices(sid, body)
-        threading.Thread(target=run_turn, args=(sid, text), daemon=True).start()
+        threading.Thread(target=run_turn, args=(sid, text, files), daemon=True).start()
         self.send_response(204)
         self.send_header("Content-Length", "0")
         self.end_headers()

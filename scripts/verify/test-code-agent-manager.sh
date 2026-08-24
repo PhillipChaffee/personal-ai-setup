@@ -228,6 +228,24 @@ grep -q "permission.updated" "$WORK/sse.log" \
   && ok "SSE events arrive live while the turn is still blocked" \
   || bad "SSE buffered — events not delivered until close (proxy must use read1)"
 
+# THE aggregate assertion: while this chat is parked on an ask, /api/permissions
+# must name it, tag it with its chat, and report the OTHER chat — which is
+# stopped — in neither list, without going near it.
+# shellcheck disable=SC2086
+$CURL "$BASE/api/permissions" | CID="$CID" OTHER="$BID" python3 -c '
+import json, os, sys
+d = json.load(sys.stdin)
+mine = [p for p in d["permissions"] if p["chatId"] == os.environ["CID"]]
+assert mine, f"the parked ask was not reported: {d}"
+assert mine[0].get("id"), mine[0]
+assert mine[0].get("title"), "the container object was not passed through verbatim"
+other = os.environ.get("OTHER") or ""
+if other:
+    assert all(p["chatId"] != other for p in d["permissions"]), "a stopped chat reported an ask"
+    assert other not in d["unreachable"], "a stopped chat was contacted"
+' && ok "aggregate reports the parked ask and leaves stopped chats alone" \
+  || bad "permission aggregate wrong"
+
 # Busy guard: the idle timeout (4s) passes many times over while the turn is
 # blocked on the ask — the reaper must NOT stop the container.
 sleep 6
@@ -282,6 +300,48 @@ assert any(len(e["patch"].splitlines()) > 1000 for e in entries), "no whole-file
 assert any(not e["patch"] for e in entries), "no binary entry"
 assert {e["status"] for e in entries} >= {"added", "deleted", "modified"}, "missing a status"
 ' && ok "diff endpoint proxied (multi-file, whole-file patches)" || bad "diff failed"
+
+# ---- 5aa. the permission aggregate ------------------------------------------
+# The whole point of this route is that it reports asks WITHOUT waking
+# anything. Asking each chat through the proxy would hold every container open
+# and defeat the idle spin-down, so this asserts the aggregate sees the ask on
+# the running chat and that a stopped chat is left alone.
+# shellcheck disable=SC2086
+$CURL "$BASE/api/permissions" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert isinstance(d.get("permissions"), list), d
+assert isinstance(d.get("unreachable"), list), d
+' && ok "permission aggregate answers in the contracted shape" || bad "aggregate shape wrong"
+
+# ---- 5a. attachments --------------------------------------------------------
+# A text attachment is not echoed back the way it was sent: OpenCode decodes
+# it and persists two extra SYNTHETIC parts onto the user's own message. A
+# client that renders every part shows two bubbles nobody typed, so the mock
+# reproduces it and this asserts it is there to be defended against.
+ATTACH_B64="$(printf '# notes\nsecond line' | base64 | tr -d '\n')"
+# shellcheck disable=SC2086
+$CURL --max-time 120 -X POST -H 'Content-Type: application/json' \
+  -d "{\"parts\":[{\"type\":\"text\",\"text\":\"look at this\"},{\"type\":\"file\",\"mime\":\"text/plain\",\"filename\":\"notes.md\",\"url\":\"data:text/plain;base64,$ATTACH_B64\"}]}" \
+  "$BASE/chat/$CID/session/$SID/prompt_async" > /dev/null
+sleep 3
+# shellcheck disable=SC2086
+$CURL --max-time 120 "$BASE/chat/$CID/session/$SID/message" | python3 -c '
+import json, sys
+msgs = json.load(sys.stdin)
+user = [m for m in msgs if m["info"]["role"] == "user"]
+attached = [m for m in user if any(p.get("type") == "file" for p in m["parts"])]
+assert attached, "the file part never came back on the user message"
+parts = attached[-1]["parts"]
+files = [p for p in parts if p.get("type") == "file"]
+assert files[0]["filename"] == "notes.md", files[0]
+assert files[0]["url"].startswith("data:text/plain;base64,"), files[0]["url"][:40]
+synth = [p for p in parts if p.get("synthetic")]
+assert len(synth) == 2, f"expected two synthetic parts, got {len(synth)}"
+assert any("Read tool" in p.get("text", "") for p in synth), synth
+assert any("second line" in p.get("text", "") for p in synth), "file body not inlined"
+' && ok "a text attachment round-trips, with the synthetic expansion" \
+  || bad "attachment round-trip failed"
 
 # ---- 5b. pull requests ------------------------------------------------------
 # These are GitHub calls the MANAGER makes. They must never proxy into the

@@ -76,7 +76,7 @@ from dataclasses import asdict, dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from urllib.parse import parse_qs, urlparse
 
 # ------------------------------------------------------------- configuration
@@ -97,6 +97,10 @@ TLS_CERT = Path(os.environ.get("CODE_AGENT_TLS_CERT", "/data/tls/cert.pem"))
 TLS_KEY = Path(os.environ.get("CODE_AGENT_TLS_KEY", "/data/tls/key.pem"))
 BIND_OVERRIDE = os.environ.get("CODE_AGENT_BIND", "")
 REAPER_INTERVAL = int(os.environ.get("CODE_AGENT_REAPER_INTERVAL", "60"))
+# Comfortably above the phone app's 8 MB attachment cap (~10.7 MB base64 plus
+# the JSON envelope), and low enough that a declared Content-Length is not an
+# instruction to allocate arbitrary memory.
+MAX_BODY_BYTES = int(os.environ.get("CODE_AGENT_MAX_BODY_MB", "32")) * 1024 * 1024
 
 PASSWORD = os.environ.get("OPENCODE_SERVER_PASSWORD", "")
 GH_PAT = os.environ.get("GITHUB_CODE_AGENT_PAT", "")
@@ -313,6 +317,56 @@ def engine(
         stderr=subprocess.STDOUT if capture else None,
         text=True,
     )
+
+
+# ---------------------------------------------------- pending permissions
+
+
+def pending_permissions() -> tuple[list[dict[str, object]], list[str]]:
+    """Every ask parked on a RUNNING chat, and the chats that would not say.
+
+    Deliberately not "every chat": reaching a chat through the proxy wakes it,
+    so asking all of them would hold every container open and defeat the idle
+    spin-down the whole design rests on. It costs nothing to skip the stopped
+    ones — a container that is down has no live turn, so it has nothing parked.
+
+    A container that is running but will not answer is NAMED rather than
+    silently dropped. The app treats a chat in neither list as "definitely
+    nothing pending" and clears its card, so swallowing a failure here would
+    erase a real ask from somebody's screen.
+    """
+    index = Index.load()
+    running = [c for c in index.chats.values() if container_state(c.id) == "running"]
+    found: list[dict[str, object]] = []
+    unreachable: list[str] = []
+    lock = threading.Lock()
+
+    def ask(chat: Chat) -> None:
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", chat.port, timeout=3)
+            conn.request("GET", "/permission", headers={"Authorization": basic_auth_header()})
+            resp = conn.getresponse()
+            raw = resp.read().decode("utf-8", "replace")
+            status = resp.status
+            conn.close()
+            parsed = json.loads(raw) if status == HTTPStatus.OK else None
+        except (OSError, http.client.HTTPException, json.JSONDecodeError):
+            parsed = None
+        if not isinstance(parsed, list):
+            with lock:
+                unreachable.append(chat.id)
+            return
+        with lock:
+            # The container's own object, verbatim, with the chat it belongs
+            # to spliced in at the top level.
+            found.extend({**row, "chatId": chat.id} for row in parsed if isinstance(row, dict))
+
+    threads = [threading.Thread(target=ask, args=(c,), daemon=True) for c in running]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+    return found, unreachable
 
 
 # --------------------------------------------------------------- github
@@ -961,14 +1015,39 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def read_body(self) -> bytes:
+    def read_body(self) -> bytes | None:
+        """Read the request body, or refuse one too large to hold in memory.
+
+        Returns None when it has already answered 413, so a caller that keeps
+        going would be writing a second response onto the same request.
+
+        The phone can attach files, so a prompt is no longer a sentence: it
+        caps a message at 8 MB of attachment, which is ~10.7 MB once base64'd
+        plus the JSON around it. The limit here is well clear of that and
+        exists for the other direction — without one, a declared
+        Content-Length is an instruction to allocate that much.
+        """
         n = int(self.headers.get("Content-Length") or 0)
+        if n > MAX_BODY_BYTES:
+            self.send_json(
+                413,
+                {"error": f"request body is larger than {MAX_BODY_BYTES // (1024 * 1024)} MB"},
+            )
+            return None
         return self.rfile.read(n) if n else b""
 
     # ---- routing ----
     ROUTE_CHAT = re.compile(r"^/chat/([a-zA-Z0-9-]+)(/.*|$)")
     ROUTE_LIFECYCLE = re.compile(r"^/api/chats/([a-zA-Z0-9-]+)/(wake|stop)$")
     ROUTE_ONE_CHAT = re.compile(r"^/api/chats/([a-zA-Z0-9-]+)$")
+    # Plain reads, dispatched from a table so adding one does not make
+    # handle_any harder to follow.
+    API_READS: ClassVar[dict[str, str]] = {
+        "/api/health": "route_health",
+        "/api/repos": "route_repos",
+        "/api/chats": "route_list_chats",
+        "/api/permissions": "route_permissions",
+    }
     ROUTE_PULLS = re.compile(r"^/api/chats/([a-zA-Z0-9-]+)/pulls$")
     ROUTE_MERGE = re.compile(r"^/api/chats/([a-zA-Z0-9-]+)/pulls/([0-9]+)/merge$")
 
@@ -986,12 +1065,8 @@ class Handler(BaseHTTPRequestHandler):
         merge = self.ROUTE_MERGE.match(path)
         if chat:
             self.proxy(chat.group(1), chat.group(2) or "/")
-        elif (path, verb) == ("/api/health", "GET"):
-            self.route_health()
-        elif (path, verb) == ("/api/repos", "GET"):
-            self.route_repos()
-        elif (path, verb) == ("/api/chats", "GET"):
-            self.route_list_chats()
+        elif verb == "GET" and path in self.API_READS:
+            getattr(self, self.API_READS[path])()
         elif (path, verb) == ("/api/chats", "POST"):
             self.route_create_chat()
         elif lifecycle and verb == "POST":
@@ -1018,6 +1093,11 @@ class Handler(BaseHTTPRequestHandler):
             },
         )
 
+    def route_permissions(self) -> None:
+        """Asks parked on running chats — the app's way of seeing them all."""
+        found, unreachable = pending_permissions()
+        self.send_json(200, {"permissions": found, "unreachable": unreachable})
+
     def route_repos(self) -> None:
         self.send_json(200, {"repos": [repo.to_wire() for repo in load_repos().values()]})
 
@@ -1033,7 +1113,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def route_create_chat(self) -> None:
         try:
-            raw: Any = json.loads(self.read_body() or b"{}")
+            raw_body = self.read_body()
+            if raw_body is None:
+                return
+            raw: Any = json.loads(raw_body or b"{}")
         except json.JSONDecodeError:
             self.send_json(400, {"error": "invalid JSON body"})
             return
@@ -1098,7 +1181,10 @@ class Handler(BaseHTTPRequestHandler):
         if chat is None:
             return
         try:
-            raw: Any = json.loads(self.read_body() or b"{}")
+            raw_body = self.read_body()
+            if raw_body is None:
+                return
+            raw: Any = json.loads(raw_body or b"{}")
         except json.JSONDecodeError:
             raw = {}
         method = _str(raw, "method") if isinstance(raw, dict) else ""
@@ -1142,6 +1228,8 @@ class Handler(BaseHTTPRequestHandler):
         q = urlparse(self.path).query
         target = subpath + (f"?{q}" if q else "")
         body = self.read_body()
+        if body is None:
+            return
         headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP_HEADERS}
         headers["Authorization"] = basic_auth_header()
         headers["Host"] = f"127.0.0.1:{chat.port}"
