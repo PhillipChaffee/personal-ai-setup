@@ -11,6 +11,23 @@ RequiresMountsFor=/data
 [Service]
 User=agent
 EnvironmentFile=/data/secrets.env
+# Same runtime environment as goose-serve.service — this unit runs a FULL
+# goose process, not a thin relay, so every reason the server needs these
+# applies here too:
+#   PATH                  goose spawns MCP servers (uvx in ~/.local/bin, npx in /usr/bin)
+#   GOOSE_DISABLE_KEYRING no Secret Service on a headless box; read the same
+#                         <config_dir>/secrets.yaml the server writes
+#   GOOSE_PATH_ROOT       config/, data/ AND state/ on the LUKS volume. Without
+#                         it this process keeps writing sessions and
+#                         logs/llm_request.*.jsonl — the raw provider request
+#                         and response bodies, i.e. whole Telegram
+#                         conversations — to the UNENCRYPTED root disk, which
+#                         would silently undo the migration deploy-vps.sh does.
+#                         deploy-vps.sh stops this unit alongside goose-serve
+#                         while those directories move.
+Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=GOOSE_DISABLE_KEYRING=1
+Environment=GOOSE_PATH_ROOT=/data/goose
 ExecStartPre=/usr/bin/mountpoint -q /data
 ExecStart=/bin/bash -o pipefail -c '[ -n "$TELEGRAM_BOT_TOKEN" ] || { echo "goose-telegram-gateway: TELEGRAM_BOT_TOKEN not set in /data/secrets.env" >&2; exit 1; }; exec /home/agent/.local/bin/goose gateway start telegram --bot-token "$TELEGRAM_BOT_TOKEN"'
 Restart=always

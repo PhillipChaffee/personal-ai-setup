@@ -17,7 +17,7 @@
 Description=goose serve (personal AI brain: ACP server + scheduler)
 Wants=network-online.target
 After=network-online.target tailscaled.service
-# /data (LUKS volume) holds secrets.env and the goose data dir. After a
+# /data (LUKS volume) holds secrets.env and goose's whole path root. After a
 # reboot it is deliberately absent until scripts/vps/luks-unlock.sh runs —
 # this line keeps the unit down rather than starting against an empty /data.
 RequiresMountsFor=/data
@@ -31,10 +31,30 @@ WorkingDirectory=/home/agent
 # goose spawns MCP servers as children: uvx (workspace-mcp) lives in
 # ~/.local/bin, npx (todoist/playwright-style servers) in /usr/bin.
 Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-# Headless server — no Secret Service keyring. Every key arrives via
-# EnvironmentFile above, so goose must never try to store one (a keyring
-# fallback would write plaintext secrets.yaml on the UNencrypted root disk).
+# Headless server — no Secret Service keyring exists, so goose falls back to
+# a plaintext <config_dir>/secrets.yaml (mode 0600) for anything it is asked
+# to store. That fallback used to be the thing to fear; GOOSE_PATH_ROOT below
+# is what defused it.
 Environment=GOOSE_DISABLE_KEYRING=1
+# Relocates goose's config/, data/ AND state/ under one absolute root
+# (verified against goose 1.46.0). All three matter and they default to three
+# different places on the UNencrypted root disk:
+#   config/  config.yaml, .goosehints, memory/, secrets.yaml
+#   data/    sessions.db — the entire chat history — and schedule.json
+#   state/   logs/llm_request.*.jsonl — the RAW request and response bodies
+#            exchanged with inference providers (whole emails, vault text)
+# Only data/ was on /data before this line existed; docs/privacy.md's claim
+# that the root disk holds nothing sensitive was false until it did.
+#
+# The consequence for secrets: with the config dir on the LUKS volume,
+# secrets.yaml is now an ACCEPTABLE place for a credential rather than a leak
+# — and it is the mechanism per-connector `envKeys` are resolved through, so a
+# secret typed on the phone (config/upsert with is_secret) has somewhere
+# encrypted to land. EnvironmentFile stays the store for stack-wide keys;
+# secrets.yaml is the store for per-extension ones, which is what keeps one
+# connector's credential out of every other connector's environment
+# (goose does no env_clear — see config/connectors/README.md).
+Environment=GOOSE_PATH_ROOT=/data/goose
 # Belt and braces with RequiresMountsFor: refuse to start over a stale,
 # unmounted /data directory.
 ExecStartPre=/usr/bin/mountpoint -q /data

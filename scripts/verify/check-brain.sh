@@ -16,7 +16,7 @@ Usage: check-brain.sh [--insecure] [--run-now] [--local] [--help]
   --run-now   fire a real morning-brief run without prompting (synchronously,
               via scripts/common/run-recipe.sh — costs one recipe run and
               sends a real email).
-  --local     force local mode (default: auto-detected via /data/goose-data).
+  --local     force local mode (default: auto-detected via /data/goose).
 
 Remote mode needs BRAIN_HOST set to the brain's tailnet name, e.g.:
   BRAIN_HOST=<your-brain>.<your-tailnet>.ts.net ./scripts/verify/check-brain.sh
@@ -46,7 +46,9 @@ fail() { echo "FAIL  $1"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
 
 # ---- mode detection ---------------------------------------------------------
 MODE="remote"
-if [ "$FORCE_LOCAL" = "yes" ] || { [ -e /data/goose-data ] && command -v systemctl >/dev/null 2>&1; }; then
+# /data/goose is GOOSE_PATH_ROOT; /data/goose-data is the pre-path-root layout,
+# still accepted so this detects a brain that has not been redeployed yet.
+if [ "$FORCE_LOCAL" = "yes" ] || { { [ -e /data/goose ] || [ -e /data/goose-data ]; } && command -v systemctl >/dev/null 2>&1; }; then
   MODE="local"
 fi
 

@@ -153,14 +153,22 @@ The script is idempotent — it's also the upgrade path later. It:
   (possibly edited) copy is never overwritten; when a repo template has
   diverged from the live file the script prints a diff hint and leaves the
   merge to you;
-- creates the two symlinks that keep state on the encrypted volume:
-  `~/.local/share/goose` → `/data/goose-data` (so `sessions.db` — the shared
-  history — lives encrypted) and `~/.google_workspace_mcp` →
-  `/data/workspace-mcp` (so the Google OAuth tokens do too);
+- **migrates goose's state onto the encrypted volume** and keeps it there:
+  `/data/goose` becomes `GOOSE_PATH_ROOT`, holding `config/` (config.yaml,
+  `.goosehints`, `memory/`, `secrets.yaml`), `data/` (`sessions.db` — the
+  shared history — and `schedule.json`) and `state/`
+  (`logs/llm_request.*.jsonl`, the raw provider request/response bodies).
+  `~/.config/goose`, `~/.local/share/goose` and `~/.local/state/goose` are
+  symlinked into it, so a `goose` you run by hand over SSH reads the same
+  files the service does. Existing session history is moved, never deleted,
+  and re-running is a no-op. Rationale: [`docs/privacy.md`](../privacy.md);
+- symlinks `~/.google_workspace_mcp` → `/data/workspace-mcp`, so the Google
+  OAuth tokens are encrypted at rest too;
 - installs and starts the systemd unit
   (`scripts/vps/systemd/goose-serve.service`): `goose serve` bound to the
   **Tailscale IP**, port **3284**, `--tls`, shared-secret auth,
-  `--enable-scheduler`, `Restart=always`, `RequiresMountsFor=/data`;
+  `--enable-scheduler`, `Restart=always`, `RequiresMountsFor=/data`,
+  `GOOSE_PATH_ROOT=/data/goose`;
 - runs `scripts/vps/register-schedules.sh` to register the full automation
   roster (note: `budget-checkin` registers **active** — goose 1.x has no pause
   CLI; pause it in the Desktop Scheduler UI or remove it until you have a
