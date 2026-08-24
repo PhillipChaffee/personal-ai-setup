@@ -61,14 +61,19 @@ extensions:
   - type: builtin
     name: developer
     timeout: 300
+  # Gmail only, and only to deliver: the ledger comes off local disk. gmail:send
+  # is the floor rather than the ceiling — workspace-mcp's levels are cumulative
+  # (readonly < organize < drafts < send), so there is no send-only level to
+  # ask for. It does drop gmail.settings.basic versus the old `--tools gmail`.
+  # Version pinned so the tool surface and consent scopes stay reproducible.
   - type: stdio
     name: workspace-mcp
     description: Google Workspace MCP (Gmail — one self-addressed delivery email only)
     cmd: uvx
     args:
-      - workspace-mcp
-      - --tools
-      - gmail
+      - workspace-mcp@1.25.0
+      - --permissions
+      - gmail:send
     timeout: 300
     env_keys:
       - GOOGLE_OAUTH_CLIENT_ID

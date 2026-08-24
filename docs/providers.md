@@ -40,8 +40,8 @@ Before any server is wired into `config/goose/config.yaml`:
    files must live in a directory you can relocate (or symlink) onto `/data`,
    like `/data/workspace-mcp` today.
 4. **Tool surface fits recipes.** Read mail/calendar, create drafts, send —
-   with a way to restrict scope (workspace-mcp's `--tools` equivalent) so the
-   consent and the per-request context stay small.
+   with a way to restrict scope (workspace-mcp's `--permissions` equivalent)
+   so the consent and the per-request context stay small.
 5. **A privacy row first.** [privacy.md](privacy.md) gets a provider policy
    row (retention, training, where the data lands) **before** the first
    recipe touches it. Until classified, a provider's content routes nowhere.
