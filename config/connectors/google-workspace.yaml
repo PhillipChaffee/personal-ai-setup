@@ -1,0 +1,288 @@
+# Google Workspace — Gmail, Calendar, Tasks via taylorwilsdon/google_workspace_mcp.
+#
+# Why self-hosted and not Google's own MCP servers: Google does operate first-party
+# remote MCP endpoints (https://gmailmcp.googleapis.com/mcp/v1, and a Calendar
+# equivalent under calendarmcp.googleapis.com — exact path not verified here). They
+# would be archetype `first_party_remote_mcp`, which is normally the better bar-2
+# answer. They are rejected anyway, because they authenticate with OAuth and goose's
+# OAuth path is unreachable from a phone (see `blockers`), while a self-hosted stdio
+# server lets the consent happen once on the brain and never again. Revisit if Google
+# ever accepts a bearer token on those endpoints.
+#
+# Every wire shape below was checked against goose 1.46.0 and workspace-mcp 1.25.0 on
+# 2026-08-23. Read config/connectors/README.md#the-one-field-that-must-not-be-typed-from-memory
+# before touching `available_tools`.
+
+# ---- identity -------------------------------------------------------------
+id: google-workspace
+display_name: Google Workspace
+summary: Gmail, Calendar and Tasks through your own GCP OAuth app, over a stdio MCP server on the brain.
+
+manifest_version: 1
+verified_on: 2026-08-23
+goose_version_verified: 1.46.0
+
+# ---- what it is -----------------------------------------------------------
+archetype: self_hosted_mcp_stdio
+capabilities: [mail, calendar, tasks]
+
+# ---- can this be finished from a phone? -----------------------------------
+first_run_auth: brain_browser
+phone_completable: partial
+auth_notes: >-
+  Partial, and the split is exact. Phone-doable: writing the three envKeys with
+  config/upsert, adding and enabling the extension, and every subsequent tool call
+  forever. Not phone-doable: the one-time Google consent, which terminates on a
+  loopback callback bound to the brain — do it from a laptop over the `ssh -L`
+  tunnel in docs/setup/30-google-oauth.md §7b, or rsync existing token files per §7a.
+  There is no in-band escape: `start_google_auth` — the tool that would at least return
+  an authorization URL into the transcript — is a `complete`-TIER tool and is NOT
+  REGISTERED at the `--tool-tier core` pinned below. Observed 2026-08-23 across all
+  three tiers at these permissions: core 10 tools, extended 20, complete 26, and
+  start_google_auth appears ONLY in the 26. Even at `complete` it would not rescue the
+  phone, because the redirect still terminates on the brain's loopback listener, so the
+  tunnel is required either way. All three envKeys must exist in goose's store BEFORE
+  the extension is enabled: a missing env_key is a hard extension-startup failure, not
+  a degraded start.
+
+# ---- privacy --------------------------------------------------------------
+privacy:
+  tier: 2
+  notes: >-
+    Mail and calendar are Tier 2 by label but routinely surface Tier 3 content — a
+    bill, a lab result, an insurance thread — so anything sweeping this connector pins
+    to a zero-retention paid model (inbox-triage runs on minimax-m2.7 and must never be
+    moved to claude-sonnet-5 or a free model). Tier is a property of the session, not a
+    filter applied afterwards: raw bodies are written to <state>/logs/llm_request.*.jsonl
+    regardless, which is why GOOSE_PATH_ROOT=/data/goose is not optional here.
+  row_added: true
+
+# ---- the vetting bar (docs/providers.md), as data -------------------------
+vetting:
+  maintenance:
+    verdict: pass
+    evidence: >-
+      v1.25.0 pinned and actually executed over stdio on 2026-08-23 (initialize +
+      notifications/initialized + tools/list, dummy OAuth env — tools/list needs no real
+      credential): `uvx workspace-mcp@1.25.0 --permissions gmail:send calendar:full
+      tasks:manage --tool-tier core` starts clean and enumerates EXACTLY 10 tools, listed
+      verbatim in available_tools below. Dropping `--tool-tier core` from the same
+      permissions yields 26. Note the two version numbers: the PyPI distribution is
+      1.25.0, while the server reports `serverInfo {name: google_workspace, version:
+      3.4.7}` in its initialize result — pin the former, expect to see the latter.
+      Upstream release date not independently confirmed here.
+  self_hosted_auth:
+    verdict: pass
+    evidence: >-
+      stdio on the brain against your own GCP OAuth client (docs/setup/30-google-oauth.md
+      §4). The only parties are you and Google; nothing proxies the mailbox.
+  relocatable_state:
+    verdict: pass
+    evidence: >-
+      Tokens land in ~/.google_workspace_mcp; scripts/vps/deploy-vps.sh symlinks it to
+      /data/workspace-mcp on the LUKS volume. Token files ARE mailbox access.
+  restrictable_tools:
+    verdict: pass
+    evidence: >-
+      Three independent gates, all observed working on 2026-08-23. (1) `--permissions
+      <service>:<level>` narrows the OAuth scopes asked for at consent; the levels are
+      enumerated by the server itself when you pass a bogus one — gmail: readonly,
+      organize, drafts, send, full; calendar: readonly, full; tasks: readonly, manage,
+      full. (2) `--tool-tier core` cuts the registered surface from 26 tools to 10.
+      (3) `available_tools` pins the agent to a named set. The interactive entry in
+      config/goose/config.yaml deliberately allowlists all 10 (see
+      `interactive-allowlist-equals-surface` in blockers) while each scheduled recipe
+      declares its OWN narrower extension — `calendar:readonly` in morning-brief,
+      weekly-review and health-followups; gmail-only in inbox-triage. The old
+      `--tool-tier core --tools gmail calendar tasks` did none of this well: `--tools`
+      selects SERVICES, so it asked for every scope those three services can use.
+  privacy_row:
+    verdict: pass
+    evidence: >-
+      docs/privacy.md classifies email/calendar as Tier 2, pins inbox-triage to a
+      zero-retention paid model, and has a "Multiple accounts" section covering the
+      USER_GOOGLE_EMAILS roster. Note it is not in that document's provider-policy
+      table — that table lists inference routes, not data sources.
+
+# ---- what this connector cannot do ----------------------------------------
+blockers:
+  - id: oauth-not-phone-completable
+    severity: hard
+    detail: >-
+      First-run consent cannot be driven from the phone. Three independent fatal
+      mechanisms in goose 1.46.0: the redirect URI is hardcoded
+      http://127.0.0.1:{port}/oauth_callback and bound on the brain; the authorization
+      URL is emitted only via warn! + eprintln! + webbrowser::open (a no-op headless)
+      and appears in no ACP message; and URL-mode elicitation is explicitly refused at
+      goose's ACP bridge. Upstream issue #11086. Workaround: docs/setup/30-google-oauth.md §7b.
+  - id: no-device-code-grant
+    severity: hard
+    detail: >-
+      There is no device-code path for these scopes. Google's TV/limited-input device
+      flow does not cover Gmail/Calendar/Tasks, and no device-code grant exists anywhere
+      in goose's MCP path — so there is no headless escape from the previous blocker.
+  - id: tailnet-redirect-unregisterable
+    severity: hard
+    detail: >-
+      A Tailscale-HTTPS redirect URI cannot be registered: *.ts.net can never be a
+      verified Authorized Domain in the GCP console. A domain you own would work, but
+      presumes you own one.
+  - id: testing-status-kills-refresh-tokens
+    severity: operational
+    detail: >-
+      An External OAuth app left in "Testing" auto-expires every refresh token after 7
+      days. The failure mode is delayed and quiet: everything works at setup, then a
+      week later every tool call fails and the scheduled jobs die. Publish "In
+      production" before first use (docs/setup/30-google-oauth.md §3).
+  - id: interactive-credential-is-write-capable
+    severity: accepted
+    detail: >-
+      RESOLVED as of 2026-08-23, and the resolution is a deliberate choice rather than
+      an unknown. Narrower levels DO exist and were run: `calendar:readonly` and
+      `tasks:readonly` are both valid (the server enumerates its own levels when handed
+      a bogus one), and `--permissions gmail:send calendar:readonly --tool-tier core`
+      yields 6 tools with manage_event gone. The interactive entry still asks for
+      `calendar:full tasks:manage` on purpose: the phone session is where "move my 3pm"
+      and "add that to my tasks" happen, so its credential and its allowlist are BOTH
+      write-capable and they match exactly. The asymmetry docs/connecting.md warns about
+      (tight allowlist over a broad token) is therefore absent here — what remains is
+      simply that the interactive token can write to Calendar and Tasks. Accepted
+      because the token never leaves /data, and because every UNATTENDED job narrows
+      independently: the scheduled recipes each spawn their own workspace-mcp with
+      `calendar:readonly` or no calendar at all, so no cron job inherits this reach.
+  - id: interactive-allowlist-equals-surface
+    severity: accepted
+    detail: >-
+      A consequence of the choice above, written down so it is not discovered later.
+      At `--permissions gmail:send calendar:full tasks:manage --tool-tier core` the
+      server publishes exactly 10 tools and the allowlist grants exactly those 10, so
+      for THIS connector a tool COUNT can no longer distinguish "available_tools bit"
+      from "available_tools was silently dropped" — both look like 10. The camelCase
+      canary here is therefore not the count: it is (a) the validator, which rejects a
+      camelCase key client-side against goose's own schema, and (b) the
+      extensions/add -> extensions/list roundtrip asserted below as
+      `expect_roundtrip`, which fails if goose echoes back an empty allowlist. Narrow
+      the permissions (dropping to `calendar:readonly` alone puts the count back below
+      the surface) if you ever want the count to carry that signal again.
+  - id: drive-scope-casa-unknown
+    severity: unknown
+    detail: >-
+      UNKNOWN — adding Drive's full scope to an already-published app may trigger CASA
+      re-verification with consequences this repo has not established. Do not add Drive
+      to this connector on a hunch; establish the answer first.
+  - id: stdio-secret-name-collision
+    severity: accepted
+    detail: >-
+      The repo's <PROVIDER>_* secret convention cannot be honoured: goose applies
+      ${VAR} substitution only to a remote extension's uri/headers/socket, never to
+      stdio env values, and cwd is hardcoded None over ACP, so a renaming wrapper needs
+      an absolute path in `command`. The server's own names win. Multiple Google
+      ACCOUNTS are fine (one instance, per-call user_google_email), but a second OAuth
+      APP would collide on the same two keys and needs a second extension instance with
+      a wrapper binary.
+
+# ---- credentials, BY NAME ONLY --------------------------------------------
+# Never a value. These become GooseExtension.envKeys, resolved per-extension from
+# goose's secret store. Never read one back to confirm it — config/read on a secret
+# returns the first min(len/2, 8) characters in clear. Verify by handshake instead.
+secrets:
+  - key: GOOGLE_OAUTH_CLIENT_ID
+    prompt: "OAuth client ID from your GCP project (docs/setup/30-google-oauth.md §4)"
+    secret: false
+  - key: GOOGLE_OAUTH_CLIENT_SECRET
+    prompt: "OAuth client secret"
+    secret: true
+  - key: USER_GOOGLE_EMAIL
+    prompt: "Your PRIMARY Gmail address — the default account for calls that don't name one"
+    secret: false
+
+# ---- the payload sent to _goose/unstable/config/extensions/add ------------
+acp_extension:
+  type: mcp
+  server:
+    type: stdio
+    name: workspace-mcp
+    command: uvx
+    # Verified byte-for-byte against workspace-mcp 1.25.0 on 2026-08-23 by running the
+    # server over stdio and reading tools/list back. `--permissions` is what narrows the
+    # CONSENT SCREEN; it is not cosmetic. `--tool-tier core` is what narrows the
+    # REGISTERED TOOLS: this exact line yields 10 tools, and the same line without
+    # `--tool-tier core` yields 26. The two flags are independent gates, and
+    # `--permissions` is mutually exclusive with `--tools` (passing both is a startup
+    # error) — never reintroduce `--tools`.
+    args: [workspace-mcp@1.25.0, --permissions, "gmail:send", "calendar:full", "tasks:manage", --tool-tier, core]
+    env: []                       # EMPTY, always: inline env values cross the ACP frame in plaintext
+  envKeys: [GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, USER_GOOGLE_EMAIL]
+  description: Google Workspace via your own OAuth app — Gmail search/read/send, Calendar and Tasks read and write
+  timeout: 300
+  # snake_case. Non-empty. Never omitted. camelCase is silently dropped and an empty
+  # allowlist means ALL tools.
+  #
+  # These are EXACTLY the 10 tools the args above register at 1.25.0 — observed, not
+  # recalled. Writing them out is still worth it: it is what stops a future upstream
+  # release from widening the agent's reach without an edit here.
+  #
+  # This is the INTERACTIVE surface, and it is write-capable on Calendar and Tasks on
+  # purpose (manage_event, manage_task), matching config/goose/config.yaml exactly.
+  # Unattended jobs do NOT inherit it — each scheduled recipe declares its own
+  # workspace-mcp with `calendar:readonly` or no calendar at all.
+  #
+  # Tier arithmetic at these permissions, all three measured on 2026-08-23:
+  # core = 10 (this list), extended = 20, complete = 26, and NO --tool-tier == complete.
+  # So capabilities you may expect and will NOT find here:
+  #   - added at `extended`: Gmail labels (list_gmail_labels, manage_gmail_label,
+  #     modify_gmail_message_labels), drafts (draft_gmail_message), whole-thread reads
+  #     (get_gmail_thread_content), attachments, plus calendar create_calendar /
+  #     query_freebusy / manage_focus_time / manage_out_of_office.
+  #   - added only at `complete`: task-LIST enumeration (list_task_lists, get_task_list,
+  #     manage_task_list), batch label/thread ops, and start_google_auth.
+  # The task-list one bites: list_tasks / get_task / manage_task all require a
+  # task_list_id, and nothing at core tier hands one out — so at core tier Tasks is
+  # reachable only via the Google Tasks API's "@default" list alias.
+  # inbox-triage needs the label and draft tools, which is exactly why that recipe omits
+  # `--tool-tier` in its own extension block.
+  available_tools:
+    - search_gmail_messages
+    - get_gmail_message_content
+    - get_gmail_messages_content_batch
+    - send_gmail_message
+    - list_calendars
+    - get_events
+    - manage_event
+    - list_tasks
+    - get_task
+    - manage_task
+
+# ---- proof it works -------------------------------------------------------
+# What --smoke actually does here, stated precisely because it is easy to overclaim:
+# it spawns the server itself and checks that every NAME in available_tools exists in
+# tools/list, then reports how many published tools sit OUTSIDE the allowlist. It reads
+# this manifest and never goes through goose, so it CANNOT observe a camelCase
+# available_tools — that is caught by the validator (client-side schema check) and by
+# the extensions/add -> extensions/list roundtrip below. What --smoke uniquely catches
+# is the typo'd or upstream-renamed tool name, which goose accepts in silence: a name
+# matching nothing grants nothing, and reads as a working allowlist forever.
+#
+# At these args allowlist == server surface (10 == 10), so `blast radius outside the
+# allowlist` should print 0 — see the `interactive-allowlist-equals-surface` blocker.
+# If it prints anything else, upstream changed the tier and this file is stale.
+smoke_test:
+  kind: tools_list
+  # Count AND set: the count alone would still pass if two tools were swapped.
+  expect_tools_exactly: 10
+  expect_tools_set:
+    - search_gmail_messages
+    - get_gmail_message_content
+    - get_gmail_messages_content_batch
+    - send_gmail_message
+    - list_calendars
+    - get_events
+    - manage_event
+    - list_tasks
+    - get_task
+    - manage_task
+  expect_roundtrip: available_tools   # extensions/list must echo all 10, non-empty, equal to what was sent
+  command: >-
+    scripts/verify/check-connectors.sh --smoke google-workspace
+
+runbook: docs/setup/30-google-oauth.md

@@ -1,0 +1,272 @@
+# Proton Mail, read-only, through a headless Proton Bridge on the brain.
+#
+# Read `blockers:` before you read anything else. This manifest is committed as a
+# researched dead-end-until-proven-otherwise: the top blocker (Bridge requires an OS
+# keychain; the brain is headless and has none) may make the whole connector
+# unbuildable on this hardware. Nothing here has been run end to end on the brain.
+
+# ---- identity -------------------------------------------------------------
+id: proton-mail
+display_name: Proton Mail
+summary: Read-only Proton Mail over IMAP, via a headless Proton Bridge running on the brain.
+
+manifest_version: 1
+verified_on: 2026-08-23
+goose_version_verified: 1.46.0
+
+# ---- what it is -----------------------------------------------------------
+archetype: standard_protocol_bridge
+capabilities: [mail]
+
+# ---- can this be finished from a phone? -----------------------------------
+first_run_auth: brain_browser
+phone_completable: "no"           # quoted: bare `no` is a YAML 1.1 boolean
+auth_notes: >-
+  Three separate reasons this is not phone-completable, any one of which is fatal.
+  (1) Proton Mail Bridge is a paid-plan feature — proton.me states Bridge is available
+  only with a paid Proton plan, so a free account cannot get IMAP credentials at all.
+  (2) The first `bridge --cli` -> `login` is interactive and multi-step: username,
+  password, TOTP second factor, possibly a separate mailbox password, and possibly a
+  human-verification URL that has to be opened in a browser. There is no non-interactive
+  login and no device-code equivalent.
+  (3) Bridge, not Proton, mints the IMAP/SMTP password, and you can only read it back out
+  of the running Bridge (`bridge --cli` -> `info`). So the credential does not exist until
+  after someone has sat at a shell on the brain.
+  The credential-typing step afterwards is phone-friendly; everything before it is not.
+
+# ---- privacy --------------------------------------------------------------
+privacy:
+  tier: 2
+  notes: >-
+    Mail is Tier 2 and routinely surfaces Tier 3 content (a bill, a lab result), so any
+    session sweeping this connector pins to a zero-retention paid model — same rule as
+    Gmail. Two Proton-specific additions. First, Bridge decrypts on the brain: the whole
+    point of the bridge archetype is that plaintext IMAP bodies exist in RAM and in
+    Bridge's local Gluon message cache, so Proton's end-to-end encryption stops at
+    /data. Second, `<state>/logs/llm_request.*.jsonl` gets the raw bodies like any other
+    connector, which is why GOOSE_PATH_ROOT=/data/goose is a precondition, not a nicety.
+  row_added: true                 # docs/privacy.md "Connector data sources" table, anchored <!-- connector: proton-mail -->
+
+# ---- the vetting bar (docs/providers.md), as data -------------------------
+vetting:
+  maintenance:
+    verdict: pass
+    evidence: >-
+      Two components, both alive. Wh1isper/mcp-email-server 1.4.2 released 2026-08-23
+      (BSD-3-Clause, not archived, 315 stars). ProtonMail/proton-bridge tag v3.26.0
+      pushed 2026-08-17 (GPL-3.0, first-party); note v3.26.0 is flagged **prerelease** on
+      GitHub and v3.25.0 (2026-06-01) is the newest non-prerelease.
+  self_hosted_auth:
+    verdict: pass
+    evidence: >-
+      stdio MCP server talking to 127.0.0.1 only; the credential is a Bridge-generated
+      per-client password, revocable from Bridge without touching the Proton account
+      password. No third party in the path beyond Proton itself.
+  relocatable_state:
+    verdict: partial
+    evidence: >-
+      mcp-email-server's config path is relocatable — DEFAULT_CONFIG_PATH is
+      "~/.config/mcp-email-server/config.toml" and MCP_EMAIL_SERVER_CONFIG_PATH overrides
+      it (bootstrap.py:configured_path, 1.4.2), so it is pointed into /data below.
+      Bridge's own state is the unresolved half: its Gluon message cache and vault live
+      under ~/.local/share/protonmail and ~/.config/protonmail, and moving those is
+      UNVERIFIED — see the `bridge-state-on-root-disk` blocker.
+  restrictable_tools:
+    verdict: pass
+    evidence: >-
+      Two independent layers. available_tools pins the agent to 6 of the 14 tools
+      mcp-email-server 1.4.2 registers. And MCP_EMAIL_SERVER_SMTP_HOST is deliberately
+      never set, which the server documents as what "enables send_email"
+      (config.py:from_env docstring, 1.4.2) — so the credential layer cannot send either,
+      not just the agent layer.
+  privacy_row:
+    verdict: pass
+    evidence: >-
+      docs/privacy.md carries a Proton Mail row in the "Connector data sources" table,
+      anchored `<!-- connector: proton-mail -->` — the exact marker check-connectors.sh
+      greps for. It records the tier as 2-routinely-surfaces-3 on the grounds that Bridge
+      decrypts whole message bodies onto /data, and pins the sweep routing accordingly.
+
+# ---- what stops this, honestly --------------------------------------------
+blockers:
+  - id: bridge-needs-an-os-keychain
+    blocks: connector
+    severity: possibly-fatal
+    detail: >-
+      TOP OPEN RISK. Proton Bridge on Linux stores its vault in an OS keychain and refuses
+      to run without one. pkg/keychain/helper_linux.go@v3.26.0 probes exactly three
+      helpers: secret-service over D-Bus, gnome-keyring, and `pass` — the last registered
+      under the identifier "pass-app", NOT "pass" (const Pass = "pass-app"), which matters
+      because that string is what you pass to --keychain-helper / see in the CLI. The
+      brain is headless: no D-Bus session bus, no gnome-keyring. `pass` is therefore the
+      only candidate, and whether a gpg-agent-backed `pass` store unlocks under a systemd
+      unit with no login session and no TTY for the passphrase is **UNVERIFIED**. If it
+      does not, this connector cannot be built on this hardware and the manifest stands as
+      a documented dead end.
+  - id: paid-plan-required
+    blocks: connector
+    severity: hard
+    detail: >-
+      proton.me states Bridge is available only with a paid Proton plan. A free Proton
+      account has no supported IMAP path at all — not a configuration problem, a product
+      boundary.
+  - id: interactive-first-login
+    blocks: phone
+    severity: hard
+    detail: >-
+      `bridge --cli` -> `login` prompts for username, password and TOTP, and may
+      additionally demand a mailbox password and a human-verification URL. Not scriptable,
+      not phone-completable. This is why first_run_auth is brain_browser rather than
+      phone_secret.
+  - id: imap-smtp-ports-drift
+    blocks: connector
+    severity: operational
+    detail: >-
+      Bridge does not use fixed ports. internal/vault/types_settings.go@v3.26.0
+      newDefaultSettings does `imapPort := ports.FindFreePortFrom(1143)` and
+      `smtpPort := ports.FindFreePortFrom(1025, imapPort)` — i.e. the first FREE port at
+      or above those numbers. 1143 is a default, not a guarantee, and a restart with
+      something else holding the port silently moves it. MCP_EMAIL_SERVER_IMAP_PORT must
+      be read from `bridge --cli` -> `info` and re-checked after any Bridge restart; a
+      stale value fails the extension at startup rather than silently, which is the one
+      merciful part.
+  - id: loopback-listeners-have-no-tls
+    blocks: connector
+    severity: operational
+    detail: >-
+      Bridge's local IMAP/SMTP listeners are plaintext on 127.0.0.1 by default — there is
+      no certificate to distrust, so setting only MCP_EMAIL_SERVER_IMAP_VERIFY_SSL=false
+      is not enough. MCP_EMAIL_SERVER_IMAP_SSL must also be "false" or the client will try
+      to negotiate TLS against a plaintext socket and fail. Both are declared below. This
+      is acceptable only because the socket never leaves loopback; if Bridge is ever
+      exposed beyond 127.0.0.1 this becomes a real finding.
+  - id: secret-key-collision
+    blocks: convention
+    severity: accepted
+    detail: >-
+      mcp-email-server hardcodes MCP_EMAIL_SERVER_PASSWORD, and goose does no ${VAR}
+      substitution on stdio env values and pins cwd to None over ACP, so the repo's
+      <PROVIDER>_* convention cannot be honoured (config/connectors/README.md, "The stdio
+      naming collision"). The Bridge password is therefore stored twice: once as
+      PROTON_BRIDGE_PASSWORD, the canonical record a human looks for, and once as
+      MCP_EMAIL_SERVER_PASSWORD, which is the only one in envKeys. The duplication is a
+      real cost — two things to rotate — and it also means a second IMAP account of any
+      provider collides on the same key and needs its own extension instance.
+  - id: proton-calendar-unreachable
+    blocks: proton-calendar
+    severity: hard
+    detail: >-
+      No CalDAV. Proton's own documentation describes only ICS import/export and
+      subscribing to an external calendar by URL — there is no server endpoint a CalDAV
+      client can talk to, and Bridge bridges mail only. Proton Calendar is out, not
+      pending.
+  - id: proton-contacts-unreachable
+    blocks: proton-contacts
+    severity: hard
+    detail: >-
+      The only path is emersion/hydroxide, a reverse-engineered client exposing
+      CardDAV/IMAP/SMTP. Its repository is ARCHIVED (verified 2026-08-23), which fails the
+      maintenance bar outright. Not a candidate at any severity.
+  - id: proton-drive-deferred
+    blocks: proton-drive
+    severity: deferred
+    detail: >-
+      Different shape from the other two: Proton ships a first-party SDK/CLI
+      (ProtonDriveApps/sdk), so the data is genuinely reachable — there is just no vetted
+      MCP server for it. That makes it a local_cli_wrapper candidate for a later manifest,
+      not something shipping now, and not a dead end.
+  - id: no-vetted-bridge-container
+    blocks: connector
+    severity: informational
+    detail: >-
+      shenxn/protonmail-bridge-docker is the image everyone points at and it is NOT
+      usable under this repo's pinning rules: the repository has ZERO releases and ZERO
+      tags (verified 2026-08-23). The frequently-cited "v3.25.0" is a commit title, not a
+      tag, so there is nothing to pin to. Build Bridge from the tagged upstream source
+      instead — `make build-nogui` (Makefile@v3.26.0 line 108) and run
+      `--noninteractive`.
+
+# ---- credentials, BY NAME ONLY --------------------------------------------
+# Never a value. Everything except PROTON_BRIDGE_PASSWORD is an envKey below.
+# Non-secret entries are here because envKeys is the only way to get any value into a
+# stdio child: goose does not substitute ${VAR} in stdio env, and server.env must stay [].
+secrets:
+  - key: PROTON_BRIDGE_PASSWORD
+    prompt: "Bridge-generated IMAP password from `bridge --cli` -> `info` (NOT your Proton account password). Canonical record only — see the secret-key-collision blocker."
+    secret: true
+  - key: MCP_EMAIL_SERVER_PASSWORD
+    prompt: "The same Bridge-generated password again, under the key mcp-email-server hardcodes"
+    secret: true
+  - key: MCP_EMAIL_SERVER_EMAIL_ADDRESS
+    prompt: "Your Proton address, e.g. you@proton.me"
+    secret: false
+  - key: MCP_EMAIL_SERVER_IMAP_HOST
+    prompt: "Bridge IMAP host — 127.0.0.1"
+    secret: false
+  - key: MCP_EMAIL_SERVER_IMAP_PORT
+    prompt: "Bridge IMAP port from `bridge --cli` -> `info` (1143 is only the search start, not a guarantee)"
+    secret: false
+  - key: MCP_EMAIL_SERVER_IMAP_SSL
+    prompt: "Set to false — Bridge's loopback listener is plaintext, not self-signed TLS"
+    secret: false
+  - key: MCP_EMAIL_SERVER_IMAP_VERIFY_SSL
+    prompt: "Set to false"
+    secret: false
+  - key: MCP_EMAIL_SERVER_CONFIG_PATH
+    prompt: "Absolute path on the encrypted volume, e.g. /data/goose/mcp-email-server/proton.toml (the default lands on the unencrypted root disk)"
+    secret: false
+
+# ---- the payload sent to _goose/unstable/config/extensions/add ------------
+acp_extension:
+  type: mcp
+  server:
+    type: stdio
+    name: proton-mail
+    command: uvx
+    args: [mcp-email-server@1.4.2, stdio]
+    env: []                       # keep EMPTY — inline values cross the ACP frame in plaintext
+  envKeys:
+    - MCP_EMAIL_SERVER_EMAIL_ADDRESS
+    - MCP_EMAIL_SERVER_PASSWORD
+    - MCP_EMAIL_SERVER_IMAP_HOST
+    - MCP_EMAIL_SERVER_IMAP_PORT
+    - MCP_EMAIL_SERVER_IMAP_SSL
+    - MCP_EMAIL_SERVER_IMAP_VERIFY_SSL
+    - MCP_EMAIL_SERVER_CONFIG_PATH
+    # Deliberately absent, each one load-bearing:
+    #   MCP_EMAIL_SERVER_SMTP_HOST                — its presence is what "enables send_email"
+    #   MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD — defaults false; leave it there
+  description: Proton Mail (read-only) via a local Proton Bridge
+  timeout: 300
+  available_tools:                # snake_case. Non-empty. Never omitted. 6 of 14.
+    - list_available_accounts
+    - list_mailboxes
+    - list_emails_metadata
+    - get_emails_content
+    - list_allowed_senders
+    - list_allowed_recipients
+
+# ---- proof it works -------------------------------------------------------
+# The point of this smoke test is NOT that the server starts. It is that the allowlist
+# BIT. mcp-email-server 1.4.2 registers 14 @mcp.tool functions; a passing run must see
+# exactly 6, and exactly these 6. Seeing 14 means available_tools was dropped — the
+# camelCase failure mode from config/connectors/README.md — and is a hard failure, never
+# a warning. The eight that must NOT appear: send_email, save_to_mailbox, delete_emails,
+# set_email_flags, mark_emails_as_read, move_emails, archive_emails, download_attachment.
+smoke_test:
+  kind: tools_list
+  expect_tools_exactly: 6
+  expect_tools_set:
+    - list_available_accounts
+    - list_mailboxes
+    - list_emails_metadata
+    - get_emails_content
+    - list_allowed_senders
+    - list_allowed_recipients
+  command: >-
+    scripts/verify/check-connectors.sh --smoke proton-mail
+
+# No runbook exists yet, and writing one before the bridge-needs-an-os-keychain question
+# is answered would be fiction. Answer that first; the runbook is worth writing only if
+# `pass` works under systemd on a headless host.
+runbook: null
