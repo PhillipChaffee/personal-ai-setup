@@ -20,8 +20,9 @@ EventSource/browser contexts; TLS via the brain's tailnet cert when present):
 
     GET    /api/health                  liveness + engine/image/chat counts
     GET    /api/repos                   the allowlist (names + flags)
+    GET    /api/repos/<name>/branches   a repo's branches, default marked
     GET    /api/chats                   index merged with live container state
-    POST   /api/chats                   {"repo","task"?,"title"?,"model"?}
+    POST   /api/chats                   {"repo","task"?,"title"?,"model"?,"base"?}
     POST   /api/chats/<id>/wake         start a stopped chat's container
     POST   /api/chats/<id>/stop         stop a running chat's container
     DELETE /api/chats/<id>[?purge=1]    remove container (purge: volume too)
@@ -77,7 +78,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, ClassVar
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 # ------------------------------------------------------------- configuration
 
@@ -158,6 +159,10 @@ class Chat:
     title: str
     port: int
     branch: str
+    # The ref this chat's branch was cut from. "" means "whatever the clone's
+    # default HEAD was" — what every chat made before the base picker existed
+    # says, so it is a default rather than a migration.
+    base: str = ""
     model: str | None = None
     probe: bool = False
     created: float = 0.0
@@ -175,6 +180,7 @@ class Chat:
             title=_str(raw, "title"),
             port=int(raw.get("port", 0)),
             branch=_str(raw, "branch"),
+            base=_str(raw, "base"),
             model=model if isinstance(model, str) else None,
             probe=_bool(raw, "probe"),
             created=_float(raw, "created"),
@@ -246,6 +252,9 @@ class CreateChatRequest:
     task: str
     title: str
     model: str | None
+    # The ref the chat's branch is cut from. Absent or empty means the clone's
+    # default HEAD, which is what every create did before this existed.
+    base: str
 
     @classmethod
     def from_wire(cls, raw: dict[str, Any]) -> CreateChatRequest:
@@ -255,6 +264,7 @@ class CreateChatRequest:
             task=_str(raw, "task"),
             title=_str(raw, "title"),
             model=model if isinstance(model, str) and model else None,
+            base=_str(raw, "base").strip(),
         )
 
 
@@ -430,14 +440,20 @@ def gh(
     return parsed
 
 
-def repo_slug(chat: Chat) -> str:
-    """`owner/name` for a chat's repo, from the allowlist entry it was made from."""
-    entry = load_repos().get(chat.repo)
-    if entry is None or not entry.url:
-        raise GitHubError(409, f"repo '{chat.repo}' is not in the allowlist any more")
+def slug_of(name: str, entry: RepoEntry | None) -> str:
+    """`owner/name` for an allowlist entry, whatever URL shape it holds.
+
+    Split out of `repo_slug` because the branches route and the base-branch
+    check both need a slug from a repo NAME, before any chat exists — and two
+    copies of this parsing is how the two would drift.
+    """
+    if entry is None:
+        raise GitHubError(409, f"repo '{name}' is not in the allowlist any more")
+    url = entry.url.removesuffix(".git")
+    if not url:
+        raise GitHubError(409, f"repo '{name}' has no GitHub remote to read")
     # Accept the shapes an allowlist actually holds: an https clone URL, an
     # scp-style ssh remote, or a bare owner/name.
-    url = entry.url.removesuffix(".git")
     if url.startswith(("http://", "https://")):
         parts = [p for p in urlparse(url).path.split("/") if p]
     elif ":" in url and not url.startswith("/"):
@@ -445,8 +461,13 @@ def repo_slug(chat: Chat) -> str:
     else:
         parts = [p for p in url.split("/") if p]
     if len(parts) < SLUG_PARTS:
-        raise GitHubError(409, f"repo '{chat.repo}' has no GitHub remote to read")
+        raise GitHubError(409, f"repo '{name}' has no GitHub remote to read")
     return f"{parts[-2]}/{parts[-1]}"
+
+
+def repo_slug(chat: Chat) -> str:
+    """`owner/name` for a chat's repo, from the allowlist entry it was made from."""
+    return slug_of(chat.repo, load_repos().get(chat.repo))
 
 
 # http.client gives us ints; naming them keeps the comparisons readable.
@@ -605,6 +626,118 @@ def merge_chat_pull(chat: Chat, number: int, method: str) -> dict[str, object]:
     }
 
 
+# ---------------------------------------------------------------- branches
+
+# The app's new-session sheet offers a base branch, so it needs the repo's
+# branches and needs to know which one is the default.
+#
+# SCOPES: every call in this section — GET /repos/{slug}/branches,
+# GET /repos/{slug}/branches/{ref} and GET /repos/{slug} — needs only
+# `Metadata: read`, which every fine-grained PAT carries whether you want it
+# or not (GitHub turns Metadata on the moment any other repository permission
+# is selected and will not let you turn it off). The documented PAT (Contents
+# + Pull requests, docs/setup/70-code-agents.md) is a strict superset, so this
+# needs NO new permission and no re-issued token. That is the opposite of
+# summarise_checks() above, which really is short its scopes and degrades.
+
+BRANCH_PAGE_SIZE = 100  # GitHub's maximum
+BRANCH_MAX_PAGES = 5  # 500 branches is a sheet nobody scrolls; stop there
+
+# What a base branch may look like before it is worth a round trip.
+# Deliberately narrower than git's check-ref-format, because this string is
+# interpolated into an outbound URL path: without the guard, a base of
+# "../../../user" retargets the manager's authenticated GitHub call at another
+# endpoint, and a newline in it is a request-line injection. The leading
+# character is pinned to alphanumeric so it can never read as an option flag
+# either, whatever git command it ends up in.
+#
+# `\Z` rather than `$`: Python's `$` also matches just before a trailing
+# newline, so `main\n` would pass a `$`-anchored pattern — and a newline is
+# the one character in an outbound request line that must never get through.
+BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}\Z")
+
+
+def default_branch(slug: str) -> str:
+    """Report the repo's default branch, or "" when GitHub would not say.
+
+    Degrading is deliberate: a branch list that cannot mark its default is
+    still a usable list, and losing the sheet over a label is the worse trade.
+    """
+    try:
+        info = gh("GET", f"/repos/{slug}")
+    except GitHubError:
+        return ""
+    return _str(info, "default_branch") if isinstance(info, dict) else ""
+
+
+def list_branches(name: str, entry: RepoEntry) -> dict[str, object]:
+    """Every branch of an allowlisted repo, default first and marked."""
+    slug = slug_of(name, entry)
+    head = default_branch(slug)
+    names: list[str] = []
+    truncated = False
+    for page in range(1, BRANCH_MAX_PAGES + 1):
+        listed = gh("GET", f"/repos/{slug}/branches?per_page={BRANCH_PAGE_SIZE}&page={page}")
+        rows = listed if isinstance(listed, list) else []
+        names.extend(_str(row, "name") for row in rows if isinstance(row, dict))
+        if len(rows) < BRANCH_PAGE_SIZE:
+            break
+        truncated = page == BRANCH_MAX_PAGES
+    # Default first, then case-insensitive alphabetical. The sheet renders
+    # this in the order it arrives, and "whatever GitHub happened to return"
+    # is not an order.
+    unique = [n for n in dict.fromkeys(names) if n]
+    unique.sort(key=lambda n: (n != head, n.lower()))
+    return {
+        "repo": name,
+        "slug": slug,
+        "default": head,
+        "truncated": truncated,
+        "branches": [{"name": n, "default": n == head} for n in unique],
+    }
+
+
+def base_shape_error(base: str) -> ApiError | None:
+    """Refuse a ref name before it reaches a URL or a git argv."""
+    if (
+        not BRANCH_RE.match(base)
+        or ".." in base
+        or "//" in base
+        or base.endswith(("/", ".", ".lock"))
+    ):
+        return ApiError(400, f"base branch '{base}' is not a valid branch name")
+    return None
+
+
+def validate_base(name: str, entry: RepoEntry, base: str) -> ApiError | None:
+    """Refuse a base branch with NOTHING built yet, or return None.
+
+    Only called for a non-empty base (create_chat guards it), so the absent
+    case cannot accidentally acquire behaviour. Everything here happens before
+    the index entry and the volume exist: an unknown ref has to be a 400 the
+    picker can print, not a container that clones, dies on `--branch`, and is
+    torn down as a 502.
+    """
+    shape = base_shape_error(base)
+    if shape is not None:
+        return shape
+    if entry is PROBE_REPO:
+        return ApiError(400, "the _probe repo is created empty and has no branch to base on")
+    try:
+        slug = slug_of(name, entry)
+    except GitHubError as e:
+        return ApiError(e.status, e.message)
+    try:
+        gh("GET", f"/repos/{slug}/branches/{quote(base, safe='/')}")
+    except GitHubError as e:
+        if e.status == HTTPStatus.NOT_FOUND:
+            return ApiError(400, f"base branch '{base}' does not exist in {slug}")
+        # Unverifiable is not the same as absent, and both are the caller's to
+        # see: cloning anyway turns a GitHub outage into a half-built chat.
+        return ApiError(e.status, f"could not check base branch '{base}': {e.message}")
+    return None
+
+
 def container_name(chat_id: str) -> str:
     return f"code-agent-{chat_id}"
 
@@ -761,16 +894,25 @@ def shquote(s: str) -> str:
     return "'" + s.replace("'", "'\\''") + "'"
 
 
+def not_allowlisted(name: str, repos: dict[str, RepoEntry]) -> ApiError:
+    """Build the one refusal the create route and the branches route both give.
+
+    Shared rather than copied: the allowlist is the trust boundary, and two
+    copies of a security message is how one of them gets softened later.
+    """
+    listed = ", ".join(sorted(repos)) or "(allowlist empty)"
+    return ApiError(
+        403,
+        f"repo '{name}' is not in the allowlist "
+        f"(/data/code-agents/repos.json). Allowed: {listed}",
+    )
+
+
 def create_chat(request: CreateChatRequest) -> Chat | ApiError:
     repos = load_repos()
     probe = request.repo == "_probe"
     if not probe and request.repo not in repos:
-        listed = ", ".join(sorted(repos)) or "(allowlist empty)"
-        return ApiError(
-            403,
-            f"repo '{request.repo}' is not in the allowlist "
-            f"(/data/code-agents/repos.json). Allowed: {listed}",
-        )
+        return not_allowlisted(request.repo, repos)
     repo = repos.get(request.repo, PROBE_REPO)
 
     if is_free_model(request.model) and not repo.public_throwaway:
@@ -780,6 +922,13 @@ def create_chat(request: CreateChatRequest) -> Chat | ApiError:
             "your data (docs/privacy.md hard rule 1) and are refused unless the "
             "repo is flagged public_throwaway.",
         )
+
+    # Before the index entry, the volume, or any container: an unknown ref is
+    # a 400 the picker can print, not a clone that dies half-built.
+    if request.base:
+        refusal = validate_base(request.repo, repo, request.base)
+        if refusal is not None:
+            return refusal
 
     with _lock:
         index = Index.load()
@@ -798,6 +947,7 @@ def create_chat(request: CreateChatRequest) -> Chat | ApiError:
             title=request.title or (request.task or chat_id)[:80],
             port=next_port(index),
             branch=f"agent/{chat_id}",
+            base=request.base,
             model=request.model,
             probe=probe,
             created=now,
@@ -828,9 +978,18 @@ def create_chat(request: CreateChatRequest) -> Chat | ApiError:
             # GH_TOKEN into the HTTPS credential; nothing token-shaped is
             # ever written to the volume. Commits get a distinct identity —
             # never the owner's personal one (issue #17 C4).
+            #
+            # `--branch` only when one was asked for, so the default path is
+            # the exact string it has always been. `git clone --branch X` still
+            # fetches every branch, so `git checkout -b` right after cuts the
+            # chat's branch from the right commit and the agent can still diff
+            # against the repo's default. The ref was proved to exist above;
+            # the clone is the second authority, and a disagreement still takes
+            # the cleanup path below.
+            at_base = f"--branch {shquote(chat.base)} " if chat.base else ""
             script = (
                 f"cd /chat/workspace && "
-                f"git clone {shquote(repo.url)} . && "
+                f"git clone {at_base}{shquote(repo.url)} . && "
                 f"git checkout -b {chat.branch} && "
                 f"git config user.name 'code-agent' && "
                 f"git config user.email 'code-agent@brain.invalid'"
@@ -1054,6 +1213,12 @@ class Handler(BaseHTTPRequestHandler):
     }
     ROUTE_PULLS = re.compile(r"^/api/chats/([a-zA-Z0-9-]+)/pulls$")
     ROUTE_MERGE = re.compile(r"^/api/chats/([a-zA-Z0-9-]+)/pulls/([0-9]+)/merge$")
+    # `[^/]+` is permissive on purpose: the captured name is looked up in the
+    # allowlist and never concatenated into an outbound URL — only the slug
+    # derived from the allowlist ENTRY is. The allowlist is the gate, not the
+    # charset, so a repo name the owner chose can never be rejected by one we
+    # guessed at.
+    ROUTE_BRANCHES = re.compile(r"^/api/repos/([^/]+)/branches$")
 
     def handle_any(self) -> None:
         """Authenticate, then dispatch the request to exactly one route."""
@@ -1067,10 +1232,13 @@ class Handler(BaseHTTPRequestHandler):
         one_chat = self.ROUTE_ONE_CHAT.match(path)
         pulls = self.ROUTE_PULLS.match(path)
         merge = self.ROUTE_MERGE.match(path)
+        branches = self.ROUTE_BRANCHES.match(path)
         if chat:
             self.proxy(chat.group(1), chat.group(2) or "/")
         elif verb == "GET" and path in self.API_READS:
             getattr(self, self.API_READS[path])()
+        elif branches and verb == "GET":
+            self.route_branches(unquote(branches.group(1)))
         elif (path, verb) == ("/api/chats", "POST"):
             self.route_create_chat()
         elif lifecycle and verb == "POST":
@@ -1104,6 +1272,25 @@ class Handler(BaseHTTPRequestHandler):
 
     def route_repos(self) -> None:
         self.send_json(200, {"repos": [repo.to_wire() for repo in load_repos().values()]})
+
+    def route_branches(self, name: str) -> None:
+        """One allowlisted repo's branches, for the app's base picker.
+
+        A manager call, not a proxy: choosing a base happens before any chat
+        exists, so there is nothing here to wake and nothing to mark active.
+        The allowlist check comes first so a caller can never name a repo the
+        owner did not list.
+        """
+        repos = load_repos()
+        entry = repos.get(name)
+        if entry is None:
+            refusal = not_allowlisted(name, repos)
+            self.send_json(refusal.status, {"error": refusal.message})
+            return
+        try:
+            self.send_json(200, list_branches(name, entry))
+        except GitHubError as e:
+            self.send_json(e.status, {"error": e.message})
 
     def route_list_chats(self) -> None:
         index = Index.load()

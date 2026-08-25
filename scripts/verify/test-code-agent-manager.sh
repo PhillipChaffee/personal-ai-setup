@@ -5,9 +5,9 @@
 # "cloned" is a local scratch git repo. Exercises the full lifecycle:
 #
 #   auth · allowlist + zen-free guards · create (clone/branch/setup/config/
-#   auth seed) · max-active refusal · proxying incl. SSE · the blocking
-#   permission flow · busy-guarded idle spin-down · wake-on-request with
-#   state intact · stop/wake/delete-purge
+#   auth seed) · base branches (list, cut-from, refusals) · max-active refusal ·
+#   proxying incl. SSE · the blocking permission flow · busy-guarded idle
+#   spin-down · wake-on-request with state intact · stop/wake/delete-purge
 #
 # Runs anywhere with python3 + git + curl. Exits non-zero on any failure.
 #
@@ -20,7 +20,10 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/code-agent-test.XXXXXX")"
-PORT=4399
+# Overridable so an assertion run can happen while a `--serve` stack is still
+# up on the defaults — otherwise the second one dies on "address already in
+# use" and reports it as four failed assertions.
+PORT="${PORT:-4399}"
 # The assertions want a reaper that fires while the test is still watching.
 # `--serve` does not: a 4-second idle timeout means a client being driven by
 # hand re-wakes the container between every tap. Override for that case.
@@ -54,6 +57,27 @@ echo "# seed" > "$WORK/seed/README.md"
 git -C "$WORK/seed" -c user.email=t@t -c user.name=t add README.md
 git -C "$WORK/seed" -c user.email=t@t -c user.name=t commit -qm init
 
+# A second branch with a file of its OWN on it: "was this cut from the base?"
+# is then answerable by looking for that file, not by trusting a branch name.
+git -C "$WORK/seed" checkout -q -b release/2.x
+echo "shipped" > "$WORK/seed/RELEASE.md"
+git -C "$WORK/seed" -c user.email=t@t -c user.name=t add RELEASE.md
+git -C "$WORK/seed" -c user.email=t@t -c user.name=t commit -qm "release line"
+git -C "$WORK/seed" checkout -q main
+# 119 branches, because GitHub caps per_page at 100: a manager that does not
+# paginate loses everything after claude/spike-114 and nobody notices.
+MAIN_SHA="$(git -C "$WORK/seed" rev-parse main)"
+{
+  for i in $(seq 0 114); do printf 'create refs/heads/claude/spike-%03d %s\n' "$i" "$MAIN_SHA"; done
+  printf 'create refs/heads/agent/testrepo-fixture %s\n' "$MAIN_SHA"
+  printf 'create refs/heads/zzz-last-branch %s\n' "$MAIN_SHA"
+} | git -C "$WORK/seed" update-ref --stdin
+# Reverse-sorted on purpose — the manager is supposed to sort, and a fixture
+# that arrives sorted cannot prove it does.
+git -C "$WORK/seed" for-each-ref --format='%(refname:short)' refs/heads \
+  | sort -r > "$WORK/branches.txt"
+EXPECTED="$(wc -l < "$WORK/branches.txt" | tr -d ' ')"
+
 cat > "$WORK/root/repos.json" <<EOF
 {"repos": [
   {"name": "testrepo", "url": "file://$WORK/seed", "tier": 1,
@@ -61,8 +85,14 @@ cat > "$WORK/root/repos.json" <<EOF
    "edit_only": false, "allow_push": false, "public_throwaway": false},
   {"name": "throwaway", "url": "file://$WORK/seed", "tier": 1,
    "setup": "", "edit_only": true, "allow_push": true, "public_throwaway": true}
+  ,
+  {"name": "ghrepo", "url": "https://github.com/testowner/testrepo.git", "tier": 1,
+   "setup": "", "edit_only": true, "allow_push": false, "public_throwaway": false}
 ]}
 EOF
+# ghrepo is never cloned, only listed: it is the one entry with a real GitHub
+# URL, so it is the one that can prove the slug comes off the allowlist's URL
+# rather than off the name the caller sent.
 
 # ---- start the manager ------------------------------------------------------
 # MANAGER_PY replaces the interpreter the manager runs under. It exists so CI
@@ -75,8 +105,9 @@ read -r -a MANAGER_PY <<<"${MANAGER_PY:-python3}"
 
 # A fake GitHub, so the manager's pull-request routes exercise real request
 # building and real error mapping instead of going untested.
-GH_PORT=4398
+GH_PORT="${GH_PORT:-4398}"
 FAKE_GITHUB_BRANCH="agent/testrepo-fixture" \
+  FAKE_GITHUB_BRANCHES_FILE="$WORK/branches.txt" \
   python3 "$HERE/fake-github.py" --port "$GH_PORT" &
 GITHUB_PID=$!
 for _ in $(seq 1 20); do
@@ -154,6 +185,13 @@ if [ -n "$CID" ]; then
   CD="$WORK/root/chats/$CID"
   git -C "$CD/workspace" rev-parse --abbrev-ref HEAD 2>/dev/null | grep -q "^agent/" \
     && ok "workspace cloned on an agent/ branch" || bad "branch: $(git -C "$CD/workspace" rev-parse --abbrev-ref HEAD 2>&1)"
+  # RELEASE.md exists only on release/2.x, so its absence is what proves a
+  # create with no base still behaves exactly as it always did.
+  [ ! -f "$CD/workspace/RELEASE.md" ] \
+    && ok "no base named: cloned from the repo's default HEAD" \
+    || bad "a chat with no base was cut from release/2.x"
+  [ "$(echo "$CHAT" | jget "d.get('base','MISSING')")" = "" ] \
+    && ok "no base named: the chat records none" || bad "base leaked onto a default create"
   [ -f "$CD/workspace/setup-ran.marker" ] \
     && ok "repo setup command ran in the workspace" || bad "setup marker missing"
   grep -q '"opencode/deepseek-v4-flash"' "$CD/home/.config/opencode/opencode.json" 2>/dev/null \
@@ -290,6 +328,22 @@ assert any(not a["builtIn"] for a in agents), "no custom agent to test builtIn=f
 assert all("permission" in a for a in agents), "agent missing permission block"
 ' && ok "agent list proxied (primary + subagent)" || bad "agent list failed"
 
+# The chat's own resolved config. The app asks for this because a chat created
+# without an explicit model has none on its record and none on its session
+# until a turn has been sent — this route is where the model it is ACTUALLY
+# running comes from. The manager's /chat/<id>/... proxy is a catch-all, so
+# this also proves passthrough for a sibling of /config/providers.
+# shellcheck disable=SC2086
+$CURL --max-time 120 "$BASE/chat/$CID/config" | python3 -c '
+import json, sys
+cfg = json.load(sys.stdin)
+assert isinstance(cfg, dict), cfg
+model = cfg.get("model")
+assert isinstance(model, str) and model, "no model in the resolved config: " + repr(model)
+assert "/" in model, "a model reference is provider/id: " + repr(model)
+' && ok "the chat's resolved config proxies, naming the model it runs" \
+  || bad "chat config route failed"
+
 # shellcheck disable=SC2086
 DIFF_JSON="$($CURL --max-time 120 "$BASE/chat/$CID/session/$SID/diff")"
 echo "$DIFF_JSON" | python3 -c '
@@ -413,7 +467,11 @@ echo "$BODY" | grep -q "unknown chat" \
 restart_github() {
   kill "$GITHUB_PID" 2>/dev/null || true
   sleep 0.4
+  # The branches file has to be here too: miss it and every mode after this
+  # point silently falls back to the fake's five-branch built-in list, which
+  # fails the count assertions for a reason that is not the manager's.
   FAKE_GITHUB_BRANCH="agent/testrepo-fixture" FAKE_GITHUB_MODE="$1" \
+    FAKE_GITHUB_BRANCHES_FILE="$WORK/branches.txt" \
     python3 "$HERE/fake-github.py" --port "$GH_PORT" &
   GITHUB_PID=$!
   for _ in $(seq 1 20); do
@@ -455,6 +513,140 @@ BODY="$(cat /tmp/pulls-down.$$; rm -f /tmp/pulls-down.$$)"
 [ "$CODE" = "502" ] && echo "$BODY" | grep -q "unreachable" \
   && ok "unreachable GitHub is a clean 502" || bad "github down: $CODE $BODY"
 restart_github ""
+
+# ---- 5c. base branches ------------------------------------------------------
+# The app's new-session sheet offers a base branch, so the manager must be able
+# to say what the branches ARE and to cut a chat from one. Both are
+# manager-side GitHub calls: nothing here goes near a container.
+
+# shellcheck disable=SC2086
+chat_count() { $CURL "$BASE/api/chats" | jget "len(d['chats'])"; }
+chat_dirs() { find "$WORK/root/chats" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' '; }
+
+# shellcheck disable=SC2086
+BR="$($CURL "$BASE/api/repos/testrepo/branches")"
+echo "$BR" | EXPECTED="$EXPECTED" python3 -c '
+import json, os, sys
+d = json.load(sys.stdin)
+names = [b["name"] for b in d["branches"]]
+want = int(os.environ["EXPECTED"])
+assert d["default"] == "main", "default branch not reported: " + repr(d.get("default"))
+assert names[0] == "main", "the default is not first: " + repr(names[:3])
+assert d["branches"][0]["default"] is True, d["branches"][0]
+assert sum(1 for b in d["branches"] if b["default"]) == 1, "default marked more than once"
+assert names[1:] == sorted(names[1:], key=str.lower), "not sorted: " + repr(names[1:5])
+assert "release/2.x" in names, names[:8]
+assert len(names) == want, "got %d branches, expected %d" % (len(names), want)
+assert "zzz-last-branch" in names, "the tail past per_page=100 was dropped"
+assert d["truncated"] is False, d["truncated"]
+' && ok "branches listed, paginated, default first and marked" || bad "branches: $BR"
+
+# shellcheck disable=SC2086
+[ "$($CURL "$BASE/api/repos/ghrepo/branches" | jget "d['slug']")" = "testowner/testrepo" ] \
+  && ok "the GitHub slug comes from the allowlist URL, not the repo's name" \
+  || bad "slug derivation wrong"
+
+# shellcheck disable=SC2086
+CODE="$($CURL -o "$WORK/br-unlisted.json" -w '%{http_code}' "$BASE/api/repos/not-listed/branches")"
+[ "$CODE" = "403" ] && grep -q "not in the allowlist" "$WORK/br-unlisted.json" \
+  && ok "branches for an unlisted repo are refused (403)" || bad "unlisted: $CODE"
+
+# --- creating on a base
+# shellcheck disable=SC2086
+BASED="$($CURL --max-time 120 -X POST -H 'Content-Type: application/json' \
+  -d '{"repo":"testrepo","task":"work the release line","base":"release/2.x"}' \
+  "$BASE/api/chats")"
+BBID="$(echo "$BASED" | jget "d.get('id','')")"
+if [ -n "$BBID" ]; then
+  ok "chat created on a base branch ($BBID)"
+  BWS="$WORK/root/chats/$BBID/workspace"
+  # RELEASE.md exists only on release/2.x: this is the assertion that the base
+  # reached the clone rather than merely being parsed.
+  [ -f "$BWS/RELEASE.md" ] && ok "the branch was cut from the base, not the default HEAD" \
+    || bad "RELEASE.md missing — the clone ignored base"
+  git -C "$BWS" rev-parse --abbrev-ref HEAD | grep -q "^agent/" \
+    && ok "still on its own agent/ branch after basing" \
+    || bad "HEAD is $(git -C "$BWS" rev-parse --abbrev-ref HEAD 2>&1)"
+  [ "$(echo "$BASED" | jget "d.get('base','')")" = "release/2.x" ] \
+    && ok "the base is echoed on the created chat" || bad "base not echoed: $BASED"
+  # shellcheck disable=SC2086
+  $CURL "$BASE/api/chats" | BBID="$BBID" python3 -c '
+import json, os, sys
+row = {c["id"]: c for c in json.load(sys.stdin)["chats"]}[os.environ["BBID"]]
+assert row["base"] == "release/2.x", row
+' && ok "the base survives into the chat index" || bad "base missing from /api/chats"
+  # shellcheck disable=SC2086
+  $CURL -X DELETE "$BASE/api/chats/$BBID?purge=1" >/dev/null
+else
+  bad "create with a base failed: $BASED"
+fi
+
+# --- refusals build nothing
+BEFORE="$(chat_count)"; BEFORE_DIRS="$(chat_dirs)"
+# shellcheck disable=SC2086
+CODE="$($CURL -o "$WORK/base-unknown.json" -w '%{http_code}' -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"repo":"testrepo","task":"x","base":"no-such-branch"}' "$BASE/api/chats")"
+[ "$CODE" = "400" ] && grep -q "does not exist" "$WORK/base-unknown.json" \
+  && ok "an unknown base is a clean 400 with a readable message" \
+  || bad "unknown base: $CODE $(cat "$WORK/base-unknown.json")"
+[ "$(chat_count)" = "$BEFORE" ] && [ "$(chat_dirs)" = "$BEFORE_DIRS" ] \
+  && ok "a refused base builds nothing (no index entry, no volume)" \
+  || bad "the refusal left residue behind"
+
+# A malformed base must be refused on SHAPE, before any GitHub call — the
+# message differs from the existence refusal precisely so this can tell them
+# apart. `../../etc` reaching the URL builder would come back as "does not
+# exist" instead.
+SHAPE_OK="yes"
+for BADBASE in '../../etc' 'main..evil' '-b' 'main branch' 'main\nX-Injected: 1'; do
+  # shellcheck disable=SC2086
+  BODY="$($CURL -X POST -H 'Content-Type: application/json' \
+    -d "{\"repo\":\"testrepo\",\"task\":\"x\",\"base\":\"$BADBASE\"}" "$BASE/api/chats")"
+  echo "$BODY" | grep -q "not a valid branch name" || { SHAPE_OK="no"; echo "  ($BADBASE -> $BODY)"; }
+done
+[ "$SHAPE_OK" = "yes" ] && ok "a malformed base is refused on shape, before any GitHub call" \
+  || bad "a malformed base reached the network"
+
+# --- 403 degrades
+restart_github denied
+# shellcheck disable=SC2086
+CODE="$($CURL -o "$WORK/br-denied.json" -w '%{http_code}' "$BASE/api/repos/testrepo/branches")"
+[ "$CODE" = "502" ] && grep -q "PAT" "$WORK/br-denied.json" \
+  && ok "a 403 from GitHub is a clean 502 body, not a crash" || bad "denied branches: $CODE"
+# shellcheck disable=SC2086
+CODE="$($CURL -o "$WORK/base-denied.json" -w '%{http_code}' -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"repo":"testrepo","task":"x","base":"release/2.x"}' "$BASE/api/chats")"
+[ "$CODE" = "502" ] && grep -q "could not check base branch" "$WORK/base-denied.json" \
+  && ok "an unverifiable base refuses instead of half-building" || bad "denied base: $CODE"
+# And the default create path must not have acquired a dependency on GitHub.
+# shellcheck disable=SC2086
+PLAIN="$($CURL --max-time 120 -X POST -H 'Content-Type: application/json' \
+  -d '{"repo":"testrepo","task":"no base needed"}' "$BASE/api/chats")"
+PCID="$(echo "$PLAIN" | jget "d.get('id','')")"
+if [ -n "$PCID" ]; then
+  ok "creating without a base still works while GitHub refuses everything"
+  # shellcheck disable=SC2086
+  $CURL -X DELETE "$BASE/api/chats/$PCID?purge=1" >/dev/null
+else
+  bad "GitHub refusing broke the default create path: $PLAIN"
+fi
+
+restart_github nodefault
+# shellcheck disable=SC2086
+$CURL "$BASE/api/repos/testrepo/branches" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert d["branches"], "the whole list was lost when only the default-branch call failed"
+assert d["default"] == "", d["default"]
+assert not any(b["default"] for b in d["branches"]), "a branch was marked default with none known"
+' && ok "losing the default-branch call costs the label, not the list" || bad "nodefault degraded badly"
+
+restart_github ""
+# shellcheck disable=SC2086
+[ "$($CURL "$BASE/api/repos/testrepo/branches" | jget "len(d['branches'])")" = "$EXPECTED" ] \
+  && ok "the branch list recovers once GitHub answers again" || bad "no recovery after the outage"
 
 # ---- 6. idle spin-down + wake with state intact -----------------------------
 STOPPED="no"

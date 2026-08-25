@@ -15,6 +15,17 @@ Implements, for owner/repo `testowner/testrepo`:
     PUT /repos/:owner/:repo/pulls/:n/merge          merge
     GET /repos/:owner/:repo/commits/:sha/check-runs
     GET /repos/:owner/:repo/commits/:sha/status
+    GET /repos/:owner/:repo                         default_branch, and
+                                                    nothing else a client reads
+    GET /repos/:owner/:repo/branches?per_page=&page=  the base-branch picker's
+                                                    list, really paginated
+    GET /repos/:owner/:repo/branches/:name          "does this ref exist"
+
+The branch fixture is 119 names ON PURPOSE: GitHub caps `per_page` at 100, so
+a client that does not paginate silently loses the tail — `zzz-last-branch`
+exists only on page 2 and is what catches that. FAKE_GITHUB_BRANCHES_FILE
+replaces the built-in list with a newline-delimited file, which is how the
+harness keeps this fixture and the repo it actually clones from disagreeing.
 
 The fixture set is chosen to cover what a client has to render and what a
 manager has to refuse, not to look like one repo's real pull requests:
@@ -28,11 +39,13 @@ manager has to refuse, not to look like one repo's real pull requests:
                                                      and merging it must 404
 
 Set FAKE_GITHUB_MODE to make it misbehave on purpose:
-    down    every call fails at the socket    -> manager should say 502
-    denied  every call answers 403            -> "PAT may have expired"
-    noscope check endpoints alone answer 403  -> checks degrade to "unknown"
-    blocked the merge answers 405             -> normalised to 422, message
-                                                 carried through
+    down      every call fails at the socket    -> manager should say 502
+    denied    every call answers 403            -> "PAT may have expired"
+    noscope   check endpoints alone answer 403  -> checks degrade to "unknown"
+    blocked   the merge answers 405             -> normalised to 422, message
+                                                   carried through
+    nodefault GET /repos/:o/:r alone answers 403 -> the branch list survives,
+                                                   the default label does not
 """
 
 from __future__ import annotations
@@ -40,6 +53,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pathlib
 import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -49,6 +63,8 @@ from urllib.parse import parse_qs, urlparse
 Wire = dict[str, Any]
 
 BRANCH = os.environ.get("FAKE_GITHUB_BRANCH", "agent/testrepo-fixture")
+DEFAULT_BRANCH = os.environ.get("FAKE_GITHUB_DEFAULT_BRANCH", "main")
+BRANCHES_FILE = os.environ.get("FAKE_GITHUB_BRANCHES_FILE", "")
 MODE = os.environ.get("FAKE_GITHUB_MODE", "")
 
 STATE_LOCK = threading.Lock()
@@ -91,6 +107,43 @@ CHECKS: dict[str, tuple[list[str], str]] = {
     "sha7": (["success"], "success"),
 }
 
+# Branch fixtures. Stand-alone default: enough shapes to render (a default, a
+# slashed-and-dotted release line, the branch the pull-request fixtures live
+# on). The harness replaces these via FAKE_GITHUB_BRANCHES_FILE with the
+# branches its seed repo really has, so "GitHub says yes" and "the clone works"
+# cannot disagree. The order is NOT sorted, and the harness's file is
+# reverse-sorted, on purpose: a fixture that arrives sorted cannot prove the
+# manager sorts it.
+DEFAULT_BRANCHES: list[str] = [
+    "release/2.x",
+    "claude/budget-note-fix",
+    DEFAULT_BRANCH,
+    BRANCH,
+    "zzz-last-branch",
+]
+
+
+def _branches() -> list[str]:
+    if not BRANCHES_FILE:
+        return DEFAULT_BRANCHES
+    raw = pathlib.Path(BRANCHES_FILE).read_text(encoding="utf-8")
+    return [line.strip() for line in raw.splitlines() if line.strip()]
+
+
+BRANCHES: list[str] = _branches()
+
+
+def _int(raw: str, fallback: int) -> int:
+    """Read a query parameter as an int, without a traceback for a bad one.
+
+    A 500 out of here would be read as a manager bug by the harness, which is
+    exactly the wrong place to look.
+    """
+    try:
+        return int(raw)
+    except ValueError:
+        return fallback
+
 
 class Handler(BaseHTTPRequestHandler):
     PULLS_LIST = re.compile(r"^/repos/([^/]+)/([^/]+)/pulls$")
@@ -98,6 +151,10 @@ class Handler(BaseHTTPRequestHandler):
     PULL_MERGE = re.compile(r"^/repos/([^/]+)/([^/]+)/pulls/([0-9]+)/merge$")
     CHECK_RUNS = re.compile(r"^/repos/([^/]+)/([^/]+)/commits/([^/]+)/check-runs$")
     COMMIT_STATUS = re.compile(r"^/repos/([^/]+)/([^/]+)/commits/([^/]+)/status$")
+    BRANCH_LIST = re.compile(r"^/repos/([^/]+)/([^/]+)/branches$")
+    BRANCH_ONE = re.compile(r"^/repos/([^/]+)/([^/]+)/branches/(.+)$")
+    # Two segments only, so it can never shadow any of the routes above.
+    REPO_ONE = re.compile(r"^/repos/([^/]+)/([^/]+)$")
 
     def send(self, code: int, obj: object) -> None:
         raw = json.dumps(obj).encode()
@@ -129,6 +186,12 @@ class Handler(BaseHTTPRequestHandler):
             self.route_check_runs(m.group(3))
         elif m := self.COMMIT_STATUS.match(path):
             self.route_status(m.group(3))
+        elif self.BRANCH_LIST.match(path):
+            self.route_branch_list(parse_qs(parsed.query))
+        elif m := self.BRANCH_ONE.match(path):
+            self.route_branch_one(m.group(3))
+        elif self.REPO_ONE.match(path):
+            self.route_repo()
         else:
             self.send(404, {"message": "Not Found"})
 
@@ -182,6 +245,41 @@ class Handler(BaseHTTPRequestHandler):
             return
         _, state = CHECKS.get(sha, ([], "pending"))
         self.send(200, {"state": state, "statuses": [{"state": state}] if state else []})
+
+    def route_branch_list(self, query: dict[str, list[str]]) -> None:
+        # Real per_page/page honouring, capped at 100 exactly as GitHub caps
+        # it — that cap is the whole reason a client has to paginate.
+        per_page = min(_int((query.get("per_page") or ["30"])[0], 30), 100)
+        page = max(_int((query.get("page") or ["1"])[0], 1), 1)
+        start = (page - 1) * per_page
+        self.send(
+            200,
+            [
+                {"name": n, "commit": {"sha": f"sha-{n}"}, "protected": n == DEFAULT_BRANCH}
+                for n in BRANCHES[start : start + per_page]
+            ],
+        )
+
+    def route_branch_one(self, name: str) -> None:
+        if name not in BRANCHES:
+            self.send(404, {"message": "Branch not found"})
+            return
+        self.send(200, {"name": name, "commit": {"sha": f"sha-{name}"}})
+
+    def route_repo(self) -> None:
+        if MODE == "nodefault":
+            # The one call whose whole answer is a label. The list must
+            # survive losing it.
+            self.send(403, {"message": "Resource not accessible by personal access token"})
+            return
+        self.send(
+            200,
+            {
+                "full_name": "testowner/testrepo",
+                "default_branch": DEFAULT_BRANCH,
+                "private": True,
+            },
+        )
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002
         pass  # quiet; the harness asserts on behaviour, not logs

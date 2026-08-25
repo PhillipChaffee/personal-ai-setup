@@ -16,6 +16,7 @@ Implements (Basic auth required, any username + the --password value):
     POST /session/<id>/abort               cancel the turn
     GET  /session/<id>/diff                canned FileDiff[]
     GET  /config/providers, GET /provider  model catalogue (same, two keys)
+    GET  /config                           the chat's resolved opencode config
     GET  /agent                            selectable agents (the "mode")
     GET  /permission                       pending permission asks
     POST /session/<id>/permissions/<pid>   {"response": once|always|reject}
@@ -496,9 +497,23 @@ AGENTS: list[Wire] = [
 
 # Routes that answer with a constant. Kept as a table so adding one does not
 # make the dispatcher harder to read.
+# The chat's own resolved config — what render_chat_config() in the manager
+# writes into <chat>/home/.config/opencode/opencode.json, served back after
+# opencode has resolved it. `model` is the one field a client reads: it is the
+# model a turn that names none runs on, and the only place that fact exists
+# for a chat created without an explicit model (its chat record says null and
+# its session record says nothing until a turn has been sent).
+CHAT_CONFIG: Wire = {
+    "$schema": "https://opencode.ai/config.json",
+    "model": "opencode/deepseek-v4-flash",
+    "small_model": "opencode/minimax-m2.7",
+    "share": "disabled",
+}
+
 CATALOGUE: dict[str, Any] = {
     "/config/providers": lambda: {"providers": PROVIDERS},
     "/provider": lambda: {"all": PROVIDERS},
+    "/config": lambda: CHAT_CONFIG,
     "/agent": lambda: AGENTS,
 }
 
