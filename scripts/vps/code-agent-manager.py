@@ -1339,7 +1339,9 @@ def notify_new_asks(
         notify_agent("ask", fresh, chats)
 
 
-def notify_finished_turns(index: Index, status: dict[str, str], running: frozenset[str]) -> None:
+def notify_finished_turns(
+    index: Index, status: dict[str, str], running: frozenset[str], sampled_at: float,
+) -> None:
     """Buzz once for every chat whose turn has ended since we armed it.
 
     NOT a busy->idle edge, which is the tempting reading and is wrong twice
@@ -1364,14 +1366,21 @@ def notify_finished_turns(index: Index, status: dict[str, str], running: frozens
     An abort disarms without firing: a cancelled turn ended because you said
     so, and it is indistinguishable from a natural completion on the wire.
     """
-    now = time.time()
+    # AGAINST `sampled_at`, NOT `time.time()`. The `status` map judged below was
+    # taken at the top of the pass, before a `pending_permissions` fan-out that
+    # can block a full 5s and before an ntfy POST. Measuring arm->NOW instead of
+    # arm->SAMPLE lets a slow pass declare a turn finished using a status read
+    # before that turn began: sample X idle at T0, press send at T0+1, notify at
+    # T0+25, and 24 >= 5 fires "turn ended" 24 seconds INTO a twenty-minute run.
+    # One bug, two symptoms — it also pops the arm, so the real ending is lost
+    # and never buzzes at all.
     ended: list[str] = []
     with _reaper_memory.armed_lock:
         for cid, armed_at in sorted(_reaper_memory.armed.items()):
             if cid not in index.chats or cid not in running:
                 _reaper_memory.armed.pop(cid, None)
                 continue
-            if now - armed_at < ARM_SETTLE_SECONDS:
+            if sampled_at - armed_at < ARM_SETTLE_SECONDS:
                 continue
             if status.get(cid) != "idle" or cid not in _reaper_memory.prev_running:
                 continue
@@ -1409,11 +1418,30 @@ def reaper_pass() -> None:
     states = {cid: container_state(cid) for cid in index.chats}
     running = frozenset(cid for cid, state in states.items() if state == "running")
     status = {cid: session_state(index.chats[cid]) for cid in sorted(running)}
+    sampled_at = time.time()
     asks, unreachable = pending_permissions([index.chats[cid] for cid in sorted(running)])
-    notify_new_asks(index, asks, unreachable, running)
-    notify_finished_turns(index, status, running)
-    _reaper_memory.prev_running = running
+
+    # SPIN DOWN BEFORE NOTIFYING, and never let notifying break the pass.
+    #
+    # The reaper's real job is stopping idle containers; the buzz is a courtesy
+    # on top of it. Ordered the other way, an ntfy outage delayed every
+    # spin-down — and worse, `notify_agent` suppresses only OSError and
+    # HTTPException, while a malformed NTFY_SERVER raises ValueError from
+    # `url.port` and a non-ASCII topic raises UnicodeEncodeError from
+    # putrequest. Neither was caught there and both were caught by the loop, so
+    # the pass logged "reaper error" and returned BEFORE spin_down_idle — on
+    # every pass, forever. Idle spin-down would stop dead while every lock-free
+    # route kept answering, which is precisely the shape of failure this file
+    # has already shipped once.
+    #
+    # `notify_failure` has used contextlib.suppress since it was written, for
+    # this exact reason. This follows it.
     spin_down_idle(index, status, running)
+    with contextlib.suppress(Exception):
+        notify_new_asks(index, asks, unreachable, running)
+    with contextlib.suppress(Exception):
+        notify_finished_turns(index, status, running, sampled_at)
+    _reaper_memory.prev_running = running
 
 
 def reaper_loop() -> None:
@@ -1484,6 +1512,27 @@ def notify_agent(kind: str, count: int, chats: list[str]) -> None:
         return
     title, priority = NOTIFY_TITLES[kind]
     body = json.dumps({"kind": kind, "handle": _reaper_memory.mint_handle(chats), "count": count})
+    # OFF THE REAPER THREAD. `NTFY_TIMEOUT` does not bound this call: http.client
+    # hands the timeout to socket.create_connection, which calls getaddrinfo()
+    # BEFORE applying it, so a stalled resolver blocks for the resolver's own
+    # budget (glibc: timeout x attempts x nameservers, tens of seconds); and once
+    # connected the timeout applies INDEPENDENTLY to connect, send, getresponse
+    # and read, so one POST can reach ~20s and a pass makes two.
+    #
+    # The payload and the handle are computed on THIS thread, so what is sent is
+    # decided by the pass that decided to send it. Only the socket work moves.
+    # Fire and forget: nothing reads the result, a daemon thread cannot hold the
+    # process open, and the alternative — joining with a timeout — reintroduces
+    # the stall it exists to remove.
+    threading.Thread(
+        target=_post_ntfy,
+        args=(kind, title, priority, body),
+        daemon=True,
+    ).start()
+
+
+def _post_ntfy(kind: str, title: str, priority: str, body: str) -> None:
+    """Send one notification. The socket half of `notify_agent`, off its thread."""
     url = urlparse(NTFY_SERVER)
     conn_cls = http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection
     try:
