@@ -20,7 +20,10 @@ Fine-grained):
 - **Repository access**: *Only select repositories* — exactly the repos you
   will allowlist in step 3. Never "All repositories".
 - **Permissions**: Contents (read/write) + Pull requests (read/write).
-  Nothing else.
+  Nothing else. (The app's base-branch picker reads
+  `/repos/:owner/:repo/branches` and `/repos/:owner/:repo`, which need only the
+  mandatory `Metadata: read` every fine-grained PAT carries — no extra
+  permission, nothing to re-issue.)
 - Expiry: your call; add the rotation to your calendar — the rotation table
   in [`docs/security.md`](../security.md) has the steps.
 

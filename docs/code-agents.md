@@ -25,9 +25,12 @@ repo issue #17; the app workstream: goose-phone-app#2.
 
 ## How a chat lives
 
-1. **Create** (app "new session", or `POST /api/chats {"repo","task","model"?}`):
-   the manager checks the allowlist, makes the volume, clones the repo and
-   checks out `agent/<id>` *in a throwaway container* (the PAT arrives only as
+1. **Create** (app "new session", or
+   `POST /api/chats {"repo","task","model"?,"base"?}`):
+   the manager checks the allowlist, validates `base` against GitHub before it
+   builds anything, makes the volume, clones the repo — from `base` when one
+   was named, otherwise the repo's default HEAD — and checks out `agent/<id>`
+   *in a throwaway container* (the PAT arrives only as
    an env var — nothing token-shaped is written to disk), runs the repo's
    declared `setup` command if any, renders the chat's opencode config, seeds
    Zen auth, and starts the container. Commits in this workspace use the
@@ -107,6 +110,9 @@ curl -u opencode:$OPENCODE_SERVER_PASSWORD -X POST https://<brain>:4300/api/chat
   -H 'Content-Type: application/json' \
   -d '{"repo":"personal-ai-setup","task":"fix the flaky verify script"}'
 
+# what the app's base-branch picker shows (default marked)
+curl -u ... https://<brain>:4300/api/repos/<name>/branches
+
 # wake / stop / delete
 curl -u ... -X POST   https://<brain>:4300/api/chats/<id>/wake
 curl -u ... -X POST   https://<brain>:4300/api/chats/<id>/stop
@@ -121,9 +127,11 @@ scripts/verify/check-code-agents.sh --probe
 
 # full integration test — NO containers, NO VPS, no API key: the manager
 # runs for real against a stub engine + a protocol-faithful mock OpenCode
-# server. 30 checks over the whole lifecycle (auth, guards, clone/branch/
-# setup, SSE live-streaming through the proxy, the blocking permission
-# flow, busy-guarded idle spin-down, wake with state intact, purge).
+# server. It walks the whole lifecycle: auth, guards, clone/branch/setup,
+# base branches (listing them, cutting a chat from one, and refusing a bad
+# one without building anything), SSE live-streaming through the proxy, the
+# blocking permission flow, busy-guarded idle spin-down, wake with state
+# intact, purge.
 scripts/verify/test-code-agent-manager.sh
 # ...or keep the same stack up to drive other clients at it
 # (e.g. goose-phone-app: cargo run -p opencode-client --example smoke):

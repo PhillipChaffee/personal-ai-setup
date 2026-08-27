@@ -15,6 +15,9 @@ Implements (Basic auth required, any username + the --password value):
     POST /session/<id>/prompt_async        204; scripted turn over SSE
     POST /session/<id>/abort               cancel the turn
     GET  /session/<id>/diff                canned FileDiff[]
+    GET  /config/providers, GET /provider  model catalogue (same, two keys)
+    GET  /config                           the chat's resolved opencode config
+    GET  /agent                            selectable agents (the "mode")
     GET  /permission                       pending permission asks
     POST /session/<id>/permissions/<pid>   {"response": once|always|reject}
     GET  /event                            SSE (server.connected, heartbeats,
@@ -37,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import json
 import os
 import secrets
@@ -101,21 +105,48 @@ class PendingPermission:
 PENDING: dict[str, PendingPermission] = {}
 
 
-@dataclass(frozen=True)
+@dataclass
 class Session:
     id: str
     title: str
     directory: str
+    # What the last turn asked to run on. OpenCode records this when a TURN
+    # IS SENT, not when a model is picked, and the session record is then the
+    # server's answer to "what will the next turn use" — which is the thing a
+    # client has to reconcile its own pending pick against.
+    model: str = ""
+    variant: str = ""
+    agent: str = ""
 
     def to_wire(self) -> Wire:
-        return {"id": self.id, "title": self.title, "directory": self.directory}
+        wire: Wire = {"id": self.id, "title": self.title, "directory": self.directory}
+        if self.model:
+            provider, _, model_id = self.model.partition("/")
+            entry: Wire = {"providerID": provider, "id": model_id}
+            if self.variant:
+                entry["variant"] = self.variant
+            wire["model"] = entry
+        if self.agent:
+            wire["agent"] = self.agent
+        return wire
 
     @classmethod
     def from_wire(cls, raw: dict[str, Any]) -> Session:
+        model = raw.get("model")
+        reference = variant = ""
+        if isinstance(model, dict):
+            provider = str(model.get("providerID", ""))
+            model_id = str(model.get("id", ""))
+            if provider and model_id:
+                reference = f"{provider}/{model_id}"
+            variant = str(model.get("variant", ""))
         return cls(
             id=str(raw.get("id", "")),
             title=str(raw.get("title", "")),
             directory=str(raw.get("directory", "")),
+            model=reference,
+            variant=variant,
+            agent=str(raw.get("agent", "")),
         )
 
 
@@ -149,9 +180,14 @@ class StoredMessage:
     def from_wire(cls, raw: dict[str, Any]) -> StoredMessage:
         info_raw = raw.get("info")
         parts_raw = raw.get("parts")
-        parts: list[Wire] = [p for p in parts_raw if isinstance(p, dict)] if isinstance(
-            parts_raw, list,
-        ) else []
+        parts: list[Wire] = (
+            [p for p in parts_raw if isinstance(p, dict)]
+            if isinstance(
+                parts_raw,
+                list,
+            )
+            else []
+        )
         return cls(
             info=MessageInfo.from_wire(info_raw if isinstance(info_raw, dict) else {}),
             parts=parts,
@@ -178,11 +214,7 @@ class State:
             return cls()
         if not isinstance(raw, dict):
             return cls()
-        sessions = [
-            Session.from_wire(s)
-            for s in raw.get("sessions", [])
-            if isinstance(s, dict)
-        ]
+        sessions = [Session.from_wire(s) for s in raw.get("sessions", []) if isinstance(s, dict)]
         messages: dict[str, list[StoredMessage]] = {}
         raw_messages = raw.get("messages", {})
         if isinstance(raw_messages, dict):
@@ -197,8 +229,7 @@ class State:
         payload: Wire = {
             "sessions": [s.to_wire() for s in self.sessions],
             "messages": {
-                sid: [m.to_wire() for m in entries]
-                for sid, entries in self.messages.items()
+                sid: [m.to_wire() for m in entries] for sid, entries in self.messages.items()
             },
         }
         path = self.path()
@@ -206,6 +237,318 @@ class State:
         with tmp.open("w", encoding="utf-8") as f:
             json.dump(payload, f, indent=1)
         tmp.replace(path)
+
+
+# ------------------------------------------------------------- canned diff
+#
+# Shaped like the real thing rather than minimally: OpenCode's `Snapshot`
+# asks jsdiff for `context: Number.MAX_SAFE_INTEGER`, so every entry is one
+# `@@` hunk carrying the *whole* file. A client that renders this has to
+# re-hunk it, and a one-line canned patch never exercises that — nor the
+# per-file collapse, the gap expansion, the render cap, the binary case, or
+# a deletion with nothing to show. This does.
+
+
+def _whole_file_patch(
+    path: str,
+    lines: list[str],
+    edits: dict[int, list[str] | None],
+    status: str,
+) -> tuple[str, int, int]:
+    """Build a full-context unified patch, the way `Snapshot.diffFull` writes one.
+
+    `edits` maps a 0-based index in `lines` to its replacement lines, or to
+    `None` for a deletion. Everything else comes through as context. A file
+    that was added has no old side at all, so `edits` is ignored for it and
+    every line is an addition — a client that trusts the counts should never
+    see an added file reporting deletions.
+    """
+    body: list[str] = []
+    added = removed = 0
+    if status == "added":
+        body = [f"+{line}" for line in lines]
+        added = len(lines)
+        old_start, old_n = 0, 0
+    else:
+        for i, line in enumerate(lines):
+            if i not in edits:
+                body.append(f" {line}")
+                continue
+            body.append(f"-{line}")
+            removed += 1
+            for new in edits[i] or []:
+                body.append(f"+{new}")
+                added += 1
+        old_start, old_n = 1, len(lines)
+    new_n = len(lines) - removed + added if status != "added" else len(lines)
+    new_start = 0 if new_n == 0 else 1
+    head = (
+        f"Index: {path}\n"
+        "===================================================================\n"
+        f"--- a/{path}\n+++ b/{path}\n"
+        f"@@ -{old_start},{old_n} +{new_start},{new_n} @@\n"
+    )
+    return head + "\n".join(body) + "\n", added, removed
+
+
+def _entry(
+    path: str,
+    lines: list[str],
+    edits: dict[int, list[str] | None],
+    status: str = "modified",
+) -> Wire:
+    patch, added, removed = _whole_file_patch(path, lines, edits, status)
+    return {
+        "path": path,
+        "patch": patch,
+        "additions": added,
+        "deletions": removed,
+        "status": status,
+    }
+
+
+# A short file with two separate edits far enough apart to leave a gap that
+# has to be collapsed and can then be expanded.
+_CONFIG = [
+    "[package]",
+    'name = "goose-mobile"',
+    'version = "0.1.0"',
+    'edition = "2021"',
+    "",
+    "[dependencies]",
+    'dioxus = { version = "0.7", features = ["router"] }',
+    'serde = { version = "1", features = ["derive"] }',
+    'serde_json = "1"',
+    'tokio = { version = "1", features = ["rt", "macros"] }',
+    "",
+    "[dev-dependencies]",
+    'pretty_assertions = "1"',
+    "",
+    "[profile.release]",
+    "lto = true",
+    'panic = "abort"',
+]
+
+# Long enough to run past the renderer's cap, so the "not all of this is
+# shown" path is reachable at all.
+_LONG = [f"    let row_{i} = table.row({i});" for i in range(1200)]
+
+DIFF: list[Wire] = [
+    _entry(
+        "Cargo.toml",
+        _CONFIG,
+        {2: ['version = "0.2.0"'], 15: ['lto = "fat"', "codegen-units = 1"]},
+    ),
+    _entry(
+        "src/diff.rs",
+        [
+            "//! Re-hunking a whole-file patch.",
+            "",
+            "pub fn parse(patch: &str) -> Vec<DiffLine> {",
+            "    patch.lines().skip(4).map(DiffLine::from).collect()",
+            "}",
+        ],
+        {
+            3: [
+                "    patch",
+                "        .lines()",
+                '        .skip_while(|l| !l.starts_with("@@"))',
+                "        .skip(1)",
+                "        .map(DiffLine::from)",
+                "        .collect()",
+            ],
+        },
+        status="added",
+    ),
+    _entry(
+        "src/legacy_tabs.rs",
+        ["pub fn tab_bar() -> Element {", '    rsx! { nav { class: "tabs" } }', "}"],
+        {0: None, 1: None, 2: None},
+        status="deleted",
+    ),
+    _entry(
+        "src/table.rs",
+        _LONG,
+        {
+            40: ["    let row_40 = table.row(40).cached();"],
+            900: ["    let row_900 = table.row(900).cached();"],
+        },
+    ),
+    {"path": "assets/icon.png", "patch": "", "additions": 0, "deletions": 0, "status": "modified"},
+]
+
+
+# ------------------------------------------------------- model catalogue
+#
+# `GET /config/providers` and `GET /provider` carry the same providers under
+# different keys; the client tries the first and falls back to the second, so
+# both are served. Models are picked to cover what a client has to handle
+# rather than to be realistic about any one vendor:
+#
+#   - a model with thinking-effort variants, and one with none at all (the
+#     minimax/qwen/glm/kimi families genuinely return no variants)
+#   - variants deliberately out of ladder order, since the wire shape is a
+#     JSON object and a client sorting them alphabetically would put `high`
+#     before `low`
+#   - context windows spanning three orders of magnitude, including one
+#     declared as a float
+#   - a name long enough to overflow a chip, and a free model, which the app
+#     must withhold from a repo that is not a public throwaway
+
+
+def _model(
+    name: str,
+    context: float,
+    variants: list[str] | None = None,
+) -> Wire:
+    return {
+        "name": name,
+        "limit": {"context": context},
+        "variants": {v: {} for v in variants or []},
+    }
+
+
+PROVIDERS: list[Wire] = [
+    {
+        "id": "opencode",
+        "models": {
+            "deepseek-v4-flash": _model("DeepSeek V4 Flash", 128000),
+            "claude-sonnet-4-5": _model(
+                "Claude Sonnet 4.5",
+                200000,
+                ["high", "low", "medium", "none"],
+            ),
+            "qwen3-coder-480b": _model("Qwen3 Coder 480B A35B Instruct", 262144),
+            "grok-code-fast-free": _model("Grok Code Fast (free)", 256000),
+        },
+    },
+    {
+        "id": "anthropic",
+        "models": {
+            "claude-opus-4-1": _model(
+                "Claude Opus 4.1",
+                1000000.0,
+                ["max", "medium", "xhigh"],
+            ),
+        },
+    },
+]
+
+
+# ------------------------------------------------------------ agent catalogue
+#
+# `GET /agent` is how a client discovers the modes it can run a turn in — the
+# agent rides the prompt body alongside the model, so switching costs nothing
+# and needs no restart.
+#
+# The shape follows OpenCode's own Agent type. The field that matters most to
+# a client is `mode`: only `primary` and `all` agents can be selected for a
+# turn, and a `subagent` is something the primary one calls. A picker that
+# offers a subagent is offering something the server will refuse, so one is
+# included here on purpose — a client that filters correctly must not show it.
+
+
+def _agent(
+    name: str,
+    description: str,
+    mode: str,
+    *,
+    grants: dict[str, str] | None = None,
+    extra: Wire | None = None,
+) -> Wire:
+    permission = {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "doom_loop": "ask",
+        "external_directory": "deny",
+    }
+    permission.update(grants or {})
+    entry: Wire = {
+        "name": name,
+        "description": description,
+        "mode": mode,
+        "builtIn": True,
+        "permission": permission,
+        "tools": {},
+        "options": {},
+    }
+    entry.update(extra or {})
+    return entry
+
+
+AGENTS: list[Wire] = [
+    _agent("build", "Full access to edit and run commands", "primary"),
+    _agent(
+        "plan",
+        "Read-only. Produces a plan before making changes",
+        "primary",
+        grants={"edit": "deny", "bash": "ask"},
+    ),
+    _agent(
+        "accept-edits",
+        "Applies file edits without asking",
+        "all",
+        extra={"builtIn": False, "color": "#7C5CFF"},
+    ),
+    # Never selectable for a turn; a picker that shows this one is wrong.
+    _agent("general", "Subagent for open-ended search", "subagent"),
+]
+
+# Routes that answer with a constant. Kept as a table so adding one does not
+# make the dispatcher harder to read.
+# The chat's own resolved config — what render_chat_config() in the manager
+# writes into <chat>/home/.config/opencode/opencode.json, served back after
+# opencode has resolved it. `model` is the one field a client reads: it is the
+# model a turn that names none runs on, and the only place that fact exists
+# for a chat created without an explicit model (its chat record says null and
+# its session record says nothing until a turn has been sent).
+CHAT_CONFIG: Wire = {
+    "$schema": "https://opencode.ai/config.json",
+    "model": "opencode/deepseek-v4-flash",
+    "small_model": "opencode/minimax-m2.7",
+    "share": "disabled",
+}
+
+CATALOGUE: dict[str, Any] = {
+    "/config/providers": lambda: {"providers": PROVIDERS},
+    "/provider": lambda: {"all": PROVIDERS},
+    "/config": lambda: CHAT_CONFIG,
+    "/agent": lambda: AGENTS,
+}
+
+
+def record_turn_choices(sid: str, body: dict[str, Any]) -> None:
+    """Copy what a turn asked to run on onto the session record.
+
+    OpenCode writes these when a turn is SENT, not when they are picked, which
+    is what makes the session record the server's answer to "what will the next
+    turn use" — and so the thing a client has to reconcile an unsent pick
+    against.
+    """
+    agent = body.get("agent")
+    model = body.get("model")
+    variant = body.get("variant")
+    reference = ""
+    if isinstance(model, dict):
+        provider = str(model.get("providerID", ""))
+        model_id = str(model.get("modelID", "") or model.get("id", ""))
+        if provider and model_id:
+            reference = f"{provider}/{model_id}"
+    if not reference and not isinstance(agent, str):
+        return
+    with STATE_LOCK:
+        state = State.load()
+        for session in state.sessions:
+            if session.id != sid:
+                continue
+            if reference:
+                session.model = reference
+                session.variant = variant if isinstance(variant, str) else ""
+            if isinstance(agent, str) and agent:
+                session.agent = agent
+            state.save()
+            return
 
 
 # ------------------------------------------------------- wire-part builders
@@ -219,6 +562,61 @@ def text_part(msg_id: str, session_id: str, text: str, part_id: str | None = Non
         "type": "text",
         "text": text,
     }
+
+
+def file_part(msg_id: str, session_id: str, attachment: Wire) -> Wire:
+    """One attachment, echoed back on the user's message as OpenCode does."""
+    part: Wire = {
+        "id": f"prt_{secrets.token_hex(4)}",
+        "messageID": msg_id,
+        "sessionID": session_id,
+        "type": "file",
+        "mime": attachment.get("mime", "application/octet-stream"),
+        "url": attachment.get("url", ""),
+    }
+    if attachment.get("filename"):
+        part["filename"] = attachment["filename"]
+    return part
+
+
+def expand_text_attachment(msg_id: str, session_id: str, attachment: Wire) -> list[Wire]:
+    """Reproduce what OpenCode does to a text/plain attachment.
+
+    It does not simply keep the file part: it decodes the file and persists
+    TWO extra parts onto the user's own message — a synthetic line claiming a
+    read tool ran, and the whole file's contents as text. Both carry
+    `synthetic: true`.
+
+    A client that renders every part of a user message gets two bubbles it
+    never sent, containing a tool call that never happened and a copy of the
+    file. That is a real thing to have to defend against, so the mock does it
+    rather than pretending attachments come back the way they went out.
+    """
+    raw = str(attachment.get("url", ""))
+    marker = ";base64,"
+    body = ""
+    if marker in raw:
+        with contextlib.suppress(ValueError, UnicodeDecodeError):
+            body = base64.b64decode(raw.split(marker, 1)[1]).decode("utf-8", "replace")
+    name = attachment.get("filename") or "attachment"
+    return [
+        {
+            "id": f"prt_{secrets.token_hex(4)}",
+            "messageID": msg_id,
+            "sessionID": session_id,
+            "type": "text",
+            "text": f"Called the Read tool with the following input: {{'filePath': '{name}'}}",
+            "synthetic": True,
+        },
+        {
+            "id": f"prt_{secrets.token_hex(4)}",
+            "messageID": msg_id,
+            "sessionID": session_id,
+            "type": "text",
+            "text": body,
+            "synthetic": True,
+        },
+    ]
 
 
 def tool_part(msg_id: str, session_id: str, status: str, title: str, output: str = "") -> Wire:
@@ -248,24 +646,33 @@ def publish(event_type: str, properties: Wire) -> None:
 # ------------------------------------------------------------- the turn
 
 
-def run_turn(session_id: str, prompt: str) -> None:
+def run_turn(session_id: str, prompt: str, files: list[Wire] | None = None) -> None:
     BUSY.add(session_id)
     try:
         user_msg = MessageInfo(
-            id=f"msg_{secrets.token_hex(4)}", role="user", session_id=session_id,
+            id=f"msg_{secrets.token_hex(4)}",
+            role="user",
+            session_id=session_id,
         )
-        user_part = text_part(user_msg.id, session_id, prompt)
+        parts = [text_part(user_msg.id, session_id, prompt)]
+        for attachment in files or []:
+            parts.append(file_part(user_msg.id, session_id, attachment))
+            if str(attachment.get("mime", "")).startswith("text/"):
+                parts.extend(expand_text_attachment(user_msg.id, session_id, attachment))
         with STATE_LOCK:
             state = State.load()
             state.messages.setdefault(session_id, []).append(
-                StoredMessage(info=user_msg, parts=[user_part]),
+                StoredMessage(info=user_msg, parts=list(parts)),
             )
             state.save()
         publish("message.updated", {"info": user_msg.to_wire()})
-        publish("message.part.updated", {"part": user_part})
+        for part in parts:
+            publish("message.part.updated", {"part": part})
 
         asst = MessageInfo(
-            id=f"msg_{secrets.token_hex(4)}", role="assistant", session_id=session_id,
+            id=f"msg_{secrets.token_hex(4)}",
+            role="assistant",
+            session_id=session_id,
         )
         publish("message.updated", {"info": asst.to_wire()})
 
@@ -283,7 +690,11 @@ def run_turn(session_id: str, prompt: str) -> None:
                 },
             )
             time.sleep(0.15)
-        parts: list[Wire] = [text_part(asst.id, session_id, acc, part_id=stream_id)]
+        # A DIFFERENT list from the user message's `parts` above, and named so:
+        # rebinding that name is what mypy reports as a redefinition, and the
+        # two are genuinely unrelated — one is what the user sent, this is what
+        # the assistant streamed back.
+        asst_parts: list[Wire] = [text_part(asst.id, session_id, acc, part_id=stream_id)]
 
         # A push-flavored prompt exercises the blocking permission flow.
         rejected = False
@@ -318,7 +729,7 @@ def run_turn(session_id: str, prompt: str) -> None:
                 else "To github.com: agent/branch pushed",
             )
             publish("message.part.updated", {"part": done})
-            parts.append(done)
+            asst_parts.append(done)
 
         wants_pr = "pull request" in prompt.lower() or " pr" in f" {prompt.lower()}"
         final_text = (
@@ -330,12 +741,12 @@ def run_turn(session_id: str, prompt: str) -> None:
         )
         final = text_part(asst.id, session_id, final_text)
         publish("message.part.updated", {"part": final})
-        parts.append(final)
+        asst_parts.append(final)
 
         with STATE_LOCK:
             state = State.load()
             state.messages.setdefault(session_id, []).append(
-                StoredMessage(info=asst, parts=parts),
+                StoredMessage(info=asst, parts=asst_parts),
             )
             state.save()
     finally:
@@ -403,6 +814,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {sid: {"type": "busy"} for sid in sorted(BUSY)})
         elif (path, verb) == ("/permission", "GET"):
             self.send_json(200, [entry.perm.to_wire() for entry in PENDING.values()])
+        elif verb == "GET" and path in CATALOGUE:
+            self.send_json(200, CATALOGUE[path]())
         elif len(parts) >= SESSION_PATH_PARTS and parts[0] == "session":
             self.route_session(parts)
         else:
@@ -448,13 +861,19 @@ class Handler(BaseHTTPRequestHandler):
         body = self.read_json()
         body_parts = body.get("parts", [])
         text = ""
+        files: list[Wire] = []
         if isinstance(body_parts, list):
             for part in body_parts:
-                if isinstance(part, dict) and part.get("type") == "text":
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
                     value = part.get("text", "")
                     if isinstance(value, str):
                         text += value
-        threading.Thread(target=run_turn, args=(sid, text), daemon=True).start()
+                elif part.get("type") == "file":
+                    files.append(part)
+        record_turn_choices(sid, body)
+        threading.Thread(target=run_turn, args=(sid, text, files), daemon=True).start()
         self.send_response(204)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -470,20 +889,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(200, obj=True)
 
     def route_diff(self) -> None:
-        self.send_json(
-            200,
-            [
-                {
-                    "path": "README.md",
-                    "additions": 3,
-                    "deletions": 1,
-                    "patch": (
-                        "--- a/README.md\n+++ b/README.md\n@@ -1 +1,3 @@\n"
-                        "-old\n+new line one\n+new line two\n+new line three\n"
-                    ),
-                },
-            ],
-        )
+        self.send_json(200, DIFF)
 
     def route_permission_reply(self, permission_id: str) -> None:
         entry = PENDING.get(permission_id)
@@ -544,16 +950,20 @@ def main() -> None:
     ap.add_argument("--port", type=int, required=True)
     ap.add_argument("--dir", required=True, help="the chat volume dir")
     ap.add_argument(
-        "--password", default=os.environ.get("OPENCODE_SERVER_PASSWORD", "mock"),
+        "--password",
+        default=os.environ.get("OPENCODE_SERVER_PASSWORD", "mock"),
     )
     args = ap.parse_args()
     CONFIG = Config(
-        port=int(args.port), dir=Path(str(args.dir)), password=str(args.password),
+        port=int(args.port),
+        dir=Path(str(args.dir)),
+        password=str(args.password),
     )
     server = ThreadingHTTPServer(("127.0.0.1", CONFIG.port), Handler)
     server.daemon_threads = True
     print(  # noqa: T201 — the harness greps stdout for this line
-        f"mock-opencode-server: 127.0.0.1:{CONFIG.port} dir={CONFIG.dir}", flush=True,
+        f"mock-opencode-server: 127.0.0.1:{CONFIG.port} dir={CONFIG.dir}",
+        flush=True,
     )
     server.serve_forever()
 

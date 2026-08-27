@@ -165,6 +165,50 @@ if [ "$MODE" = "local" ]; then
   fi
 fi
 
+# ---- 5b. the routes the phone app needs ------------------------------------
+# EVERY check above this line is answered identically by an OLD manager, which
+# is what made a failed deploy invisible: `systemctl enable --now` is a no-op on
+# a running unit, so the file on disk changed and the process did not, and
+# health/chats/wake/stop/delete all kept passing. A 404 from a stale process
+# looks exactly like a route that was never written.
+#
+# These four are the ones the app calls and older managers do not serve. They
+# are probed for "not 404" rather than for a body: the point is which PROCESS
+# is answering, and a 502 from GitHub or a 404 for an unknown chat id both
+# prove the route exists.
+if [ -n "$AUTH" ]; then
+  echo
+  echo "-- routes the phone app needs (an old process 404s these) --"
+  probe_route() {
+    # shellcheck disable=SC2086
+    CODE="$($CURL $AUTH -o /dev/null -w '%{http_code}' "$BASE$1" || echo 000)"
+    case "$CODE" in
+      404) fail "$1 -> 404 (stale manager? restart code-agent-manager)" ;;
+      000) fail "$1 -> unreachable" ;;
+      *)   pass "$1 -> $CODE" ;;
+    esac
+  }
+  probe_route "/api/permissions"
+  # A repo from the allowlist, so the 403 "not allowlisted" arm is not what we
+  # measure. Falls back to a name that will 403 rather than 404 if the list is
+  # empty, which still distinguishes the two processes.
+  PROBE_REPO="$($CURL $AUTH "$BASE/api/repos" 2>/dev/null \
+    | python3 -c 'import json,sys
+try: print((json.load(sys.stdin).get("repos") or [{}])[0].get("name",""))
+except Exception: print("")' 2>/dev/null || true)"
+  probe_route "/api/repos/${PROBE_REPO:-_probe}/branches"
+  # An id that does not exist: the route answering 404-for-unknown-chat and the
+  # route not existing are both 404, so this one is probed for the ERROR TEXT.
+  # shellcheck disable=SC2086
+  BODY="$($CURL $AUTH "$BASE/api/chats/_nonexistent/pulls" 2>/dev/null || true)"
+  if printf '%s' "$BODY" | grep -qi "unknown chat"; then
+    pass "/api/chats/<id>/pulls -> route present (unknown chat)"
+  else
+    fail "/api/chats/<id>/pulls -> no 'unknown chat' (stale manager? restart it)"
+    note "got: $(printf '%s' "$BODY" | head -c 120)"
+  fi
+fi
+
 # ---- 6. deep probe (--probe, local) -----------------------------------------
 if [ "$PROBE" = "yes" ] && [ -n "$AUTH" ]; then
   echo
