@@ -222,8 +222,11 @@ if [ "$PROBE" = "yes" ] && [ -n "$AUTH" ]; then
     CN="code-agent-$CID"
 
     # Minimized environment: none of the stack's other secrets may exist.
+    # NTFY_AGENT_TOPIC is on this list for a sharper reason than the rest. It is
+    # a SEND capability onto a lock screen, so an agent that could read it out
+    # of its own environment could notify its owner in its owner's voice.
     LEAKED=""
-    for var in GOOGLE_OAUTH_CLIENT_SECRET TELEGRAM_BOT_TOKEN NTFY_TOPIC GOOSE_SERVER__SECRET_KEY OPENCODE_ZEN_API_KEY; do
+    for var in GOOGLE_OAUTH_CLIENT_SECRET TELEGRAM_BOT_TOKEN NTFY_TOPIC NTFY_AGENT_TOPIC GOOSE_SERVER__SECRET_KEY OPENCODE_ZEN_API_KEY; do
       if podman exec "$CN" sh -c "printenv $var" >/dev/null 2>&1; then LEAKED="$LEAKED $var"; fi
     done
     if [ -z "$LEAKED" ]; then

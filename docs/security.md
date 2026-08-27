@@ -24,6 +24,15 @@ Companion to [privacy.md](privacy.md) (which providers may see what) and
 - **A compromised phone or Mac.** Client devices hold pairing credentials and tailnet
   membership by design; device security (passcode, FileVault, OS updates) is assumed, not
   provided by this repo.
+- **The lock screen, once `NTFY_AGENT_TOPIC` is set.** Subscribing a phone to the
+  code-agent channel puts a rendering surface outside the tailnet and outside the app
+  container: notifications arrive on a *locked* screen, and iOS's Show Previews setting is
+  per-device and unreadable from the brain. This is accepted only because the payload is
+  content-free by construction — a kind, an opaque handle and a count, never a repo name,
+  a chat title or a tool argument ([privacy.md](privacy.md)). The topic name is also a
+  **write** capability in that direction: anyone who learns it can plant a plausible-looking
+  notification there, which is why the notification is never itself answerable and why the
+  app re-reads the real ask over the tailnet before offering any button.
 
 ## Network exposure: zero public inbound ports
 
@@ -155,7 +164,8 @@ the manifest-side contract is in
   CI; audited by the [public-repo.md](public-repo.md) checklist.
 
 The full secret roster: `OPENCODE_ZEN_API_KEY`, `TOGETHER_API_KEY`,
-`GOOSE_SERVER__SECRET_KEY`, `NTFY_TOPIC`, `NTFY_EMAIL`, `TAVILY_API_KEY` (optional),
+`GOOSE_SERVER__SECRET_KEY`, `NTFY_TOPIC`, `NTFY_AGENT_TOPIC` (optional), `NTFY_EMAIL`,
+`TAVILY_API_KEY` (optional),
 `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` — plus, outside env vars: the LUKS
 passphrase (password manager only), the Tailscale auth key (Terraform tfvars, untracked),
 and the Google OAuth token files on `/data`.
@@ -197,6 +207,7 @@ new → update stores (Keychain on Mac, `/data/secrets.env` on brain) → restar
 | Tailscale | Admin console → Machines / Keys | Auth keys are one-time (bootstrap); rotate device keys by re-authing; remove stale devices |
 | Google OAuth client secret | GCP console → Credentials | Re-run the workspace-mcp auth flow; re-transfer tokens per `docs/setup/30-google-oauth.md` |
 | `NTFY_TOPIC` | Pick a new random topic | Update secrets.env + Keychain; old topic is burned |
+| `NTFY_AGENT_TOPIC` | Pick a new random topic | The code-agent buzz channel, rotated INDEPENDENTLY of `NTFY_TOPIC` — that separation is the whole reason it is a second variable. Update secrets.env + Keychain, `sudo systemctl restart code-agent-manager`, then re-subscribe the phone's ntfy app to the new topic. Unlike every other row here this is not only a read credential: whoever holds it can also SEND, i.e. put a notification on your lock screen, so rotate on any suspicion at all. Removing the phone from the tailnet does **not** revoke it — delivery goes over the public internet, never the tailnet. Leaving it empty turns the feature off outright |
 | `OPENCODE_SERVER_PASSWORD` | Generate locally (`openssl rand -hex 32`) | Update secrets.env, `sudo systemctl restart code-agent-manager`, re-enter in the app's Code settings. Container env is baked at creation: recreate each chat's container to rotate it there too (`podman rm code-agent-<id>`, then wake — the volume keeps all state) |
 | `GITHUB_CODE_AGENT_PAT` | GitHub → Settings → Developer settings → Fine-grained tokens | Keep scope: allowlisted repos only, Contents + Pull requests. Update secrets.env, restart code-agent-manager; new chats get the new token immediately, existing chats after a container recreate (`podman rm` + wake, volume preserved) |
 | LUKS passphrase | `sudo cryptsetup luksChangeKey /dev/disk/by-id/<volume>` | Update the password manager first; test unlock before closing the session |

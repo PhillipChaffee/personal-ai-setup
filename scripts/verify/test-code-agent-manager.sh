@@ -7,7 +7,10 @@
 #   auth · allowlist + zen-free guards · create (clone/branch/setup/config/
 #   auth seed) · base branches (list, cut-from, refusals) · max-active refusal ·
 #   proxying incl. SSE · the blocking permission flow · busy-guarded idle
-#   spin-down · wake-on-request with state intact · stop/wake/delete-purge
+#   spin-down · wake-on-request with state intact · stop/wake/delete-purge ·
+#   the agent notifications, against a recording fake ntfy (fake-ntfy.py):
+#   each edge fires once, later passes do not re-fire, an abort is silent, and
+#   the payload is asserted content-free against the bytes that left the box
 #
 # Runs anywhere with python3 + git + curl. Exits non-zero on any failure.
 #
@@ -40,9 +43,11 @@ cstate() { STUB_ENGINE_STATE="$WORK/stub" "$HERE/stub-engine.sh" container inspe
 
 MANAGER_PID=""
 GITHUB_PID=""
+NTFY_PID=""
 cleanup() {
   [ -n "$MANAGER_PID" ] && kill "$MANAGER_PID" 2>/dev/null || true
   [ -n "$GITHUB_PID" ] && kill "$GITHUB_PID" 2>/dev/null || true
+  [ -n "$NTFY_PID" ] && kill "$NTFY_PID" 2>/dev/null || true
   for pid in "$WORK"/stub/*.pid; do
     [ -f "$pid" ] && kill "$(cat "$pid")" 2>/dev/null || true
   done
@@ -115,7 +120,40 @@ for _ in $(seq 1 20); do
   sleep 0.3
 done
 
+# A recording ntfy, so the agent-notification channel can be asserted on the
+# exact bytes that left the manager rather than on the manager's intentions.
+# Two topics on purpose: the failure channel (NTFY_TOPIC, notify.sh) and the
+# agent channel (NTFY_AGENT_TOPIC) must be separately burnable, so the tests
+# below check the notifications landed on the second and never the first.
+NTFY_PORT="${NTFY_PORT:-$((PORT - 2))}"
+NTFY_LOG="$WORK/ntfy.jsonl"
+FAILURE_TOPIC="failure-topic-$$"
+AGENT_TOPIC="agent-topic-$$"
+python3 "$HERE/fake-ntfy.py" --port "$NTFY_PORT" --out "$NTFY_LOG" &
+NTFY_PID=$!
+for _ in $(seq 1 20); do
+  curl -sS -o /dev/null "http://127.0.0.1:$NTFY_PORT/ready" && break
+  sleep 0.3
+done
+# Every notification recorded so far, filtered to one kind.
+ntfy_count() { python3 -c '
+import json, sys
+kind = sys.argv[1]
+n = 0
+for line in open(sys.argv[2], encoding="utf-8"):
+    line = line.strip()
+    if not line:
+        continue
+    body = json.loads(line)["body"]
+    if isinstance(body, dict) and body.get("kind") == kind:
+        n += 1
+print(n)
+' "$1" "$NTFY_LOG"; }
+
 env -i PATH="$PATH" HOME="$HOME" \
+  NTFY_SERVER="http://127.0.0.1:$NTFY_PORT" \
+  NTFY_TOPIC="$FAILURE_TOPIC" \
+  NTFY_AGENT_TOPIC="$AGENT_TOPIC" \
   CODE_AGENT_BIND=127.0.0.1 \
   CODE_AGENT_PORT=$PORT \
   CODE_AGENT_ROOT="$WORK/root" \
@@ -291,6 +329,54 @@ sleep 6
   && ok "busy chat survives the idle reaper (blocked on the ask)" \
   || bad "reaper stopped a busy chat"
 
+# ---- 5ab. the phone gets buzzed about the ask, once ------------------------
+# The ask has been parked for >6s, so the reaper has swept at least three times
+# (CODE_AGENT_REAPER_INTERVAL=2). Exactly one notification must have gone out:
+# the first pass announces it, and every pass after that must recognise the
+# same ask id and stay quiet. Getting this wrong is not a cosmetic bug — it is
+# a phone buzzing every sixty seconds until somebody answers.
+[ "$(ntfy_count ask)" = "1" ] \
+  && ok "a parked ask buzzes the phone exactly once, not once per reaper pass" \
+  || bad "expected 1 ask notification, got $(ntfy_count ask)"
+
+# And the payload. This is the assertion the whole channel rests on: the push
+# leaves the tailnet and renders on a LOCKED screen, so it must carry a kind, an
+# opaque handle and a count, and nothing else. Every field a designer reaches
+# for first is contaminated — chatId embeds the repo name, title is the first 80
+# characters of the raw prompt, and a bash ask's metadata is the shell command —
+# so the test names those actual values and demands their absence.
+python3 - "$NTFY_LOG" "$CID" "$AGENT_TOPIC" "$FAILURE_TOPIC" <<'EONTFY' \
+  && ok "the notification payload is content-free (kind, handle, count)" \
+  || bad "the notification carried content"
+import json, sys
+log, cid, agent_topic, failure_topic = sys.argv[1:5]
+records = [json.loads(l) for l in open(log, encoding="utf-8") if l.strip()]
+assert records, "nothing was sent to ntfy at all"
+for r in records:
+    assert r["topic"] == agent_topic, f"wrong topic: {r['topic']!r}"
+    assert r["topic"] != failure_topic, "the agent channel used the failure topic"
+    assert "Email" not in r["headers"], "an Email header would burn the ~5/day cap"
+    body = r["body"]
+    assert isinstance(body, dict), f"body is not JSON: {body!r}"
+    assert set(body) == {"kind", "handle", "count"}, f"extra fields on the wire: {sorted(body)}"
+    assert body["kind"] in ("ask", "turn"), body["kind"]
+    assert isinstance(body["count"], int) and body["count"] >= 1, body["count"]
+    assert isinstance(body["handle"], str) and body["handle"], body["handle"]
+    # The whole record, headers and all, against everything that must never
+    # travel: this chat's id (which embeds "testrepo"), the repo names, the
+    # task text that became the title, and the ask's own tool arguments.
+    blob = json.dumps(r).lower()
+    for secret in (cid.lower(), "testrepo", "throwaway", "ghrepo",
+                   "tidy the readme", "push the branch", "git push",
+                   "agent/", "release/2.x", "/chat/workspace"):
+        assert secret not in blob, f"the payload leaked {secret!r}: {r}"
+asks = [r for r in records if r["body"]["kind"] == "ask"]
+assert asks, "no ask notification"
+assert asks[0]["headers"]["Priority"] == "high", asks[0]["headers"]
+title = asks[0]["headers"]["Title"]
+assert title == "A code agent is waiting on you", repr(title)
+EONTFY
+
 # ---- 5aa. a parked ask must not take the whole plane offline ----------------
 # The other horn of the same fact. A blocked chat reports busy forever, so the
 # reaper touches it on every pass and it can never go idle again — and if it
@@ -348,6 +434,28 @@ done
 grep -q '"delta"' "$WORK/sse.log" \
   && ok "streamed deltas passed through the proxy" || bad "no deltas in SSE"
 kill "$SSE_PID" 2>/dev/null || true
+
+# ---- 5ac. the other edge: the turn that just ended --------------------------
+# The chat was ARMED when the manager proxied the prompt above; the turn has now
+# run to completion, so the next reaper sweep must fire "a turn ended" — once.
+# Not a busy->idle edge: at a 60s cadence in production a turn that starts and
+# finishes between two samples is never observed busy and would produce no edge
+# at all, which is exactly the pocket case this feature exists for.
+TURNS="0"
+for _ in $(seq 1 30); do
+  TURNS="$(ntfy_count turn)"
+  [ "$TURNS" != "0" ] && break
+  sleep 0.5
+done
+[ "$TURNS" = "1" ] && ok "the finished turn buzzes the phone" \
+  || bad "expected 1 turn notification, got $TURNS"
+
+# Three more reaper passes with nothing new happening. The chat is disarmed, so
+# every one of them must stay silent — otherwise an idle chat buzzes forever.
+sleep 6
+[ "$(ntfy_count turn)" = "1" ] && [ "$(ntfy_count ask)" = "1" ] \
+  && ok "later reaper passes do not re-fire either edge" \
+  || bad "re-fired: turn=$(ntfy_count turn) ask=$(ntfy_count ask)"
 
 # These may cross an idle spin-down (4s in test config) and wake the chat
 # transparently — allow for the wake window.
@@ -438,6 +546,41 @@ assert any("Read tool" in p.get("text", "") for p in synth), synth
 assert any("second line" in p.get("text", "") for p in synth), "file body not inlined"
 ' && ok "a text attachment round-trips, with the synthetic expansion" \
   || bad "attachment round-trip failed"
+
+# ---- 5ad. a turn you stopped yourself is not news ---------------------------
+# On the wire an abort and a natural completion are byte-identical — the mock
+# resolves the ask, discards the busy flag and publishes session.idle exactly
+# the way a finished turn does. The only thing that can tell them apart is that
+# the abort came through the manager's own proxy, so the manager disarms
+# instead of firing. You were holding the phone; you do not need telling.
+#
+# The same block proves ask dedup is keyed on the ASK ID and not on the chat:
+# this is a second push ask on a chat that has already had one announced, and
+# it must buzz again.
+ASKS_BEFORE="$(ntfy_count ask)"; TURNS_BEFORE="$(ntfy_count turn)"
+# shellcheck disable=SC2086
+$CURL --max-time 120 -X POST -H 'Content-Type: application/json' \
+  -d '{"parts":[{"type":"text","text":"push it again"}]}' \
+  "$BASE/chat/$CID/session/$SID/prompt_async" > /dev/null
+SECOND_PERM=""
+for _ in $(seq 1 20); do
+  # shellcheck disable=SC2086
+  SECOND_PERM="$($CURL "$BASE/chat/$CID/permission" | jget "d[0]['id'] if d else ''")"
+  [ -n "$SECOND_PERM" ] && break
+  sleep 0.5
+done
+# Give the reaper a sweep to notice the new ask before it is aborted away.
+sleep 3
+NEW_ASKS="$(ntfy_count ask)"
+# shellcheck disable=SC2086
+$CURL -X POST "$BASE/chat/$CID/session/$SID/abort" >/dev/null
+sleep 6
+[ "$NEW_ASKS" -gt "$ASKS_BEFORE" ] \
+  && ok "a second ask on the same chat buzzes again (dedup is per ask id)" \
+  || bad "the second ask was swallowed: $ASKS_BEFORE -> $NEW_ASKS"
+[ "$(ntfy_count turn)" = "$TURNS_BEFORE" ] \
+  && ok "an aborted turn does not buzz" \
+  || bad "abort fired a turn notification: $TURNS_BEFORE -> $(ntfy_count turn)"
 
 # ---- 5b. pull requests ------------------------------------------------------
 # These are GitHub calls the MANAGER makes. They must never proxy into the

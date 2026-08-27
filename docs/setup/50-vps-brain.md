@@ -114,7 +114,8 @@ agent@brain$ nano /data/secrets.env
 ```
 
 Fill every variable with the real values from your Keychain/notes:
-`OPENCODE_ZEN_API_KEY`, `TOGETHER_API_KEY`, `NTFY_TOPIC`, `NTFY_EMAIL`
+`OPENCODE_ZEN_API_KEY`, `TOGETHER_API_KEY`, `NTFY_TOPIC`, `NTFY_EMAIL`,
+`NTFY_AGENT_TOPIC` (optional)
 (recommended — the address failure alerts are emailed to), `TAVILY_API_KEY`
 (optional), `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` — and
 generate the one new secret now:
