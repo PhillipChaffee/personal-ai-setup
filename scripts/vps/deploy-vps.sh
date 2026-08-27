@@ -223,8 +223,25 @@ sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/code-agent-manager.service" /
 sudo systemctl daemon-reload
 if grep -q '^OPENCODE_SERVER_PASSWORD=..*' /data/secrets.env 2>/dev/null && \
    grep -q '^GITHUB_CODE_AGENT_PAT=..*' /data/secrets.env 2>/dev/null; then
-  sudo systemctl enable --now code-agent-manager.service >/dev/null
-  echo "    code agents: enabled (manager on the tailnet, port 4300)"
+  sudo systemctl enable code-agent-manager.service >/dev/null
+  # RESTART, not `enable --now`. `--now` means `start`, which is a NO-OP on a
+  # unit that is already running — so every deploy after the first one shipped
+  # a new code-agent-manager.py to disk and left the old process serving it,
+  # while printing the success line below. goose-serve (:244) is restarted
+  # explicitly for exactly this reason; this unit was the one that was not.
+  #
+  # The failure was undetectable from outside: check-code-agents.sh probes
+  # /api/health, /api/chats, stop, wake and delete, all of which the OLD
+  # process answers identically. A route added in this deploy would 404, and a
+  # 404 from a stale process looks exactly like a route that was never written.
+  #
+  # This SIGTERMs every chat container, because the unit's ExecStopPost stops
+  # anything labelled code-agent=1 and that runs during the stop half of a
+  # restart. Volumes, agent branches and transcripts survive; an in-flight turn
+  # and OpenCode's in-memory permission asks do not. Deploy when nothing is
+  # mid-turn.
+  sudo systemctl restart code-agent-manager.service
+  echo "    code agents: restarted (manager on the tailnet, port 4300)"
 else
   echo "    code agents: installed but not enabled (set OPENCODE_SERVER_PASSWORD"
   echo "    and GITHUB_CODE_AGENT_PAT in secrets.env; docs/setup/70-code-agents.md)"

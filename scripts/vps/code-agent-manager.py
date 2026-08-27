@@ -385,11 +385,27 @@ def pending_permissions() -> tuple[list[dict[str, object]], list[str]]:
             # to spliced in at the top level.
             found.extend({**row, "chatId": chat.id} for row in parsed if isinstance(row, dict))
 
-    threads = [threading.Thread(target=ask, args=(c,), daemon=True) for c in running]
-    for t in threads:
+    workers = [(c, threading.Thread(target=ask, args=(c,), daemon=True)) for c in running]
+    for _, t in workers:
         t.start()
-    for t in threads:
+    for _, t in workers:
         t.join(timeout=5)
+    # A join that TIMES OUT leaves the thread running and adds the chat to
+    # neither list, which is the one outcome the docstring above forbids: the
+    # app reads "in neither list" as "definitely nothing pending" and clears
+    # the card. Without this the fan-out has a window it cannot see, because
+    # the 3s timeout on the connection bounds connect, getresponse and read
+    # INDEPENDENTLY — a container answering successfully at 5-9s total trips
+    # none of them and still misses the 5s join.
+    #
+    # Measured, by running this function against an in-process fake connection:
+    # two running chats, the slow one answering in 5.8s with one parked ask,
+    # gave found=['fast-chat'], unreachable=[], and the slow chat in neither.
+    # Its ask would have vanished from the phone.
+    for chat, t in workers:
+        if t.is_alive():
+            with lock:
+                unreachable.append(chat.id)
     return found, unreachable
 
 
