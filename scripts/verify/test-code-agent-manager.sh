@@ -263,6 +263,29 @@ $CURL -X POST "$BASE/api/chats/$CID/stop" >/dev/null
 CODE="$($CURL --max-time 120 -o /dev/null -w '%{http_code}' -X POST "$BASE/api/chats/$CID/wake")"
 [ "$CODE" = "200" ] && [ "$(cstate "$CID")" = "running" ] \
   && ok "explicit wake endpoint" || bad "wake endpoint: HTTP $CODE, state $(cstate "$CID")"
+
+# Waking a chat that is ALREADY running — the one path the rest of this file
+# never takes, because every other wake here is preceded by a stop, so only the
+# stopped branch was ever exercised. That is why the self-deadlock in
+# wake_chat's running branch survived: it held the non-reentrant `_lock` and
+# called touch(), which re-acquires it, parking the request thread forever while
+# it still owned the lock and wedging the proxy, every later wake, create,
+# delete and the reaper for the life of the process.
+#
+# The second assertion is the one that matters. The first request can only fail
+# by timing out, and a timeout is precisely what leaves `_lock` orphaned — so
+# "is the gateway still serving afterwards" is the actual claim.
+# shellcheck disable=SC2086
+CODE="$($CURL --max-time 10 -o /dev/null -w '%{http_code}' -X POST "$BASE/api/chats/$CID/wake" || echo 000)"
+[ "$CODE" = "200" ] \
+  && ok "wake on an already-running chat returns" \
+  || bad "redundant wake: HTTP $CODE (000 = timed out holding _lock)"
+# shellcheck disable=SC2086
+CODE="$($CURL --max-time 10 -o /dev/null -w '%{http_code}' "$BASE/chat/$CID/session" || echo 000)"
+[ "$CODE" = "200" ] \
+  && ok "gateway still serving after a redundant wake" \
+  || bad "gateway wedged after redundant wake: HTTP $CODE"
+
 # shellcheck disable=SC2086
 $CURL -X DELETE "$BASE/api/chats/$CID?purge=1" >/dev/null
 [ ! -d "$WORK/root/chats/$CID" ] && ok "final delete purges" || bad "final purge failed"
