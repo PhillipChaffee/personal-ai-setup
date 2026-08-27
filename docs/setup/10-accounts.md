@@ -176,6 +176,34 @@ regardless of topic secrecy: alerts carry the recipe name only, **never model
 output or PHI** ([`docs/privacy.md`](../privacy.md)). Self-hosting ntfy is a
 roadmap item ([`docs/roadmap.md`](../roadmap.md)).
 
+### 6a. A second ntfy topic, for code-agent buzzes (optional)
+
+Only if you want the phone to buzz when a code agent finishes a turn or parks
+waiting for permission to push ([`docs/code-agents.md`](../code-agents.md)).
+Skip it and nothing changes — the feature is off while the variable is empty.
+
+1. Generate a **different** topic, the same way: `openssl rand -hex 12`.
+2. Store it as `NTFY_AGENT_TOPIC` (Keychain now, `/data/secrets.env` in
+   Phase 3). Do **not** reuse `NTFY_TOPIC`.
+3. Install the ntfy app on the phone and subscribe it to *this* topic. Read the
+   value out of Keychain Access.app — never print it into a terminal, and never
+   paste it into an issue or a chat.
+
+Two topics rather than one is the whole point, for two reasons that both bite
+later. Failure alerts are a backstop you never want to lose, while agent buzzes
+are frequent and go to a device you carry, so the two have to be burnable
+independently. And **subscribing a phone changes what the topic name is**: until
+now it has been a read capability nobody exercised, and from this point anyone
+who learns it can *send* — that is, put a plausible-looking "code agent wants to
+push to main" onto your lock screen. Which is why the notification is never
+itself answerable: tapping it only opens the app, and the app re-reads the real
+pending ask over the tailnet before it offers you any button.
+
+What travels is a kind, an opaque handle and a count — never a repo name, a
+chat title, a command, or any model output
+([`docs/privacy.md`](../privacy.md)). The buzz says "go look"; the app is what
+tells you what happened.
+
 ## 7. Web search key (optional)
 
 Optional — briefs and research recipes degrade gracefully without search, and
@@ -213,6 +241,7 @@ means stored via `scripts/mac/keychain-secrets.sh`; "secrets.env" means
 | Together AI API key | `TOGETHER_API_KEY` | yes | yes | Pal Chat on iPhone (Phase 1) | §2 (now) |
 | ntfy topic | `NTFY_TOPIC` | yes | yes | — | §6 (now) |
 | Failure-alert email (recommended; not a secret) | `NTFY_EMAIL` | yes | yes | — | §6 (now) |
+| ntfy topic for code-agent buzzes (optional) | `NTFY_AGENT_TOPIC` | yes | yes | ntfy app on the phone (subscribed) | §6a (now) |
 | Tavily key (optional) | `TAVILY_API_KEY` | yes | yes | — | §7 |
 | Hetzner API token | `hcloud_token` in `terraform.tfvars` | no | no | `terraform.tfvars` only | §5 (Phase 3) |
 | Tailscale auth key | `tailscale_authkey` in `terraform.tfvars` | no | no | `terraform.tfvars` only | Phase 3 |

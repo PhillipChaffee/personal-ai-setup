@@ -79,7 +79,7 @@ read contradicts them, the thing you read is wrong.
 
 Canonical secret variable names, used identically on every platform:
 `OPENCODE_ZEN_API_KEY`, `TOGETHER_API_KEY`, `GOOSE_SERVER__SECRET_KEY`,
-`NTFY_TOPIC`, `NTFY_EMAIL`, `TAVILY_API_KEY` (optional), `GOOGLE_OAUTH_CLIENT_ID`,
+`NTFY_TOPIC`, `NTFY_EMAIL`, `NTFY_AGENT_TOPIC` (optional), `TAVILY_API_KEY` (optional), `GOOGLE_OAUTH_CLIENT_ID`,
 `GOOGLE_OAUTH_CLIENT_SECRET`. The full annotated list is
 `config/env/secrets.env.example`.
 

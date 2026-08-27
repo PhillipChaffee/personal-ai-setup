@@ -9,7 +9,7 @@
 set -euo pipefail
 
 SERVICE="personal-ai"
-VARS="OPENCODE_ZEN_API_KEY TOGETHER_API_KEY GOOSE_SERVER__SECRET_KEY NTFY_TOPIC NTFY_EMAIL TELEGRAM_BOT_TOKEN TAVILY_API_KEY GOOGLE_OAUTH_CLIENT_ID GOOGLE_OAUTH_CLIENT_SECRET"
+VARS="OPENCODE_ZEN_API_KEY TOGETHER_API_KEY GOOSE_SERVER__SECRET_KEY NTFY_TOPIC NTFY_AGENT_TOPIC NTFY_EMAIL TELEGRAM_BOT_TOKEN TAVILY_API_KEY GOOGLE_OAUTH_CLIENT_ID GOOGLE_OAUTH_CLIENT_SECRET"
 ZSHRC="$HOME/.zshrc"
 MARKER_BEGIN="# >>> personal-ai keychain exports (keychain-secrets.sh) >>>"
 MARKER_END="# <<< personal-ai keychain exports <<<"
@@ -47,6 +47,7 @@ hint_for() {
     TOGETHER_API_KEY)           echo "Together AI key — docs/setup/10-accounts.md §2" ;;
     GOOSE_SERVER__SECRET_KEY)   echo "goose serve shared secret; generate: openssl rand -hex 32" ;;
     NTFY_TOPIC)                 echo "ntfy topic name (IS a password); generate: openssl rand -hex 12" ;;
+    NTFY_AGENT_TOPIC)           echo "SECOND ntfy topic, for code-agent buzzes — the one the phone subscribes to; generate: openssl rand -hex 12" ;;
     TAVILY_API_KEY)             echo "optional — only if the tavily extension is enabled" ;;
     GOOGLE_OAUTH_CLIENT_ID)     echo "GCP OAuth client — added in Phase 2 (docs/setup/30-google-oauth.md)" ;;
     GOOGLE_OAUTH_CLIENT_SECRET) echo "GCP OAuth client secret — Phase 2" ;;

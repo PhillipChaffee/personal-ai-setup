@@ -131,7 +131,8 @@ scripts/verify/check-code-agents.sh --probe
 # base branches (listing them, cutting a chat from one, and refusing a bad
 # one without building anything), SSE live-streaming through the proxy, the
 # blocking permission flow, busy-guarded idle spin-down, wake with state
-# intact, purge.
+# intact, purge — plus the agent notifications, against a recording fake ntfy
+# (fires once per edge, never re-fires, and the payload carries no content).
 scripts/verify/test-code-agent-manager.sh
 # ...or keep the same stack up to drive other clients at it
 # (e.g. goose-phone-app: cargo run -p opencode-client --example smoke):
@@ -153,6 +154,51 @@ Tunables (env on the unit, defaults in the manager): `CODE_AGENT_IDLE_SECONDS`
 (900), `CODE_AGENT_MAX_ACTIVE` (2 — the cpx21 guideline; a create/wake beyond
 it queues nothing, it refuses with a clear message), `CODE_AGENT_MEM` (1200m),
 `CODE_AGENT_CPUS` (1.5), `CODE_AGENT_PORT` (4300).
+
+**A chat parked on a permission ask does not count toward `MAX_ACTIVE`.** It
+has to be exempt, because a blocked session reports busy on `/session/status`,
+so the reaper reads it as working and refreshes its activity clock on every
+pass — it can never go idle again while the ask is unanswered. Counting it
+would mean two ignored asks take the whole plane offline, with the 409 advising
+you to wait for an idle spin-down that provably cannot arrive.
+`GET /api/health` reports `blocked` alongside `active` so `active: 3,
+max_active: 2` reads as the state it is; the running-container count can exceed
+the cap by the number of asks nobody has answered yet.
+
+## Getting told (optional)
+
+Set `NTFY_AGENT_TOPIC` and the phone buzzes once when a turn ends, and once —
+at high priority — when an agent parks waiting for permission to push. The
+second is the one that matters: a blocked agent is doing nothing at all until
+you answer it. Subscribe the ntfy app to that topic
+([setup §6a](setup/10-accounts.md)); leave the variable empty and nothing is
+sent.
+
+It rides the reaper's existing sweep, so the latency is up to
+`CODE_AGENT_REAPER_INTERVAL` (60s), and every read it makes goes direct to
+`127.0.0.1:<chat port>` rather than through the gateway proxy — going through
+the proxy would mark each chat active and pin every container open, which is
+the failure mode the idle spin-down exists to prevent.
+
+What it will and will not tell you:
+
+- **One buzz per turn**, not one per tool call. The manager arms a chat when it
+  proxies an accepted prompt and fires when that chat next reports idle, so a
+  five-tool turn is a single notification with no debounce timer involved.
+- **Stopping a turn yourself is not news** — an abort disarms without firing.
+  Neither does an idle spin-down, a delete or a crash.
+- **"A turn ended", not "done".** Nothing here can tell a clean completion from
+  a provider error without reading the transcript, which is exactly what it
+  must not do.
+- **The payload carries nothing** — a kind, an opaque handle and a count. No
+  repo name, no chat title, no command. See
+  [privacy.md](privacy.md#the-agent-channel-ntfy_agent_topic--a-second-choke-point-not-a-second-rule);
+  the buzz says "go look" and the app tells you what happened.
+- **It does not survive a deploy.** Restarting the manager stops every chat
+  container (`ExecStopPost`), which destroys OpenCode's in-memory pending-ask
+  map — so an ask survives the phone sleeping and survives idle spin-down, but
+  not a `deploy-vps.sh` or a crash loop. Deploy when nothing is mid-turn.
+- Probe chats (`check-code-agents.sh --probe`, the verify harness) never buzz.
 
 ## Failure behavior
 

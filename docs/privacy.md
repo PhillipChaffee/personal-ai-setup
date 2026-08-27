@@ -193,9 +193,48 @@ be read. The rule:
 - All failure alerts go through `scripts/common/notify.sh` — one choke point, so the rule is
   enforced in one place. Recipes never assemble their own ntfy requests.
 
-The `NTFY_TOPIC` value itself is a secret: it lives in the Keychain (Mac) and
-`/data/secrets.env` (brain), never in this repo. See
-[public-repo.md](public-repo.md).
+### The agent channel (`NTFY_AGENT_TOPIC`) — a second choke point, not a second rule
+
+There are now **two** ntfy channels, and the rule is one choke point *per
+channel* rather than one for the whole box. The second is the code-agent
+channel: the phone buzzes when a code-agent turn ends, or when an agent is
+parked waiting for permission to push. It is assembled in exactly one function
+— `notify_agent()` in `scripts/vps/code-agent-manager.py` — and nothing else
+may send on it. It deliberately does **not** call `notify.sh`, which attaches
+an `Email:` header whenever `NTFY_EMAIL` is set and would burn the ~5/day
+forwarding cap the failure alerts depend on.
+
+Its payload is content-free **by construction**, not by review:
+
+```json
+{ "kind": "ask" | "turn", "handle": "<opaque random>", "count": 1 }
+```
+
+plus a fixed neutral title ("A code agent is waiting on you", "A code agent
+turn ended"). The app fetches the truth back over the tailnet once it is open;
+the push only has to say "go look". Every field an implementer reaches for
+first is contaminated, which is exactly why the list is this short: a chat id
+embeds the repository name (`f"{repo}-{suffix}"` — one private repo name per
+notification), a chat title defaults to the first 80 characters of your own raw
+prompt, and a bash ask's metadata is the literal shell command.
+`scripts/verify/test-code-agent-manager.sh` asserts their absence against the
+recorded bytes rather than against anyone's intentions.
+
+**The bar for this channel is the lock screen, not the app.** A notification
+renders on a *locked* phone, and iOS's Show Previews setting is per-device —
+the brain cannot read it and cannot enforce it. A body that is safe behind Face
+ID is not safe here, and no header we can send makes it so. For the same reason
+a notification is never itself answerable: no Allow/Deny buttons, ever. The tap
+only opens the app, and the app re-reads the real pending ask over the tailnet
+before showing anything actionable.
+
+Both `NTFY_TOPIC` and `NTFY_AGENT_TOPIC` are secrets: they live in the Keychain
+(Mac) and `/data/secrets.env` (brain), never in this repo. See
+[public-repo.md](public-repo.md). They are separate values on purpose —
+subscribing a phone to the agent topic turns that topic from a read-only leak
+into a **write channel onto your lock screen** (anyone who learns it can plant
+"code agent wants to push to main" there), so it has to be rotatable without
+taking the failure-alert backstop down with it.
 
 ## Multiple accounts (and, later, multiple providers)
 
