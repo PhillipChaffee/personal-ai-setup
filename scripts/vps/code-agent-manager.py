@@ -1414,18 +1414,45 @@ def reaper_pass() -> None:
     touch_maybe() and pin every container open, which is the failure mode the
     whole idle spin-down design exists to avoid.
     """
+    # STAMPED BEFORE THE SAMPLE, NOT AFTER. `sampled_at` answers "the readings
+    # below are no older than when?", and only a stamp taken first can. Taken
+    # after, it dates the readings to the END of a walk that is `container_state`
+    # plus `session_state` per chat — each a subprocess or a socket with
+    # timeout=5, serially, over a running set that is NOT bounded by MAX_ACTIVE
+    # because admission_count exempts blocked chats. Two wedged siblings put ten
+    # seconds between the first chat's reading and the stamp, which is larger
+    # than ARM_SETTLE_SECONDS, so a turn armed one second after that reading
+    # looked settled: notify_finished_turns buzzed "turn ended" nine seconds
+    # INTO the turn and popped the arm, so the real ending never buzzed at all.
+    # Stamping first can only ever be too early, and too early merely withholds
+    # a buzz until the next pass — which is what the withhold is for.
+    sampled_at = time.time()
     index = Index.load()
     states = {cid: container_state(cid) for cid in index.chats}
     running = frozenset(cid for cid, state in states.items() if state == "running")
     status = {cid: session_state(index.chats[cid]) for cid in sorted(running)}
-    sampled_at = time.time()
-    asks, unreachable = pending_permissions([index.chats[cid] for cid in sorted(running)])
+
+    # The ask fan-out is the slowest step in the pass and the only one that
+    # spawns threads, so it is also the likeliest to raise something the loop's
+    # narrow except does not catch — `RuntimeError: can't start new thread`
+    # being the one that matters. Uncaught it would kill the reaper THREAD, not
+    # just the pass, and spin-down would stop forever while every lock-free
+    # route kept answering. On failure the asks are simply unknown this pass:
+    # notify_new_asks is skipped rather than fed an empty map, because it ends
+    # by assigning `_reaper_memory.blocked` and an empty map there would revoke
+    # every blocked chat's MAX_ACTIVE exemption on a fan-out hiccup.
+    asks: list[dict[str, object]] | None = None
+    unreachable: list[str] = []
+    try:
+        asks, unreachable = pending_permissions([index.chats[cid] for cid in sorted(running)])
+    except Exception as e:  # noqa: BLE001 - an ask probe must never cost a spin-down
+        log(f"reaper ask probe failed: {type(e).__name__}: {e}")
 
     # SPIN DOWN BEFORE NOTIFYING, and never let notifying break the pass.
     #
     # The reaper's real job is stopping idle containers; the buzz is a courtesy
     # on top of it. Ordered the other way, an ntfy outage delayed every
-    # spin-down — and worse, `notify_agent` suppresses only OSError and
+    # spin-down — and worse, `notify_agent` suppressed only OSError and
     # HTTPException, while a malformed NTFY_SERVER raises ValueError from
     # `url.port` and a non-ASCII topic raises UnicodeEncodeError from
     # putrequest. Neither was caught there and both were caught by the loop, so
@@ -1434,13 +1461,23 @@ def reaper_pass() -> None:
     # route kept answering, which is precisely the shape of failure this file
     # has already shipped once.
     #
-    # `notify_failure` has used contextlib.suppress since it was written, for
-    # this exact reason. This follows it.
+    # LOGGED, NEVER SUPPRESSED SILENTLY. `notify_failure` suppresses two NAMED
+    # types; this catches Exception, which is a wider net and so has to say when
+    # it caught something. A blanket silent suppress would let the buzz die
+    # permanently with no log line and no health field — and worse, an early
+    # raise inside notify_new_asks leaves `_reaper_memory.blocked` frozen at the
+    # last good pass, and `blocked` is the MAX_ACTIVE exemption that stops two
+    # unanswered asks taking the whole code plane offline.
     spin_down_idle(index, status, running)
-    with contextlib.suppress(Exception):
-        notify_new_asks(index, asks, unreachable, running)
-    with contextlib.suppress(Exception):
+    if asks is not None:
+        try:
+            notify_new_asks(index, asks, unreachable, running)
+        except Exception as e:  # noqa: BLE001 - a buzz must never cost a spin-down
+            log(f"reaper notify failed (asks): {type(e).__name__}: {e}")
+    try:
         notify_finished_turns(index, status, running, sampled_at)
+    except Exception as e:  # noqa: BLE001 - a buzz must never cost a spin-down
+        log(f"reaper notify failed (turns): {type(e).__name__}: {e}")
     _reaper_memory.prev_running = running
 
 
@@ -1532,7 +1569,17 @@ def notify_agent(kind: str, count: int, chats: list[str]) -> None:
 
 
 def _post_ntfy(kind: str, title: str, priority: str, body: str) -> None:
-    """Send one notification. The socket half of `notify_agent`, off its thread."""
+    """Send one notification. The socket half of `notify_agent`, off its thread.
+
+    CATCHES Exception, and it has to. This runs on a daemon thread, where
+    anything uncaught goes to threading.excepthook and prints a full traceback
+    to stderr and so to journald. Two live paths escape a narrower net:
+    `url.port` raises ValueError on a malformed NTFY_SERVER, and putrequest
+    raises UnicodeEncodeError on a non-ASCII topic — and that one's message
+    quotes the offending character of the topic AND its offset, verbatim, in
+    the log the topic must stay out of. Narrowing this to named types is what
+    puts the secret in the log.
+    """
     url = urlparse(NTFY_SERVER)
     conn_cls = http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection
     try:
@@ -1547,7 +1594,7 @@ def _post_ntfy(kind: str, title: str, priority: str, body: str) -> None:
         resp.read()
         status = resp.status
         conn.close()
-    except (OSError, http.client.HTTPException) as e:
+    except Exception as e:  # noqa: BLE001 - see the docstring: a narrower net logs the topic
         # The exception TYPE only: an ntfy error string can quote the request
         # line, and the topic is in the request line. The topic is a password.
         log(f"agent notification lost ({kind}): {type(e).__name__}")

@@ -194,6 +194,105 @@ fi
 
 echo "== test-code-agent-manager (work dir: $WORK) =="
 
+# ---- 0. the reaper's clock and the notifier's net (unit, no stack) -----------
+#
+# Everything else in this file is end-to-end, and neither of these two can be
+# reached that way: one is a race whose window is the duration of a socket walk,
+# the other only shows up on a daemon thread's stderr. Both shipped, both were
+# found by an adversarial pass reading the diff, and both are cheap to pin here.
+#
+#   * `sampled_at` must be stamped BEFORE the status walk, because it exists to
+#     answer "how old are these readings". Stamped after, it dates them to the
+#     END of a walk that is a subprocess plus a timeout=5 socket per chat, over
+#     a running set that MAX_ACTIVE does not bound (admission_count exempts
+#     blocked chats). Two wedged siblings put more than ARM_SETTLE_SECONDS
+#     between the first chat's reading and the stamp — so a turn started after
+#     that reading looks settled, buzzes "turn ended" seconds INTO the turn, and
+#     pops its own arm so the real ending never buzzes.
+#   * `_post_ntfy` runs on a daemon thread, where anything uncaught goes to
+#     threading.excepthook and prints a traceback to journald. A malformed
+#     NTFY_SERVER raises ValueError from `url.port` and a non-ASCII topic raises
+#     UnicodeEncodeError from putrequest — neither an OSError nor an
+#     HTTPException, and the second one's message quotes a character of the
+#     topic. The topic is a password. The net has to be wider than the log.
+if python3 - "$REPO_ROOT/scripts/vps/code-agent-manager.py" <<'PY'
+import contextlib, importlib.util, io, sys, time
+
+spec = importlib.util.spec_from_file_location("cam", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+sys.modules["cam"] = mod
+spec.loader.exec_module(mod)
+
+# --- the stamp dates the readings, not the pass ---
+CHATS = ["c1", "c2", "c3"]
+idx = mod.Index(chats={
+    c: mod.Chat(id=c, repo="r", title="t", port=1, branch="b", last_active=time.time())
+    for c in CHATS
+})
+readings = {}
+
+
+def slow_session_state(chat):
+    time.sleep(0.3)          # stands in for the timeout=5 socket, serially
+    readings[chat.id] = time.time()
+    return "idle"
+
+
+mod.Index.load = staticmethod(lambda: idx)
+mod.container_state = lambda cid: "running"
+mod.session_state = slow_session_state
+mod.pending_permissions = lambda running=None: ([], [])
+mod.spin_down_idle = lambda *a: None
+mod.notify_new_asks = lambda *a: None
+captured = {}
+mod.notify_finished_turns = lambda index, status, running, at: captured.__setitem__("at", at)
+mod.reaper_pass()
+
+assert len(readings) == len(CHATS), f"session_state ran {len(readings)}x, expected {len(CHATS)}"
+skew = captured["at"] - readings["c1"]
+assert skew <= 0, (
+    f"sampled_at is {skew:.2f}s AFTER the reading it claims to date; at "
+    f"ARM_SETTLE_SECONDS={mod.ARM_SETTLE_SECONDS} a real walk buzzes mid-turn"
+)
+
+# The consequence, stated in the domain: a turn armed one second after its chat
+# was read idle is not finished, and must keep its arm for a later pass.
+mod._reaper_memory.prev_running = frozenset(CHATS)
+fired = []
+real_notify_agent = mod.notify_agent
+mod.notify_agent = lambda kind, count, chats: fired.append((kind, count, chats))
+sampled = time.time()
+with mod._reaper_memory.armed_lock:
+    mod._reaper_memory.armed["c1"] = sampled + 1.0
+mod.notify_finished_turns(idx, dict.fromkeys(CHATS, "idle"), frozenset(CHATS), sampled)
+assert not fired, f"buzzed for a turn that had not started: {fired}"
+assert "c1" in mod._reaper_memory.armed, "the arm was eaten; the real ending can never buzz"
+
+# --- the notifier's net is wider than the log ---
+mod.notify_agent = real_notify_agent      # the stub above would swallow the whole path
+TOPIC = "sekritTopicóValue"
+mod.NTFY_AGENT_TOPIC = TOPIC
+mod.NTFY_SERVER = "http://ntfy.example:not-a-port"   # url.port raises ValueError
+out, err = io.StringIO(), io.StringIO()
+with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+    mod.notify_agent("turn", 1, ["c1"])
+    for _ in range(50):
+        time.sleep(0.05)
+        if out.getvalue() or err.getvalue():
+            break
+    time.sleep(0.2)
+o, e = out.getvalue(), err.getvalue()
+assert "Traceback" not in e, f"an uncaught daemon-thread traceback reached stderr: {e[:200]}"
+assert "agent notification lost" in o, f"the failure was not logged at all: {o!r}"
+assert TOPIC not in o + e and "ó" not in o + e, "the topic leaked into the log"
+PY
+then
+  ok "the reaper stamps sampled_at before the walk, and withholds an unsettled turn"
+  ok "a malformed ntfy target is logged by TYPE — no traceback, no topic"
+else
+  bad "reaper clock / notifier exception net (see the assertion above)"
+fi
+
 # ---- 1. auth ----------------------------------------------------------------
 # shellcheck disable=SC2086
 CODE="$($CURL -o /dev/null -w '%{http_code}' "$BASE/api/health" || echo 000)"
