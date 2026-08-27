@@ -137,6 +137,20 @@ def _str(raw: dict[str, Any], key: str, default: str = "") -> str:
     return value if isinstance(value, str) else default
 
 
+def _obj(raw: dict[str, Any], key: str) -> dict[str, Any]:
+    """Return a nested JSON object, or an empty one.
+
+    Written out rather than inlined as
+    `raw.get(k) if isinstance(raw.get(k), dict) else {}` because that calls
+    `.get` TWICE and mypy cannot narrow the second call from a check on the
+    first — it stays `Any | dict[Any, Any] | None`, which is the six
+    `--strict` errors this replaces. Binding once narrows, and it is one
+    fewer dict lookup besides.
+    """
+    value = raw.get(key)
+    return value if isinstance(value, dict) else {}
+
+
 def _bool(raw: dict[str, Any], key: str) -> bool:
     return bool(raw.get(key, False))
 
@@ -528,8 +542,8 @@ def pull_to_wire(slug: str, raw: dict[str, Any], *, with_checks: bool = True) ->
     """
     number = int(raw.get("number") or 0)
     merged = bool(raw.get("merged_at"))
-    head = raw.get("head") if isinstance(raw.get("head"), dict) else {}
-    base = raw.get("base") if isinstance(raw.get("base"), dict) else {}
+    head = _obj(raw, "head")
+    base = _obj(raw, "base")
     sha = _str(head, "sha")
     mergeable = raw.get("mergeable")
     checks = "unknown"
@@ -584,7 +598,7 @@ def merge_chat_pull(chat: Chat, number: int, method: str) -> dict[str, object]:
     detail = gh("GET", f"/repos/{slug}/pulls/{number}")
     if not isinstance(detail, dict):
         raise GitHubError(502, "GitHub is unreachable")
-    head = detail.get("head") if isinstance(detail.get("head"), dict) else {}
+    head = _obj(detail, "head")
     # Without this the route is "merge any pull request in the repo" with a
     # chat id in front of it.
     if _str(head, "ref") != chat.branch:
@@ -599,7 +613,7 @@ def merge_chat_pull(chat: Chat, number: int, method: str) -> dict[str, object]:
     if mergeable is None:
         raise GitHubError(409, f"GitHub has not finished computing whether #{number} can merge.")
     if mergeable is False:
-        base = _str(detail.get("base") if isinstance(detail.get("base"), dict) else {}, "ref")
+        base = _str(_obj(detail, "base"), "ref")
         raise GitHubError(409, f"#{number} conflicts with {base} - it needs a rebase.")
     try:
         result = gh(

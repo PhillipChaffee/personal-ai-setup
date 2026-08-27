@@ -690,7 +690,11 @@ def run_turn(session_id: str, prompt: str, files: list[Wire] | None = None) -> N
                 },
             )
             time.sleep(0.15)
-        parts: list[Wire] = [text_part(asst.id, session_id, acc, part_id=stream_id)]
+        # A DIFFERENT list from the user message's `parts` above, and named so:
+        # rebinding that name is what mypy reports as a redefinition, and the
+        # two are genuinely unrelated — one is what the user sent, this is what
+        # the assistant streamed back.
+        asst_parts: list[Wire] = [text_part(asst.id, session_id, acc, part_id=stream_id)]
 
         # A push-flavored prompt exercises the blocking permission flow.
         rejected = False
@@ -725,7 +729,7 @@ def run_turn(session_id: str, prompt: str, files: list[Wire] | None = None) -> N
                 else "To github.com: agent/branch pushed",
             )
             publish("message.part.updated", {"part": done})
-            parts.append(done)
+            asst_parts.append(done)
 
         wants_pr = "pull request" in prompt.lower() or " pr" in f" {prompt.lower()}"
         final_text = (
@@ -737,12 +741,12 @@ def run_turn(session_id: str, prompt: str, files: list[Wire] | None = None) -> N
         )
         final = text_part(asst.id, session_id, final_text)
         publish("message.part.updated", {"part": final})
-        parts.append(final)
+        asst_parts.append(final)
 
         with STATE_LOCK:
             state = State.load()
             state.messages.setdefault(session_id, []).append(
-                StoredMessage(info=asst, parts=parts),
+                StoredMessage(info=asst, parts=asst_parts),
             )
             state.save()
     finally:
