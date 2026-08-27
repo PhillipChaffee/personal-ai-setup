@@ -291,6 +291,48 @@ sleep 6
   && ok "busy chat survives the idle reaper (blocked on the ask)" \
   || bad "reaper stopped a busy chat"
 
+# ---- 5aa. a parked ask must not take the whole plane offline ----------------
+# The other horn of the same fact. A blocked chat reports busy forever, so the
+# reaper touches it on every pass and it can never go idle again — and if it
+# still counted toward MAX_ACTIVE (2 here), two unanswered asks would mean no
+# chat can be created and no chat can be woken, with the 409 telling you to
+# "wait for idle spin-down" that provably will not come. CID is parked on an
+# ask right now, so it must be exempt: BOTH creates below have to succeed, and
+# the second is the one that used to be refused.
+#
+# The reaper has run at least three times during the sleep above, so
+# _reaper_memory.blocked already names CID.
+# shellcheck disable=SC2086
+$CURL "$BASE/api/health" | python3 -c '
+import json, sys
+h = json.load(sys.stdin)
+assert h["blocked"] >= 1, "a chat parked on an ask is not reported blocked: %r" % h
+assert h["active"] >= h["blocked"], h
+' && ok "health reports the blocked chat separately from active" || bad "health blocked field wrong"
+
+# shellcheck disable=SC2086
+CAP_A="$($CURL --max-time 120 -X POST -H 'Content-Type: application/json' \
+  -d '{"repo":"throwaway","task":"first past the parked ask"}' "$BASE/api/chats")"
+CAP_AID="$(echo "$CAP_A" | jget "d.get('id','')")"
+# Immediately, before the 4s idle timeout can retire CAP_A and let this pass
+# for the wrong reason.
+# shellcheck disable=SC2086
+CAP_B="$($CURL --max-time 120 -X POST -H 'Content-Type: application/json' \
+  -d '{"repo":"throwaway","task":"second past the parked ask"}' "$BASE/api/chats")"
+CAP_BID="$(echo "$CAP_B" | jget "d.get('id','')")"
+[ -n "$CAP_AID" ] && [ -n "$CAP_BID" ] \
+  && ok "a chat parked on an ask does not hold a MAX_ACTIVE slot" \
+  || bad "the parked ask wedged the plane: A=$CAP_A B=$CAP_B"
+for DEAD in "$CAP_AID" "$CAP_BID"; do
+  # shellcheck disable=SC2086
+  [ -n "$DEAD" ] && $CURL -X DELETE "$BASE/api/chats/$DEAD?purge=1" >/dev/null
+done
+# And the ask itself is untouched by any of that — the exemption must not have
+# been bought by reaping the thing that is waiting on the reader.
+[ "$(cstate "$CID")" = "running" ] \
+  && ok "the parked ask survived the chats that overtook it" \
+  || bad "the blocked chat was stopped to make room"
+
 # shellcheck disable=SC2086
 $CURL -X POST -H 'Content-Type: application/json' -d '{"response":"once"}' \
   "$BASE/chat/$CID/session/$SID/permissions/$PERM_ID" >/dev/null \

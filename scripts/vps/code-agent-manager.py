@@ -51,11 +51,6 @@ Tunables (optional):
     CODE_AGENT_BIND           testing/dev ONLY: bind this address instead of
                               the tailnet IP (never set on the brain)
     CODE_AGENT_REAPER_INTERVAL  idle-reaper cadence seconds, default 60
-
-Conventions: dataclasses + full annotations, `mypy --strict` clean and
-`ruff check` clean with the entire rule set enabled (mypy.ini, ruff.toml; CI
-runs both). Wire boundaries (JSON in/out, subprocess) are the only places
-`Any` appears, immediately validated into the dataclasses below.
 """
 
 from __future__ import annotations
@@ -305,6 +300,31 @@ class ChatLaunchError(RuntimeError):
 _lock = threading.Lock()
 
 
+@dataclass
+class ReaperMemory:
+    """What the reaper carries from one pass to the next.
+
+    In memory ON PURPOSE, never in index.json. index.json is guarded by
+    `_lock`, which is non-reentrant and has already wedged this process once
+    (see wake_chat's post-mortem); hanging extra bookkeeping off the
+    container-lifecycle lock would be the same class of mistake, and there is
+    nothing here worth a disk write. An empty map after a restart is the
+    correct starting point rather than merely a tolerable one: the unit's
+    ExecStopPost stops every chat container on the way down, which destroys
+    opencode's in-memory pending-ask map, so a manager that has just started
+    is looking at a plane with no parked asks on it.
+    """
+
+    #: chats parked on a permission ask, as of the last completed pass.
+    #: Written by the reaper thread, read by admission (admission_count) and
+    #: by /api/health. It is REBOUND rather than mutated, so a reader always
+    #: sees one whole pass's answer and needs no lock to do it.
+    blocked: frozenset[str] = frozenset()
+
+
+_reaper_memory = ReaperMemory()
+
+
 def load_repos() -> dict[str, RepoEntry]:
     try:
         with REPOS_PATH.open(encoding="utf-8") as f:
@@ -346,7 +366,9 @@ def engine(
 # ---------------------------------------------------- pending permissions
 
 
-def pending_permissions() -> tuple[list[dict[str, object]], list[str]]:
+def pending_permissions(
+    running: list[Chat] | None = None,
+) -> tuple[list[dict[str, object]], list[str]]:
     """Every ask parked on a RUNNING chat, and the chats that would not say.
 
     Deliberately not "every chat": reaching a chat through the proxy wakes it,
@@ -358,9 +380,15 @@ def pending_permissions() -> tuple[list[dict[str, object]], list[str]]:
     silently dropped. The app treats a chat in neither list as "definitely
     nothing pending" and clears its card, so swallowing a failure here would
     erase a real ask from somebody's screen.
+
+    `running` lets a caller that has ALREADY established which containers are
+    up hand that in — the reaper has, and re-deriving it here would mean a
+    second `container_state()` subprocess per chat on every pass. Passing None
+    keeps the route's behaviour exactly as it was.
     """
-    index = Index.load()
-    running = [c for c in index.chats.values() if container_state(c.id) == "running"]
+    if running is None:
+        index = Index.load()
+        running = [c for c in index.chats.values() if container_state(c.id) == "running"]
     found: list[dict[str, object]] = []
     unreachable: list[str] = []
     lock = threading.Lock()
@@ -794,6 +822,37 @@ def running_count(index: Index) -> int:
     return sum(1 for cid in index.chats if container_state(cid) == "running")
 
 
+def admission_count(index: Index) -> int:
+    """Count the running chats that count against CODE_AGENT_MAX_ACTIVE.
+
+    A chat parked on a permission ask is exempt, and that exemption is a bug
+    fix rather than a tuning knob. A blocked session reports busy on
+    /session/status, so the reaper's "working counts as activity" branch
+    touches it on every pass and it can never cross IDLE_SECONDS again. With
+    MAX_ACTIVE = 2 that means two asks nobody answered take the WHOLE code
+    plane offline: create returns 409, wake returns 409, and the 409's own
+    advice — "wait for idle spin-down" — is advice to wait for the one thing
+    that provably cannot happen. Stage-0 notifications make that worse before
+    they make it better, because the entire premise is that an ask now sits
+    parked in a pocket for twenty minutes.
+
+    The alternative bound — an ask older than N minutes stops counting as busy
+    — was rejected: it hands the reaper permission to stop a container holding
+    a real ask, which is the exact failure the notification exists to prevent
+    (and pending_permissions() only fans out to RUNNING containers, so the ask
+    would vanish from the app at the same moment).
+
+    The price is that the number of running containers can exceed MAX_ACTIVE
+    by the number of unanswered asks. That is bounded by the number of tasks
+    the reader started, it is visible as `blocked` on /api/health, and driving
+    it back to zero promptly is precisely what the buzz is for.
+    """
+    blocked = _reaper_memory.blocked
+    return sum(
+        1 for cid in index.chats if cid not in blocked and container_state(cid) == "running"
+    )
+
+
 def run_container(chat: Chat) -> None:
     """Create + start the chat's container (state lives in the volume)."""
     chat_dir = CHATS_DIR / chat.id
@@ -962,7 +1021,7 @@ def create_chat(request: CreateChatRequest) -> Chat | ApiError:
 
     with _lock:
         index = Index.load()
-        if running_count(index) >= MAX_ACTIVE:
+        if admission_count(index) >= MAX_ACTIVE:
             return ApiError(
                 409,
                 f"{MAX_ACTIVE} chats already active (CODE_AGENT_MAX_ACTIVE) "
@@ -1087,7 +1146,7 @@ def wake_chat(chat_id: str) -> tuple[int, str]:
             chat.last_active = time.time()
             index.save()
             return 200, "already running"
-        if running_count(index) >= MAX_ACTIVE:
+        if admission_count(index) >= MAX_ACTIVE:
             return 409, (
                 f"{MAX_ACTIVE} chats already active — stop one or wait for idle spin-down."
             )
@@ -1117,12 +1176,19 @@ def touch(chat_id: str) -> None:
             index.save()
 
 
-def chat_busy(chat: Chat) -> bool:
-    """Report whether any session on this chat's server is mid-work.
+def session_state(chat: Chat) -> str:
+    """Sample this chat's server: "busy", "idle" or "unknown".
 
-    A busy chat is never stopped by the idle reaper, whatever the clock says.
-    Anything that makes the answer unknowable counts as busy — the cost of a
-    wrong "idle" is killing a running turn.
+    Three states rather than two because the reaper and the notifier want
+    OPPOSITE defaults for the third one. A wrong "idle" costs the reaper a
+    running turn, so it reads unknown as busy (chat_busy below). A wrong
+    "busy" costs the notifier nothing, but a wrong "idle" would manufacture a
+    "turn finished" out of a container hiccup — so the notifier fires on the
+    literal "idle" and on nothing else. Collapsing this back to a bool would
+    give one of the two callers the wrong answer.
+
+    "busy" and "retry" are the two non-idle states /session/status reports;
+    idle sessions are absent from the map entirely, so `{}` is idle.
     """
     try:
         conn = http.client.HTTPConnection("127.0.0.1", chat.port, timeout=5)
@@ -1135,30 +1201,82 @@ def chat_busy(chat: Chat) -> bool:
         body = resp.read().decode("utf-8", "replace")
         conn.close()
         if resp.status != HTTPStatus.OK:
-            return True
+            return "unknown"
         data: Any = json.loads(body or "{}")
         blob = json.dumps(data).lower()
     except (OSError, ValueError):
-        return True
-    return '"busy"' in blob or '"retry"' in blob
+        return "unknown"
+    return "busy" if ('"busy"' in blob or '"retry"' in blob) else "idle"
+
+
+def chat_busy(chat: Chat) -> bool:
+    """Report whether any session on this chat's server is mid-work.
+
+    A busy chat is never stopped by the idle reaper, whatever the clock says.
+    Anything that makes the answer unknowable counts as busy — the cost of a
+    wrong "idle" is killing a running turn.
+    """
+    return session_state(chat) != "idle"
+
+
+# ------------------------------------------------------- the reaper's pass
+
+
+def note_blocked_chats(running: list[Chat]) -> None:
+    """Record which chats are parked on an ask, for admission_count to read.
+
+    Uses the SAME fan-out /api/permissions uses, so there is one definition of
+    "parked on an ask" rather than two that can drift, and one round of direct
+    127.0.0.1 reads rather than a second poller racing the phone.
+
+    A chat that would not answer this pass is absent from the set. That is the
+    conservative direction on purpose: an unreachable chat keeps counting
+    against MAX_ACTIVE, so a container the manager cannot see never talks its
+    way out of the cap.
+    """
+    asks, _unreachable = pending_permissions(running)
+    _reaper_memory.blocked = frozenset(
+        cid for row in asks if isinstance(cid := row.get("chatId"), str)
+    )
+
+
+def spin_down_idle(index: Index, status: dict[str, str], running: frozenset[str]) -> None:
+    """Stop the chats that have gone quiet, reading the sample already taken."""
+    now = time.time()
+    for cid in sorted(running):
+        chat = index.chats[cid]
+        if now - chat.last_active < IDLE_SECONDS:
+            continue
+        if status.get(cid, "unknown") != "idle":
+            touch(cid)  # working — or unknowable, which counts the same — is activity
+            continue
+        log(f"idle spin-down: {cid}")
+        engine("stop", container_name(cid), check=False, timeout=90)
+
+
+def reaper_pass() -> None:
+    """One sweep: sample every running chat once, notify, then spin down.
+
+    Sampling before notifying and reaping is what makes the pass cheap: the
+    container states, the /session/status reads and the permission fan-out are
+    each done ONCE and shared. Every one of those goes direct to
+    127.0.0.1:<chat.port>, never through proxy() — proxying would call
+    touch_maybe() and pin every container open, which is the failure mode the
+    whole idle spin-down design exists to avoid.
+    """
+    index = Index.load()
+    states = {cid: container_state(cid) for cid in index.chats}
+    running = frozenset(cid for cid, state in states.items() if state == "running")
+    status = {cid: session_state(index.chats[cid]) for cid in sorted(running)}
+    note_blocked_chats([index.chats[cid] for cid in sorted(running)])
+    spin_down_idle(index, status, running)
 
 
 def reaper_loop() -> None:
     while True:
         time.sleep(REAPER_INTERVAL)
         try:
-            index = Index.load()
-            now = time.time()
-            for cid, chat in list(index.chats.items()):
-                if container_state(cid) != "running":
-                    continue
-                if now - chat.last_active < IDLE_SECONDS:
-                    continue
-                if chat_busy(chat):
-                    touch(cid)  # working counts as activity
-                    continue
-                log(f"idle spin-down: {cid}")
-                engine("stop", container_name(cid), check=False, timeout=90)
+            reaper_pass()
         except (OSError, subprocess.SubprocessError, ValueError) as e:
             log(f"reaper error: {e}")
 
@@ -1320,6 +1438,11 @@ class Handler(BaseHTTPRequestHandler):
                 "image": IMAGE,
                 "chats": len(index.chats),
                 "active": running_count(index),
+                # `active` is every running container; `blocked` is how many of
+                # them are only running because they are parked on an ask and
+                # so do not count against max_active (admission_count). Without
+                # this field, "active: 3, max_active: 2" reads as a bug.
+                "blocked": sum(1 for cid in index.chats if cid in _reaper_memory.blocked),
                 "max_active": MAX_ACTIVE,
                 "idle_seconds": IDLE_SECONDS,
             },
