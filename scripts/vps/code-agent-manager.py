@@ -573,7 +573,37 @@ def wake_chat(chat_id: str) -> tuple[int, str]:
             return 404, "unknown chat"
         state = container_state(chat_id)
         if state == "running":
-            touch(chat_id)
+            # NOT touch(): we already hold `_lock` (:270) and touch() re-acquires
+            # it. `threading.Lock` is not reentrant, so that call parks this
+            # thread forever WHILE IT STILL OWNS the lock, and `_lock` is never
+            # released again for the life of the process. Every route that needs
+            # it then blocks behind a holder that is itself blocked on it: the
+            # proxy, every later wake, create_chat, route_delete_chat and the
+            # idle reaper. The routes that take no lock — /api/chats,
+            # /api/permissions, /api/health, /api/repos — keep answering, which
+            # is what makes the wedge present as a slow backend rather than a
+            # dead one. Only a restart clears it.
+            #
+            # Reproduced, not theorised. `route_wake_or_stop` performs
+            # POST /api/chats/<id>/wake with no check of the current state, so
+            # one wake against a running chat is enough. A `sample` of a wedged
+            # manager showed 14 request threads parked in
+            # `lock_PyThread_acquire_lock`, the main thread healthy in `poll`,
+            # and no thread holding the lock inside a syscall — the signature of
+            # an owner blocked on its own lock.
+            #
+            # The proxy reaches the same branch by a race, and that race is
+            # WIDER in production than under the test harness: the state is read
+            # outside the lock and re-read inside it, `wake_chat` releases the
+            # lock before `engine("start")` and the up-to-90s `wait_for_chat`,
+            # and `podman container inspect` reports "running" as soon as start
+            # returns — long before opencode answers. That is the whole window
+            # the client's concurrent open-chat requests land in.
+            #
+            # The same work, inline, against the index this block already
+            # loaded, which is also one fewer read of index.json.
+            chat.last_active = time.time()
+            index.save()
             return 200, "already running"
         if running_count(index) >= MAX_ACTIVE:
             return 409, (
