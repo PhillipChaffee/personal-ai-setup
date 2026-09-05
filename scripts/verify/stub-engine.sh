@@ -34,7 +34,7 @@ case "$cmd" in
     NAME=""; PORT=""; DIR=""; ONESHOT="no"; SCRIPT=""; DETACH="no"
     ARGS=("$@")
     i=0
-    while [ $i -lt ${#ARGS[@]} ]; do
+    while [ "$i" -lt "${#ARGS[@]}" ]; do
       a="${ARGS[$i]}"
       case "$a" in
         -d) DETACH="yes" ;;

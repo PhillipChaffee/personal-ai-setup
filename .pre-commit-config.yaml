@@ -29,3 +29,9 @@ repos:
     hooks:
       - id: yamllint
         args: [--strict]
+
+  # Keep this rev in lockstep with the pin in .github/workflows/shell-lint.yml.
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck

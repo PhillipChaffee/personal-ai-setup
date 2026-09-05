@@ -18,6 +18,17 @@
 # engine + fixtures) and stay in the foreground, printing the connection env
 # — for driving other clients at it (e.g. goose-phone-app's
 # `cargo run -p opencode-client --example smoke`). Ctrl-C tears it down.
+# shellcheck disable=SC2015
+# ^ FILE-LEVEL, and load bearing. Every assertion below is the deliberate
+# `[ cond ] && ok "..." || bad "..."` idiom, which SC2015 warns about because
+# `a && b || c` runs c when b fails. It cannot here: ok() ends in
+# `PASS_COUNT=$((PASS_COUNT + 1))`, an arithmetic ASSIGNMENT, which exits 0
+# unconditionally.
+#
+# DO NOT "tidy" that to `((PASS_COUNT++))`. It returns 1 when the value was 0
+# (verified: `n=0; ((n++))` -> exit 1, `n=0; n=$((n+1))` -> exit 0), so the
+# first passing assertion of every run would ALSO report a failure -- and this
+# disable would suppress the warning that would have caught it.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -155,7 +166,7 @@ env -i PATH="$PATH" HOME="$HOME" \
   NTFY_TOPIC="$FAILURE_TOPIC" \
   NTFY_AGENT_TOPIC="$AGENT_TOPIC" \
   CODE_AGENT_BIND=127.0.0.1 \
-  CODE_AGENT_PORT=$PORT \
+  CODE_AGENT_PORT="$PORT" \
   CODE_AGENT_ROOT="$WORK/root" \
   CODE_AGENT_ENGINE="$HERE/stub-engine.sh" \
   CODE_AGENT_IMAGE=mock \

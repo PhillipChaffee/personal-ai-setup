@@ -52,12 +52,22 @@ fi
 command -v curl >/dev/null 2>&1 || die 2 "curl not found"
 
 BODY_FILE="$(mktemp)"
-trap 'rm -f "$BODY_FILE"' EXIT
+ERR_FILE="$(mktemp)"
+trap 'rm -f "$BODY_FILE" "$ERR_FILE"' EXIT
 
 # request <curl args...> -> sets HTTP_STATUS, body in $BODY_FILE
+#
+# curl's diagnostics go to a SEPARATE file and are appended afterwards. They
+# used to be redirected into $BODY_FILE with 2>>, which handed curl the same
+# file at two independent offsets -- `-o` writing from 0 and the append opening
+# at the end -- so a DNS or TLS failure could interleave with, or be clobbered
+# by, the body write. That corrupts body_snippet() precisely when a request
+# failed and the snippet is the only diagnostic on offer.
 request() {
   : >"$BODY_FILE"
-  HTTP_STATUS="$(curl -sS --max-time 60 -o "$BODY_FILE" -w '%{http_code}' "$@" 2>>"$BODY_FILE")" || HTTP_STATUS="000"
+  : >"$ERR_FILE"
+  HTTP_STATUS="$(curl -sS --max-time 60 -o "$BODY_FILE" -w '%{http_code}' "$@" 2>"$ERR_FILE")" || HTTP_STATUS="000"
+  [ -s "$ERR_FILE" ] && cat "$ERR_FILE" >>"$BODY_FILE"
   [ -n "$HTTP_STATUS" ] || HTTP_STATUS="000"
 }
 

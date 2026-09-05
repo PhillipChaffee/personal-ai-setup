@@ -52,6 +52,7 @@ PINNED="$WORK_DIR/pinned"
 # Extract model IDs from whatever JSON shape a /models endpoint returns:
 # {"data":[...]}, {"models":[...]}, a bare array of objects or strings, or an
 # object keyed by model ID.
+# shellcheck disable=SC2016  # a jq program: $ must reach jq unexpanded
 JQ_IDS='
   ( if type == "object" and has("data") then .data
     elif type == "object" and has("models") then .models

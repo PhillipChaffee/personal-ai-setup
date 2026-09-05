@@ -96,6 +96,9 @@ echo "==> Done: $STORED value(s) written."
 # partial roster never breaks shell startup.
 BLOCK="$MARKER_BEGIN"$'\n'
 for var in $VARS; do
+  # shellcheck disable=SC2016  # the $( ) must land in ~/.zshrc literally, to be
+  # evaluated at shell startup -- expanding it here would bake the SECRET into
+  # the file, which is the whole thing this script exists to avoid.
   BLOCK="$BLOCK$(printf 'export %s="$(security find-generic-password -w -s %s -a %s 2>/dev/null || true)"' "$var" "$SERVICE" "$var")"$'\n'
 done
 BLOCK="$BLOCK$MARKER_END"

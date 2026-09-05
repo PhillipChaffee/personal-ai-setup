@@ -178,6 +178,7 @@ if [ -n "$AUTH" ]; then
   # A repo from the allowlist, so the 403 "not allowlisted" arm is not what we
   # measure. Falls back to a name that will 403 rather than 404 if the list is
   # empty, which still distinguishes the two processes.
+  # shellcheck disable=SC2086  # $CURL/$AUTH are deliberately word-split into argv
   PROBE_REPO="$($CURL $AUTH "$BASE/api/repos" 2>/dev/null \
     | python3 -c 'import json,sys
 try: print((json.load(sys.stdin).get("repos") or [{}])[0].get("name",""))

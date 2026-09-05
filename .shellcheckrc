@@ -1,0 +1,34 @@
+# ShellCheck config. 21 tracked scripts, ~6.5k lines, and until now none of it
+# was linted by anything.
+#
+# external-sources lets ShellCheck follow `. lib.sh`, which retires the SC1091
+# suppressions the check scripts were carrying for a file that is right there
+# in the repo.
+external-sources=true
+
+# Optional checks are OFF by default; these seven were each measured against
+# this tree and enabled because their findings were real and few.
+enable=avoid-nullary-conditions
+enable=check-unassigned-uppercase
+enable=deprecate-which
+enable=quote-safe-variables
+enable=useless-use-of-cat
+enable=avoid-negated-conditions
+
+# MEASURED AND REJECTED, so nobody has to re-derive it:
+#   add-default-case                +9 findings, and all nine are `case`
+#                                 statements where FALLING THROUGH is the
+#                                 behaviour: pai_mode falls through to
+#                                 auto-detection, variants_for legitimately
+#                                 prints nothing for an unknown provider,
+#                                 deploy-vps.sh treats any non-flag as the repo
+#                                 URL, stub-engine's arg walk ignores flags it
+#                                 does not care about. Nine `*) ;;` branches
+#                                 that say nothing is worse code, not safer.
+#   require-variable-braces      +1473 findings (${x} vs $x) -- pure style
+#   require-double-brackets       +264 findings ([[ ]] vs [ ]) -- these scripts
+#                                 are deliberately POSIX-ish in places
+#   check-set-e-suppressed        +126 findings
+#   check-extra-masked-returns     +80 findings
+# `--enable=all` yields 2239 findings on this tree. Maximum strictness is not
+# the same thing as the strongest gate: a gate nobody can keep green is off.
