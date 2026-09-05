@@ -12,6 +12,14 @@ on:
   push:
   pull_request:
 
+# One run per ref per workflow: this repo went from 4 checks to more, and a
+# quick follow-up push should cancel the previous run rather than queue behind
+# it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+
 permissions:
   contents: read
 
