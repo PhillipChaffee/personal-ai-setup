@@ -34,6 +34,12 @@ credentials/
 *.tfstate.*
 *.tfvars
 !terraform.tfvars.example
+# Saved plan files. A .tfplan is a ZIP containing tfstate, tfconfig AND the
+# resolved values of every input variable -- so it carries the Tailscale auth
+# key and the hcloud token in a form gitleaks cannot see (deflate-compressed,
+# so `strings` finds nothing). One was committed here and published.
+tfplan
+*.tfplan
 .terraform/
 # .terraform.lock.hcl is intentionally NOT ignored: it holds only provider
 # checksums (no secrets) and committing it pins provider versions.
