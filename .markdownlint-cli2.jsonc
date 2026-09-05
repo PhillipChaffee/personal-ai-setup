@@ -1,0 +1,32 @@
+{
+  // markdownlint for 90 tracked .md files -- the single biggest file type here,
+  // because this repo is substantially documentation.
+  //
+  // .claude/ is load-bearing in `ignores`: 272 .md files exist on disk against
+  // 90 tracked, and the rest are worktree copies nobody can fix from a clean
+  // checkout.
+  // The gate itself is driven from `git ls-files` in CI, so it can only ever
+  // see tracked files. These ignores make a bare local run agree with it:
+  // infra/terraform/.terraform holds ~618 findings of VENDORED provider
+  // changelogs, and .claude holds worktree copies -- 272 .md on disk against
+  // 90 tracked.
+  "ignores": [
+    ".claude/**",
+    "**/.terraform/**",
+    "node_modules/**",
+    "**/.mypy_cache/**"
+  ],
+  "config": {
+    // Prose. 2455 hits, and a column limit on documentation buys terser
+    // warnings, not shorter documents.
+    "MD013": false,
+    // 48 hits, every one a false positive on the repo's own placeholder
+    // syntax: <your-brain>.<your-tailnet>.ts.net reads as inline HTML.
+    "MD033": false,
+    // 363 hits of table-pipe cosmetics.
+    "MD060": false,
+    // 44 of 90 files carry YAML frontmatter, and its `title:` is the document
+    // title -- without this, every one of them looks like it has two H1s.
+    "MD025": { "front_matter_title": "" }
+  }
+}

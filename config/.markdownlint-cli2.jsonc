@@ -1,0 +1,28 @@
+{
+  // Nested config for config/**. These files are NOT documentation: they are
+  // agent and skill prompt templates whose literal text is fed to a model.
+  // Markdown here is a serialization format, not a rendered document, and
+  // "fixing" the whitespace around a heading or a fence changes the bytes the
+  // model receives for no reader's benefit.
+  //
+  // The root config governs docs/ and README, which ARE rendered and are held
+  // to the full rule set. The split is the point: 325 of the 337 findings at
+  // adoption time were in here, and every one was a rendering rule applied to
+  // something that is never rendered.
+  "config": {
+    // 113 -- fenced blocks inside prompts, often deliberately language-less
+    // because the model is being shown a shape rather than a program.
+    "MD040": false,
+    // 77 + 70 + 44 -- blank lines around lists, fences and headings. Prompt
+    // templates are written tight on purpose; the whitespace is payload.
+    "MD032": false,
+    "MD031": false,
+    "MD022": false,
+    // 13 -- a prompt fragment has no reason to open with an H1.
+    "MD041": false,
+    // 5 -- bold used as a visual label inside a prompt, not as a heading.
+    "MD036": false,
+    // 2 -- spacing inside code spans, where the span is the literal text.
+    "MD038": false
+  }
+}

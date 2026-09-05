@@ -39,11 +39,15 @@ This repo is the complete, reproducible blueprint: Terraform for the server, con
 | [4 — Sensitive tier](docs/setup/60-vault-setup.md) | Private life-vault repo, health/finance Q&A | 1–2 h | Ask questions about your own documents, privately |
 | [5 — Go public + roadmap](docs/public-repo.md) | Publish your fork safely; future upgrades | 1 h | — |
 
+<!-- The table above splits this ordered list, so `3.` deliberately continues
+     it as <ol start="3">. `--fix` renumbers it to `1.`, which demotes
+     onboarding step 3 into a second step 1. -->
+<!-- markdownlint-disable-next-line MD029 -->
 3. **Run the verify script at the end of each phase** (`scripts/verify/`). Don't skip them — each one settles exactly the things most likely to be broken (API auth shapes, provider wiring, open ports, cross-device history).
 
 ## Architecture
 
-```
+```text
 iPhone                          Mac laptop                       VPS "brain" (Hetzner, Terraform-managed)
 ──────                          ──────────                       ────────────────────────────────────────
 Goose iOS app ◄── tunnel ─────────────────────────────────────►  goose serve --enable-scheduler (systemd)
@@ -75,7 +79,7 @@ Siri Shortcut ─────┤            OpenCode CLI (coding, local)      �
 
 ## Repo map
 
-```
+```text
 .
 ├── README.md                           # you are here
 ├── LICENSE                             # MIT
