@@ -457,8 +457,16 @@ import json, sys
 log, cid, agent_topic, failure_topic = sys.argv[1:5]
 records = [json.loads(l) for l in open(log, encoding="utf-8") if l.strip()]
 assert records, "nothing was sent to ntfy at all"
+# Both channels are legitimate -- notify.sh posts operational failures to
+# FAILURE_TOPIC -- so the allowlist is over both, and the content contract
+# below is asserted over the AGENT channel, which is the one that renders on a
+# locked screen. Asserting `topic == agent_topic` for every record (as this
+# once did) breaks the moment any test exercises notify_failure.
 for r in records:
-    assert r["topic"] == agent_topic, f"wrong topic: {r['topic']!r}"
+    assert r["topic"] in (agent_topic, failure_topic), f"unknown topic: {r['topic']!r}"
+agent_records = [r for r in records if r["topic"] == agent_topic]
+assert agent_records, "nothing was sent to the agent channel"
+for r in agent_records:
     assert r["topic"] != failure_topic, "the agent channel used the failure topic"
     assert "Email" not in r["headers"], "an Email header would burn the ~5/day cap"
     body = r["body"]
@@ -475,7 +483,7 @@ for r in records:
                    "tidy the readme", "push the branch", "git push",
                    "agent/", "release/2.x", "/chat/workspace"):
         assert secret not in blob, f"the payload leaked {secret!r}: {r}"
-asks = [r for r in records if r["body"]["kind"] == "ask"]
+asks = [r for r in agent_records if r["body"]["kind"] == "ask"]
 assert asks, "no ask notification"
 assert asks[0]["headers"]["Priority"] == "high", asks[0]["headers"]
 title = asks[0]["headers"]["Title"]
@@ -989,6 +997,129 @@ CODE="$($CURL --max-time 10 -o /dev/null -w '%{http_code}' "$BASE/chat/$CID/sess
 # shellcheck disable=SC2086
 $CURL -X DELETE "$BASE/api/chats/$CID?purge=1" >/dev/null
 [ ! -d "$WORK/root/chats/$CID" ] && ok "final delete purges" || bad "final purge failed"
+
+# ---- 8. the request surface nothing has ever sent -------------------------
+# Everything above drives the happy path of a chat's life. This section is the
+# rest of the HTTP surface: the routes, refusals and malformed inputs the
+# gateway ships and no test has ever issued. Ordered so the destructive cases
+# (rewriting repos.json and index.json) come last -- the manager rewrites
+# index.json on its next save and would otherwise eat the harness's own state.
+#
+# JSON bodies go through --data-binary @file, never inline -d with escaped
+# quotes: inline bodies word-split under the unquoted $CURL idiom and silently
+# send garbage, which reads as a passing 400 for entirely the wrong reason.
+
+# 8a. GET /api/repos -- the allowlist round-trip. RepoEntry.to_wire() and its
+# only caller have never run.
+# shellcheck disable=SC2086
+REPOS_JSON="$($CURL "$BASE/api/repos")"
+NAMES="$(printf '%s' "$REPOS_JSON" | jget 'sorted(r["name"] for r in d["repos"])' 2>/dev/null || echo err)"
+[ "$NAMES" = "['ghrepo', 'testrepo', 'throwaway']" ] \
+  && ok "GET /api/repos returns the allowlist" \
+  || bad "GET /api/repos: $NAMES"
+
+# 8b. the 404 fallthrough, once per verb, so do_PUT/do_PATCH are proved to
+# reach dispatch rather than merely being defined. The body names the verb, so
+# asserting on it is the difference between coverage and a real claim.
+for verb in GET PUT PATCH; do
+  # shellcheck disable=SC2086
+  BODY="$($CURL -X "$verb" "$BASE/api/nope")"
+  WANT="no route: $verb /api/nope"
+  case "$BODY" in
+    *"$WANT"*) ok "404 fallthrough names the verb ($verb)" ;;
+    *) bad "404 fallthrough for $verb: $BODY" ;;
+  esac
+done
+# A path that MATCHES a route regex but with a verb it does not serve.
+# shellcheck disable=SC2086
+CODE="$($CURL -o /dev/null -w '%{http_code}' -X DELETE "$BASE/api/chats/nosuch/pulls")"
+[ "$CODE" = "404" ] || [ "$CODE" = "405" ] \
+  && ok "DELETE on the pulls route is refused (HTTP $CODE)" \
+  || bad "DELETE /api/chats/x/pulls: HTTP $CODE"
+
+# 8c. an Authorization header that is not decodable base64. The auth path has
+# only ever seen a correct header or none at all.
+CODE="$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' \
+  -H 'Authorization: Basic !!!not-base64!!!' "$BASE/api/health")"
+[ "$CODE" = "401" ] && ok "malformed Basic credentials are rejected" \
+  || bad "malformed Basic auth: HTTP $CODE"
+
+# 8d. create-body validation: both arms, distinguished by their messages.
+printf 'not json at all' > "$WORK/bad-body.json"
+# shellcheck disable=SC2086
+BODY="$($CURL -X POST --data-binary @"$WORK/bad-body.json" "$BASE/api/chats")"
+case "$BODY" in *"invalid JSON body"*) ok "create rejects invalid JSON" ;;
+  *) bad "create with invalid JSON: $BODY" ;; esac
+printf '[]' > "$WORK/list-body.json"
+# shellcheck disable=SC2086
+BODY="$($CURL -X POST --data-binary @"$WORK/list-body.json" "$BASE/api/chats")"
+case "$BODY" in *"must be a JSON object"*) ok "create rejects a non-object body" ;;
+  *) bad "create with a JSON list: $BODY" ;; esac
+
+# 8e/8f. unknown chat ids, on the proxy and on the lifecycle route.
+# shellcheck disable=SC2086
+CODE="$($CURL -o /dev/null -w '%{http_code}' "$BASE/chat/nosuchchat/session")"
+[ "$CODE" = "404" ] && ok "proxy to an unknown chat is 404" || bad "proxy unknown chat: HTTP $CODE"
+# shellcheck disable=SC2086
+CODE="$($CURL -o /dev/null -w '%{http_code}' -X POST "$BASE/api/chats/nosuchchat/wake")"
+[ "$CODE" = "404" ] && ok "wake on an unknown chat is 404" || bad "wake unknown chat: HTTP $CODE"
+
+# 8g. DELETE without ?purge=1 -- the default. Every delete in this file so far
+# has purged, so the branch that KEEPS the volume has never run, and "your work
+# survives a delete" is the more consequential half of that promise.
+printf '{"repo":"throwaway","task":"kept-volume"}' > "$WORK/keep-body.json"
+# shellcheck disable=SC2086
+KEEP_ID="$($CURL -X POST --data-binary @"$WORK/keep-body.json" "$BASE/api/chats" | jget 'd["id"]')"
+if [ -n "$KEEP_ID" ] && [ -d "$WORK/root/chats/$KEEP_ID" ]; then
+  # shellcheck disable=SC2086
+  VOL="$($CURL -X DELETE "$BASE/api/chats/$KEEP_ID" | jget 'd["volume"]')"
+  [ "$VOL" = "kept" ] && [ -d "$WORK/root/chats/$KEEP_ID" ] \
+    && ok "delete without purge keeps the volume on disk" \
+    || bad "non-purge delete: volume=$VOL, dir present=$([ -d "$WORK/root/chats/$KEEP_ID" ] && echo yes || echo no)"
+else
+  bad "could not create a chat for the non-purge delete case"
+fi
+
+# 8h. slug_of's refusals. Every fixture so far is either file:// or a full
+# https owner/name, so only the happy arm has run. repos.json is re-read on
+# every request (load_repos has no cache), so swapping it is safe and
+# reversible -- restore it before anything else runs.
+cp "$WORK/root/repos.json" "$WORK/repos.json.bak"
+cat > "$WORK/root/repos.json" <<'EOJSON'
+{"repos": [
+  {"name": "emptyurl", "url": "", "tier": 1, "setup": "",
+   "edit_only": true, "allow_push": false, "public_throwaway": false},
+  {"name": "scpstyle", "url": "git@github.com:testowner/testrepo.git", "tier": 1, "setup": "",
+   "edit_only": true, "allow_push": false, "public_throwaway": false},
+  {"name": "onepart", "url": "https://github.com/justowner", "tier": 1, "setup": "",
+   "edit_only": true, "allow_push": false, "public_throwaway": false}
+]}
+EOJSON
+for r in emptyurl onepart; do
+  # shellcheck disable=SC2086
+  CODE="$($CURL -o /dev/null -w '%{http_code}' "$BASE/api/repos/$r/branches")"
+  [ "$CODE" = "409" ] && ok "unusable repo URL is refused ($r -> 409)" \
+    || bad "branches for $r: HTTP $CODE (want 409)"
+done
+# scp-style IS parseable -- it must resolve, not refuse. The fake serves it.
+# shellcheck disable=SC2086
+CODE="$($CURL -o /dev/null -w '%{http_code}' "$BASE/api/repos/scpstyle/branches")"
+[ "$CODE" = "200" ] && ok "scp-style git remote parses to owner/name" \
+  || bad "scp-style remote: HTTP $CODE (want 200)"
+cp "$WORK/repos.json.bak" "$WORK/root/repos.json"
+
+# 8i. LAST, because they corrupt the manager's own state files. A gateway that
+# 500s on a hand-edited index.json is a gateway you cannot recover by hand.
+printf 'this is not json' > "$WORK/root/repos.json"
+# shellcheck disable=SC2086
+CODE="$($CURL -o /dev/null -w '%{http_code}' "$BASE/api/repos")"
+[ "$CODE" = "200" ] && ok "a corrupt repos.json degrades to an empty allowlist" \
+  || bad "corrupt repos.json: HTTP $CODE"
+printf '{"chats": "not a dict"}' > "$WORK/root/index.json"
+# shellcheck disable=SC2086
+CODE="$($CURL -o /dev/null -w '%{http_code}' "$BASE/api/health")"
+[ "$CODE" = "200" ] && ok "a malformed index.json degrades to no chats" \
+  || bad "malformed index.json: HTTP $CODE"
 
 echo
 echo "== summary: $PASS_COUNT passed, $FAIL_COUNT failed =="

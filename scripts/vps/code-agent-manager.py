@@ -238,6 +238,14 @@ class Index:
                 raw: Any = json.load(f)
         except FileNotFoundError:
             return cls()
+        except (json.JSONDecodeError, OSError) as e:
+            # Everything below tolerates wrong-SHAPED json; this arm is the
+            # INVALID kind. Without it a truncated index.json raises out of
+            # every request thread and the reaper, and the client sees an empty
+            # reply -- which reads as a network fault, not a corrupt file.
+            # Degrade to "no chats" so /api/health still answers and says so.
+            log(f"index.json is unreadable ({type(e).__name__}) -- treating as empty")
+            return cls()
         chats_raw = raw.get("chats", {}) if isinstance(raw, dict) else {}
         chats: dict[str, Chat] = {}
         if isinstance(chats_raw, dict):
@@ -389,6 +397,14 @@ def load_repos() -> dict[str, RepoEntry]:
         with REPOS_PATH.open(encoding="utf-8") as f:
             raw: Any = json.load(f)
     except FileNotFoundError:
+        return {}
+    except (json.JSONDecodeError, OSError) as e:
+        # repos.json is the one state file a human is told to edit by hand
+        # (docs/code-agents.md), so a trailing comma here is the realistic
+        # corruption -- and an uncaught JSONDecodeError takes down every route
+        # that resolves a repo, not just this one. An empty allowlist refuses
+        # new chats, which is the safe direction for a trust boundary.
+        log(f"repos.json is unreadable ({type(e).__name__}) -- allowlist is empty")
         return {}
     repos: dict[str, RepoEntry] = {}
     entries = raw.get("repos", []) if isinstance(raw, dict) else []
