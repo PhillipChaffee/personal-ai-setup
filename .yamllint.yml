@@ -1,0 +1,33 @@
+# yamllint config. Every deviation below is measured against this tree, not
+# copied from a template: `yamllint --strict` exits 0 over all tracked YAML at
+# the commit that added this file, so it lands as a gate with no cleanup.
+#
+# The rule that earns its place is key-duplicates. PyYAML's safe_load -- the
+# idiom scripts/verify/check-connectors.sh:427 uses -- accepts a duplicated
+# mapping key SILENTLY and keeps the last one. config/goose/config.yaml carries
+# two live `available_tools` allowlists and is the file deploy-vps.sh copies
+# onto the brain, so a duplicated key with a wider allowlist would validate
+# clean and ship the wrong tool surface. Nothing else in the repo can see that.
+extends: default
+
+ignore: |
+  .claude/
+  .mypy_cache/
+  .ruff_cache/
+
+rules:
+  # 383 lines exceed 80, and config/goose/config.yaml is 195 comment lines of
+  # 318. A column limit here buys terser warnings, not shorter files.
+  line-length: disable
+  # Nothing in this repo is a multi-document stream.
+  document-start: disable
+  # The connector manifests align trailing comments into a column on purpose.
+  comments-indentation: disable
+  truthy:
+    # GitHub Actions' `on:` is a YAML 1.1 boolean and is not going to change.
+    check-keys: false
+  # OFF by default, turned ON deliberately: this repo writes `chmod 600`
+  # secrets files and a bare 0600 in YAML is the integer 384.
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true
