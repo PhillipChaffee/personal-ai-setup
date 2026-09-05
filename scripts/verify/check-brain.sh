@@ -5,6 +5,9 @@
 # the Mac across the tailnet — it detects which side it's on.
 set -euo pipefail
 
+# shellcheck source=scripts/verify/lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
 usage() {
   cat <<'EOF'
 Usage: check-brain.sh [--insecure] [--run-now] [--local] [--help]
@@ -34,34 +37,27 @@ while [ "$#" -gt 0 ]; do
     --run-now)  RUN_NOW="yes" ;;
     --local)    FORCE_LOCAL="yes" ;;
     -h|--help)  usage; exit 0 ;;
-    *) echo "check-brain.sh: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+    *) die_usage "unknown argument: $1" ;;
   esac
   shift
 done
 
-PASS_COUNT=0
-FAIL_COUNT=0
-pass() { echo "PASS  $1"; PASS_COUNT=$((PASS_COUNT + 1)); }
-fail() { echo "FAIL  $1"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
-
 # ---- mode detection ---------------------------------------------------------
-MODE="remote"
-# /data/goose is GOOSE_PATH_ROOT; /data/goose-data is the pre-path-root layout,
-# still accepted so this detects a brain that has not been redeployed yet.
-if [ "$FORCE_LOCAL" = "yes" ] || { { [ -e /data/goose ] || [ -e /data/goose-data ]; } && command -v systemctl >/dev/null 2>&1; }; then
-  MODE="local"
-fi
+# One sentinel, in lib.sh. This used to probe /data/goose (or /data/goose-data,
+# the pre-GOOSE_PATH_ROOT layout) — both of which are add-on artefacts, not
+# host facts. See lib.sh's pai_mode for why /data itself is the right test.
+MODE="$(pai_mode "$FORCE_LOCAL")"
 
 GOOSE_BIN="goose"
 if [ "$MODE" = "local" ]; then
-  command -v goose >/dev/null 2>&1 || GOOSE_BIN="/home/agent/.local/bin/goose"
+  # The old fallback hardcoded /home/agent/.local/bin/goose with no -x test, so
+  # a brain without goose got "command not found" from the substitution rather
+  # than anything actionable. resolve_goose_bin tests before choosing; the
+  # literal survives only as the path named in that failure.
+  GOOSE_BIN="$(resolve_goose_bin)"
+  [ -n "$GOOSE_BIN" ] || GOOSE_BIN="/home/agent/.local/bin/goose"
   # Load GOOSE_SERVER__SECRET_KEY etc. for the checks below.
-  if [ -z "${GOOSE_SERVER__SECRET_KEY:-}" ] && [ -r /data/secrets.env ]; then
-    set -a
-    # shellcheck disable=SC1091
-    . /data/secrets.env
-    set +a
-  fi
+  load_secrets GOOSE_SERVER__SECRET_KEY
   if command -v tailscale >/dev/null 2>&1; then
     STATUS_HOST="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
   else
@@ -73,25 +69,13 @@ if [ "$MODE" = "local" ]; then
     echo "      fail — goose serve binds the tailnet address only, by design)."
   fi
 else
-  BRAIN_HOST="${BRAIN_HOST:-<your-brain>.<your-tailnet>.ts.net}"
-  case "$BRAIN_HOST" in
-    *"<"*)
-      echo "check-brain.sh: set BRAIN_HOST to your brain's tailnet name first, e.g." >&2
-      echo "  BRAIN_HOST=brain.example-tailnet.ts.net $0" >&2
-      exit 2
-      ;;
-  esac
+  BRAIN_HOST="${BRAIN_HOST:-$PAI_BRAIN_HOST_PLACEHOLDER}"
+  if brain_host_is_placeholder; then
+    die 2 "set BRAIN_HOST to your brain's tailnet name first, e.g." \
+      "  BRAIN_HOST=brain.example-tailnet.ts.net $0"
+  fi
   STATUS_HOST="$BRAIN_HOST"
 fi
-
-# Run a command on the brain, wherever this script is executing.
-brain_exec() {
-  if [ "$MODE" = "local" ]; then
-    "$@"
-  else
-    ssh -o BatchMode=yes -o ConnectTimeout=10 "agent@$BRAIN_HOST" "$@"
-  fi
-}
 
 echo "== check-brain (mode: $MODE) =="
 [ "$MODE" = "remote" ] && echo "brain: agent@$BRAIN_HOST"
@@ -224,6 +208,4 @@ Nothing can verify this for you; do it once, now:
 All boxes ticked = shared sessions.db confirmed across surfaces.
 EOF
 
-echo
-echo "== summary: $PASS_COUNT passed, $FAIL_COUNT failed =="
-[ "$FAIL_COUNT" -eq 0 ] || exit 1
+finish

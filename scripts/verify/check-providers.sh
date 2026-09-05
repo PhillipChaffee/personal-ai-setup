@@ -15,6 +15,9 @@
 #   Together POST https://api.together.xyz/v1/chat/completions
 set -euo pipefail
 
+# shellcheck source=scripts/verify/lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
 usage() {
   cat <<'EOF'
 Usage: check-providers.sh [--help]
@@ -29,16 +32,11 @@ EOF
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
   "") ;;
-  *) echo "check-providers.sh: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  *) die_usage "unknown argument: $1" ;;
 esac
 
 ZEN_BASE="https://opencode.ai/zen/v1"
 TOGETHER_BASE="https://api.together.xyz/v1"
-PASS_COUNT=0
-FAIL_COUNT=0
-
-pass() { echo "PASS  $1"; PASS_COUNT=$((PASS_COUNT + 1)); }
-fail() { echo "FAIL  $1"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
 
 mask() { printf '%s' "${1:0:4}...(masked)"; }
 
@@ -46,13 +44,12 @@ MISSING=""
 [ -n "${OPENCODE_ZEN_API_KEY:-}" ] || MISSING="$MISSING OPENCODE_ZEN_API_KEY"
 [ -n "${TOGETHER_API_KEY:-}" ] || MISSING="$MISSING TOGETHER_API_KEY"
 if [ -n "$MISSING" ]; then
-  echo "check-providers.sh: missing env var(s):$MISSING" >&2
-  echo "Mac: run scripts/mac/keychain-secrets.sh, then open a NEW terminal." >&2
-  echo "Brain: set -a; source /data/secrets.env; set +a" >&2
-  exit 2
+  die 2 "missing env var(s):$MISSING" \
+    "Mac: run scripts/mac/keychain-secrets.sh, then open a NEW terminal." \
+    "Brain: set -a; source /data/secrets.env; set +a"
 fi
 
-command -v curl >/dev/null 2>&1 || { echo "check-providers.sh: curl not found" >&2; exit 2; }
+command -v curl >/dev/null 2>&1 || die 2 "curl not found"
 
 BODY_FILE="$(mktemp)"
 trap 'rm -f "$BODY_FILE"' EXIT
@@ -155,6 +152,4 @@ else
   echo "      (429? Together rate limits are dynamic — wait per x-ratelimit-reset and retry)"
 fi
 
-echo
-echo "== summary: $PASS_COUNT passed, $FAIL_COUNT failed =="
-[ "$FAIL_COUNT" -eq 0 ] || exit 1
+finish

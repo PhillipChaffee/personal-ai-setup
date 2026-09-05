@@ -8,6 +8,9 @@
 # auth URL (Todoist) — that's expected; complete them and re-run.
 set -euo pipefail
 
+# shellcheck source=scripts/verify/lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
 usage() {
   cat <<'EOF'
 Usage: check-mcp.sh [--help]
@@ -31,35 +34,18 @@ EOF
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
   "") ;;
-  *) echo "check-mcp.sh: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  *) die_usage "unknown argument: $1" ;;
 esac
 
-# A non-interactive SSH shell on the brain does not source the profile that
-# puts ~/.local/bin on PATH, so fall back to the known install location the
-# way register-schedules.sh does — otherwise this script is unusable over ssh.
-GOOSE_BIN="${GOOSE_BIN:-}"
-if [ -z "$GOOSE_BIN" ]; then
-  if command -v goose >/dev/null 2>&1; then
-    GOOSE_BIN="$(command -v goose)"
-  elif [ -x "$HOME/.local/bin/goose" ]; then
-    GOOSE_BIN="$HOME/.local/bin/goose"
-  else
-    echo "check-mcp.sh: goose CLI not found on PATH or at ~/.local/bin/goose" >&2
-    echo "              (Mac: scripts/mac/bootstrap-mac.sh)" >&2
-    exit 2
-  fi
-fi
+# --required: every check here is a goose run, so there is nothing to report
+# without it. (check-connectors.sh calls the same helper without --required.)
+GOOSE_BIN="$(resolve_goose_bin --required)"
 
 CONFIG="$HOME/.config/goose/config.yaml"
 PROVIDER="zen-openai"
 MODEL="kimi-k2.6"
 OUT_FILE="$(mktemp)"
 trap 'rm -f "$OUT_FILE"' EXIT
-
-PASS_COUNT=0
-FAIL_COUNT=0
-SKIP_COUNT=0
-SUMMARY=""
 
 run_check() {
   # $1 = name, $2 = prompt
@@ -77,33 +63,31 @@ run_check() {
   # dies (same behavior run-recipe.sh compensates for), so a zero exit alone is
   # not success — a per-account check that never reached Gmail must not PASS.
   if [ "$rc" -eq 0 ] && grep -qE 'Failed to start extension|^(Network error|Server error|Request failed)|Please resend your message to try again' "$OUT_FILE"; then
-    echo "    FAIL — the run completed but never reached the tools:"
+    fail "$name — the run completed but never reached the tools:"
     grep -oE 'Failed to start extension [^)]*\)|^(Network error|Server error|Request failed)[^\n]*' "$OUT_FILE" | head -n 3 | sed 's/^/      | /'
     tail -n 4 "$OUT_FILE" | sed 's/^/      | /'
-    FAIL_COUNT=$((FAIL_COUNT + 1))
-    SUMMARY="$SUMMARY  FAIL  $name (tools/provider unreachable)"$'\n'
+    summary_row "FAIL  $name (tools/provider unreachable)"
   elif [ "$rc" -eq 0 ] && grep -qiE 'authentication is required|complete the (sign-in|authorization)' "$OUT_FILE"; then
     # The tool answered with an auth prompt, not data — and this one-shot run
     # has already exited, taking the localhost OAuth callback listener with
     # it, so consent clicked NOW lands on a dead port. The consent must
     # complete while a session is alive; see docs/setup/30-google-oauth.md §6
     # for the retry-loop one-liner that holds the session open.
-    echo "    AUTH PENDING — consent flow triggered but not completed."
-    echo "    Do NOT just re-click the browser tab: run the §6 retry-loop"
-    echo "    command from docs/setup/30-google-oauth.md, consent while it"
-    echo "    runs, then re-run this script."
-    FAIL_COUNT=$((FAIL_COUNT + 1))
-    SUMMARY="$SUMMARY  AUTH PENDING  $name"$'\n'
+    # Counted as a failure, and now says so in the prefix. The distinct
+    # AUTH PENDING recap row survives because the remedy is specific.
+    fail "$name — AUTH PENDING: consent flow triggered but not completed."
+    note "Do NOT just re-click the browser tab: run the §6 retry-loop"
+    note "command from docs/setup/30-google-oauth.md, consent while it"
+    note "runs, then re-run this script."
+    summary_row "AUTH PENDING  $name"
   elif [ "$rc" -eq 0 ]; then
-    echo "    PASS — output (verify it matches reality):"
+    pass "$name — output (verify it matches reality):"
     tail -n 8 "$OUT_FILE" | sed 's/^/      | /'
-    PASS_COUNT=$((PASS_COUNT + 1))
-    SUMMARY="$SUMMARY  PASS  $name"$'\n'
+    summary_row "PASS  $name"
   else
-    echo "    FAIL (exit $rc). Last output lines:"
+    fail "$name (exit $rc). Last output lines:"
     tail -n 10 "$OUT_FILE" | sed 's/^/      | /'
-    FAIL_COUNT=$((FAIL_COUNT + 1))
-    SUMMARY="$SUMMARY  FAIL  $name"$'\n'
+    summary_row "FAIL  $name"
   fi
 }
 
@@ -124,10 +108,7 @@ if [ -z "${GOOGLE_OAUTH_CLIENT_ID:-}" ] && [ -r /data/secrets.env ]; then
   # source of GOOGLE_OAUTH_CLIENT_ID/SECRET, which workspace-mcp needs to start
   # at all. Gating on the roster meant that exporting USER_GOOGLE_EMAILS by hand
   # skipped the file and left the extension unable to launch.
-  set -a
-  # shellcheck disable=SC1091
-  . /data/secrets.env
-  set +a
+  load_secrets GOOGLE_OAUTH_CLIENT_ID
 fi
 
 GMAIL_CHECKS=0
@@ -155,13 +136,13 @@ if [ "$GMAIL_CHECKS" -eq 0 ]; then
 fi
 
 if [ "$FAIL_COUNT" -gt 0 ]; then
-  echo "    Hints: is workspace-mcp enabled in $CONFIG? Are"
-  echo "    GOOGLE_OAUTH_CLIENT_ID/GOOGLE_OAUTH_CLIENT_SECRET in the env"
-  echo "    (Keychain export / secrets.env)? Was the OAuth consent completed"
-  echo "    and the GCP app published 'In production'? (docs/setup/30-google-oauth.md"
-  echo "    — a 'Testing' app expires refresh tokens every 7 days.)"
-  echo "    A failure for one specific account usually means that account's"
-  echo "    consent dance was never completed — docs/setup/30-google-oauth.md §8."
+  note "Hints: is workspace-mcp enabled in $CONFIG? Are"
+  note "GOOGLE_OAUTH_CLIENT_ID/GOOGLE_OAUTH_CLIENT_SECRET in the env"
+  note "(Keychain export / secrets.env)? Was the OAuth consent completed"
+  note "and the GCP app published 'In production'? (docs/setup/30-google-oauth.md"
+  note "— a 'Testing' app expires refresh tokens every 7 days.)"
+  note "A failure for one specific account usually means that account's"
+  note "consent dance was never completed — docs/setup/30-google-oauth.md §8."
 fi
 
 # ---- 2. Todoist remote MCP (only if enabled) --------------------------------
@@ -176,11 +157,12 @@ if [ "$TODOIST_ON" = "yes" ]; then
     "Using the Todoist tools, list my tasks due today, titles only, one per line. If there are none, output exactly: no tasks due today. Do not create or modify any task."
 
   if [ "$FAIL_COUNT" -gt "$GMAIL_FAILS" ]; then
-    echo "    Hints: the first connect triggers Todoist's OAuth — approve it"
-    echo "    and re-run."
+    note "Hints: the first connect triggers Todoist's OAuth — approve it"
+    note "and re-run."
   fi
 else
-  echo "SKIP  Todoist — extension disabled in $CONFIG (no todo app adopted yet)"
+  skip "Todoist — extension disabled in $CONFIG (no todo app adopted yet)"
+  summary_row "SKIP  Todoist (disabled in config)"
 fi
 
 # ---- 3. Playwright (only if enabled) ----------------------------------------
@@ -200,14 +182,10 @@ if [ "$PLAYWRIGHT_ON" = "yes" ]; then
 else
   echo
   echo "--> Playwright (browser)"
-  echo "    SKIP — playwright extension is disabled in $CONFIG (the shipped"
-  echo "    default). Enable it there (enabled: true) if a workflow needs the"
-  echo "    browser; the first run downloads browser binaries."
-  SKIP_COUNT=$((SKIP_COUNT + 1))
-  SUMMARY="$SUMMARY  SKIP  Playwright (disabled in config)"$'\n'
+  skip "playwright extension is disabled in $CONFIG (the shipped"
+  note "default). Enable it there (enabled: true) if a workflow needs the"
+  note "browser; the first run downloads browser binaries."
+  summary_row "SKIP  Playwright (disabled in config)"
 fi
 
-echo
-echo "== summary: $PASS_COUNT passed, $FAIL_COUNT failed, $SKIP_COUNT skipped =="
-printf '%s' "$SUMMARY"
-[ "$FAIL_COUNT" -eq 0 ] || exit 1
+finish --skips

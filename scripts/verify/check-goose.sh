@@ -9,6 +9,9 @@
 # blaming goose.
 set -euo pipefail
 
+# shellcheck source=scripts/verify/lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
 usage() {
   cat <<'EOF'
 Usage: check-goose.sh [--help]
@@ -27,22 +30,18 @@ EOF
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
   "") ;;
-  *) echo "check-goose.sh: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  *) die_usage "unknown argument: $1" ;;
 esac
 
-command -v goose >/dev/null 2>&1 || {
-  echo "check-goose.sh: goose CLI not found (Mac: scripts/mac/bootstrap-mac.sh)" >&2
-  exit 2
-}
+GOOSE_BIN="$(resolve_goose_bin --required)"
 
 MISSING=""
 [ -n "${OPENCODE_ZEN_API_KEY:-}" ] || MISSING="$MISSING OPENCODE_ZEN_API_KEY"
 [ -n "${TOGETHER_API_KEY:-}" ] || MISSING="$MISSING TOGETHER_API_KEY"
 if [ -n "$MISSING" ]; then
-  echo "check-goose.sh: missing env var(s):$MISSING" >&2
-  echo "Mac: open a NEW terminal after keychain-secrets.sh." >&2
-  echo "Brain: set -a; source /data/secrets.env; set +a" >&2
-  exit 2
+  die 2 "missing env var(s):$MISSING" \
+    "Mac: open a NEW terminal after keychain-secrets.sh." \
+    "Brain: set -a; source /data/secrets.env; set +a"
 fi
 
 PROVIDER_DIR="$HOME/.config/goose/custom_providers"
@@ -66,6 +65,11 @@ variants_for() {
 
 # Portable timeout: GNU timeout exists on Linux; macOS only has it with
 # coreutils installed (as gtimeout). Fall back to no timeout.
+# One aligned recap row per provider, printed under the summary footer by
+# finish(). This is what the old bespoke PROVIDER/MODEL/RESULT table became:
+# the same information, in the place every other check script puts it.
+result_row() { summary_row "$(printf '%-14s %-24s %s' "$1" "$2" "$3")"; }
+
 run_bounded() {
   if command -v timeout >/dev/null 2>&1; then
     timeout 180 "$@"
@@ -76,9 +80,6 @@ run_bounded() {
   fi
 }
 
-RESULTS=""
-FAIL_COUNT=0
-
 echo "== check-goose: one run per custom provider =="
 for pair in $PAIRS; do
   provider="${pair%%:*}"
@@ -87,11 +88,10 @@ for pair in $PAIRS; do
   echo "--> $provider / $model"
 
   if [ ! -f "$PROVIDER_DIR/$provider.json" ]; then
-    echo "    FAIL: $PROVIDER_DIR/$provider.json is missing."
-    echo "    Install it: scripts/mac/bootstrap-mac.sh (Mac) / deploy-vps.sh (brain),"
-    echo "    or copy config/goose/custom_providers/$provider.json there yourself."
-    RESULTS="$RESULTS$provider|$model|FAIL (provider JSON missing)"$'\n'
-    FAIL_COUNT=$((FAIL_COUNT + 1))
+    fail "$provider / $model: $PROVIDER_DIR/$provider.json is missing"
+    note "Install it: scripts/mac/bootstrap-mac.sh (Mac) / deploy-vps.sh (brain),"
+    note "or copy config/goose/custom_providers/$provider.json there yourself."
+    result_row "$provider" "$model" "FAIL (provider JSON missing)"
     continue
   fi
 
@@ -100,7 +100,7 @@ for pair in $PAIRS; do
     GOOSE_MODE=auto \
     GOOSE_MAX_TURNS=3 \
     GOOSE_DISABLE_SESSION_NAMING=true \
-    goose run --no-session --quiet \
+    "$GOOSE_BIN" run --no-session --quiet \
     -t 'Reply with exactly OK' \
     --provider "$provider" --model "$model" \
     >"$OUT_FILE" 2>&1 || rc=$?
@@ -114,56 +114,46 @@ for pair in $PAIRS; do
   fi
 
   if [ "$rc" -eq 0 ] && [ "$failed_output" -eq 0 ] && grep -q "OK" "$OUT_FILE"; then
-    echo "    PASS"
-    RESULTS="$RESULTS$provider|$model|PASS"$'\n'
+    pass "$provider / $model"
+    result_row "$provider" "$model" "PASS"
   elif [ "$rc" -eq 0 ] && [ "$failed_output" -eq 1 ]; then
-    echo "    FAIL (goose exited 0 but reported a provider error). Last output lines:"
+    fail "$provider / $model (goose exited 0 but reported a provider error). Last output lines:"
     tail -n 8 "$OUT_FILE" | sed 's/^/      | /'
-    echo "    Swap hint for $provider: $(variants_for "$provider")"
-    RESULTS="$RESULTS$provider|$model|FAIL (provider error, exit 0)"$'\n'
-    FAIL_COUNT=$((FAIL_COUNT + 1))
+    note "Swap hint for $provider: $(variants_for "$provider")"
+    result_row "$provider" "$model" "FAIL (provider error, exit 0)"
   elif [ "$rc" -eq 0 ]; then
     # Ran clean but didn't say OK — model reachable, output odd. Count as pass
     # with a note; the wire format evidently works.
-    echo "    PASS (ran clean, but output lacked the literal 'OK' — inspect below)"
+    pass "$provider / $model (ran clean, but output lacked the literal 'OK' — inspect below)"
     tail -n 5 "$OUT_FILE" | sed 's/^/      | /'
-    RESULTS="$RESULTS$provider|$model|PASS (odd output)"$'\n'
+    result_row "$provider" "$model" "PASS (odd output)"
   else
-    echo "    FAIL (exit $rc). Last output lines:"
+    fail "$provider / $model (exit $rc). Last output lines:"
     tail -n 8 "$OUT_FILE" | sed 's/^/      | /'
     echo
-    echo "    Most likely cause: the base_url path variant. Goose custom providers"
-    echo "    are ambiguous upstream about full-path vs bare-base URLs, and this"
-    echo "    repo ships variant A. A/B it:"
-    echo "      1. Edit $PROVIDER_DIR/$provider.json"
-    echo "      2. Swap \"base_url\" to the other variant:"
-    echo "         $(variants_for "$provider")"
-    echo "      3. Re-run this script. (Symptom of the wrong variant: HTTP 404, or"
-    echo "         a doubled path like /chat/completions/chat/completions in the error.)"
+    note "Most likely cause: the base_url path variant. Goose custom providers"
+    note "are ambiguous upstream about full-path vs bare-base URLs, and this"
+    note "repo ships variant A. A/B it:"
+    note "  1. Edit $PROVIDER_DIR/$provider.json"
+    note "  2. Swap \"base_url\" to the other variant:"
+    note "     $(variants_for "$provider")"
+    note "  3. Re-run this script. (Symptom of the wrong variant: HTTP 404, or"
+    note "     a doubled path like /chat/completions/chat/completions in the error.)"
     if [ "$provider" = "zen-anthropic" ]; then
-      echo "    Also possible for zen-anthropic only: the auth header. Run"
-      echo "    scripts/verify/check-providers.sh — it reports whether Zen /messages"
-      echo "    accepts x-api-key (what goose's anthropic engine sends). If it does"
-      echo "    not, drop zen-anthropic and use Claude via OpenCode instead"
-      echo "    (docs/troubleshooting.md)."
+      note "Also possible for zen-anthropic only: the auth header. Run"
+      note "scripts/verify/check-providers.sh — it reports whether Zen /messages"
+      note "accepts x-api-key (what goose's anthropic engine sends). If it does"
+      note "not, drop zen-anthropic and use Claude via OpenCode instead"
+      note "(docs/troubleshooting.md)."
     fi
-    RESULTS="$RESULTS$provider|$model|FAIL (exit $rc)"$'\n'
-    FAIL_COUNT=$((FAIL_COUNT + 1))
+    result_row "$provider" "$model" "FAIL (exit $rc)"
   fi
 done
 
 echo
-echo "== summary =="
-printf '%-14s %-24s %s\n' "PROVIDER" "MODEL" "RESULT"
-printf '%s' "$RESULTS" | while IFS='|' read -r p m r; do
-  [ -n "$p" ] && printf '%-14s %-24s %s\n' "$p" "$m" "$r"
-done
-
 if [ "$FAIL_COUNT" -eq 0 ]; then
-  echo
-  echo "All three providers work — base_url semantics are settled for this goose version."
+  echo "All $PASS_COUNT providers work — base_url semantics are settled for this goose version."
 else
-  echo
   echo "$FAIL_COUNT provider(s) failing — see hints above and docs/troubleshooting.md."
-  exit 1
 fi
+finish

@@ -7,6 +7,9 @@
 # Concept + operations: docs/code-agents.md. Criteria: repo issue #17 (F2).
 set -euo pipefail
 
+# shellcheck source=scripts/verify/lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
 usage() {
   cat <<'EOF'
 Usage: check-code-agents.sh [--probe] [--insecure] [--local] [--help]
@@ -30,50 +33,33 @@ while [ "$#" -gt 0 ]; do
     --insecure) INSECURE="yes" ;;
     --local)    FORCE_LOCAL="yes" ;;
     -h|--help)  usage; exit 0 ;;
-    *) echo "check-code-agents.sh: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+    *) die_usage "unknown argument: $1" ;;
   esac
   shift
 done
-
-PASS_COUNT=0; FAIL_COUNT=0
-pass() { echo "PASS  $1"; PASS_COUNT=$((PASS_COUNT + 1)); }
-fail() { echo "FAIL  $1"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
-note() { echo "      $1"; }
 
 PORT=4300
 MAX_DISK_GB="${CODE_AGENT_MAX_DISK_GB:-20}"
 
 # ---- mode detection ---------------------------------------------------------
-MODE="remote"
-if [ "$FORCE_LOCAL" = "yes" ] || { [ -e /data/code-agents ] && command -v systemctl >/dev/null 2>&1; }; then
-  MODE="local"
-fi
+# One sentinel, in lib.sh. This used to probe /data/code-agents, so a brain
+# running goose with code agents not yet deployed read as "remote" and tried to
+# ssh to itself — while check-brain.sh, probing /data/goose, called the same
+# host "local".
+MODE="$(pai_mode "$FORCE_LOCAL")"
 if [ "$MODE" = "local" ]; then
-  if [ -z "${OPENCODE_SERVER_PASSWORD:-}" ] && [ -r /data/secrets.env ]; then
-    set -a
-    # shellcheck disable=SC1091
-    . /data/secrets.env
-    set +a
-  fi
+  load_secrets OPENCODE_SERVER_PASSWORD
   HOST="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
   [ -n "$HOST" ] || HOST="127.0.0.1"
 else
-  BRAIN_HOST="${BRAIN_HOST:-<your-brain>.<your-tailnet>.ts.net}"
-  case "$BRAIN_HOST" in
-    *"<"*) echo "check-code-agents.sh: set BRAIN_HOST first (see --help)" >&2; exit 2 ;;
-  esac
+  BRAIN_HOST="${BRAIN_HOST:-$PAI_BRAIN_HOST_PLACEHOLDER}"
+  brain_host_is_placeholder && die 2 "set BRAIN_HOST first (see --help)"
   HOST="$BRAIN_HOST"
   if [ "$PROBE" = "yes" ]; then
     echo "NOTE: --probe is local-only (it uses podman exec); skipping probe checks."
     PROBE="no"
   fi
 fi
-
-brain_exec() {
-  if [ "$MODE" = "local" ]; then "$@"; else
-    ssh -o BatchMode=yes -o ConnectTimeout=10 "agent@$BRAIN_HOST" "$@"
-  fi
-}
 
 CURL="curl -sS --max-time 15"
 [ "$INSECURE" = "yes" ] && CURL="$CURL -k"
@@ -304,8 +290,6 @@ cat <<'EOF'
   [ ] PR flow: agent pushes its agent/ branch and opens the PR (gh);
       commits show the code-agent identity, never your name/email.
   [ ] Notification: the PR email arrives; a forced failure alerts via ntfy.
-
 EOF
 
-echo "== summary: $PASS_COUNT passed, $FAIL_COUNT failed =="
-[ "$FAIL_COUNT" -eq 0 ] || exit 1
+finish
