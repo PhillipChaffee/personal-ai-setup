@@ -9,9 +9,12 @@ real error mapping against answers we control:
     GITHUB_API_BASE=http://127.0.0.1:4398 python3 scripts/vps/code-agent-manager.py
 
 Implements, for owner/repo `testowner/testrepo`:
-    GET /repos/:owner/:repo/pulls?head=&state=      list (no `mergeable`,
-                                                    exactly like the real one)
-    GET /repos/:owner/:repo/pulls/:n                detail (with `mergeable`)
+    GET /repos/:owner/:repo/pulls?head=&state=      list (no `mergeable` and
+                                                    no size counts, exactly
+                                                    like the real one)
+    GET /repos/:owner/:repo/pulls/:n                detail (with `mergeable`,
+                                                    commits, additions,
+                                                    deletions, changed_files)
     PUT /repos/:owner/:repo/pulls/:n/merge          merge
     GET /repos/:owner/:repo/commits/:sha/check-runs
     GET /repos/:owner/:repo/commits/:sha/status
@@ -38,10 +41,19 @@ manager has to refuse, not to look like one repo's real pull requests:
      #7  open on ANOTHER branch                   -> must never be listed,
                                                      and merging it must 404
 
+Every fixture also carries the four size counts, distinct per pull so a
+client that crosses two of them cannot pass. #12's `deletions` is 0 ON
+PURPOSE: a real zero has to survive the trip intact, which is the other half
+of "a pull with no detail sends no counts at all".
+
 Set FAKE_GITHUB_MODE to make it misbehave on purpose:
     down      every call fails at the socket    -> manager should say 502
     denied    every call answers 403            -> "PAT may have expired"
     noscope   check endpoints alone answer 403  -> checks degrade to "unknown"
+    nodetail  GET /pulls/:n alone answers 500   -> the list survives on the
+                                                   list entries, and every
+                                                   detail-only field is
+                                                   ABSENT, never zero
     blocked   the merge answers 405             -> normalised to 422, message
                                                    carried through
     nodefault GET /repos/:o/:r alone answers 403 -> the branch list survives,
@@ -85,11 +97,22 @@ def _pull(number: int, title: str, **over: object) -> Wire:
         "base": {"ref": "main"},
         "created_at": "2026-08-19T09:00:00Z",
         "updated_at": "2026-08-20T09:30:00Z",
+        # Detail-form only, like `mergeable` — route_list strips all five.
+        # Derived from the number so no two fixtures share a value and no two
+        # fields within one fixture do either.
+        "commits": over.get("commits", number % 4 + 1),
+        "additions": over.get("additions", number * 7),
+        "deletions": over.get("deletions", number * 3),
+        "changed_files": over.get("changed_files", number % 5 + 2),
     }
 
 
+# GitHub's list form carries none of these; only the per-pull detail does. A
+# manager that skips the detail call must therefore be able to tell.
+DETAIL_ONLY = ("mergeable", "commits", "additions", "deletions", "changed_files")
+
 PULLS: dict[int, Wire] = {
-    12: _pull(12, "Tighten the README quickstart"),
+    12: _pull(12, "Tighten the README quickstart", deletions=0),
     11: _pull(11, "Rework the retry loop"),
     10: _pull(10, "Add a smoke test", mergeable=None),
     9: _pull(9, "WIP: spike the parser", draft=True),
@@ -206,13 +229,19 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             if states != "all" and pull["state"] != states:
                 continue
-            # The real list endpoint does NOT carry `mergeable`. A manager
-            # that skips the per-PR detail call gets nulls, and no Merge
-            # button ever appears — which is the whole point of testing here.
-            rows.append({k: v for k, v in pull.items() if k != "mergeable"})
+            # The real list endpoint does NOT carry `mergeable` or the size
+            # counts. A manager that skips the per-PR detail call gets nulls
+            # and no numbers, and no Merge button ever appears — which is the
+            # whole point of testing here.
+            rows.append({k: v for k, v in pull.items() if k not in DETAIL_ONLY})
         self.send(200, rows)
 
     def route_one(self, number: int) -> None:
+        if MODE == "nodetail":
+            # Only this endpoint fails, so the list route still answers and
+            # the manager's per-pull fallback is the thing under test.
+            self.send(500, {"message": "Server Error"})
+            return
         pull = PULLS.get(number)
         if pull is None:
             self.send(404, {"message": "Not Found"})

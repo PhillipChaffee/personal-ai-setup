@@ -636,12 +636,28 @@ def summarise_checks(slug: str, sha: str) -> str:
     return "unknown"
 
 
+# How big is this pull request? GitHub answers on the DETAIL form and only
+# there — the list form omits these four exactly as it omits `mergeable` —
+# and `chat_pulls` already fetches that form per pull for `mergeable`, so
+# forwarding them costs no extra GitHub call at all.
+#
+# Copied only when they are really in the response, never defaulted: the one
+# path with no detail (the fallback in `chat_pulls` when that call raised)
+# has to leave the keys out. `0` is a claim that the branch changed nothing,
+# and "GitHub was not asked" is not that claim. The app draws nothing for a
+# field it was not sent, so absence renders honestly and a zero would not.
+DETAIL_ONLY_COUNTS = ("commits", "additions", "deletions", "changed_files")
+
+
 def pull_to_wire(slug: str, raw: dict[str, Any], *, with_checks: bool = True) -> dict[str, object]:
     """One pull request in the shape the app reads.
 
     `mergeable` is only present on the detail form, and GitHub computes it
     asynchronously — null means "not worked out yet", which the app treats as
     a wait rather than as a refusal. It is never coerced to false.
+
+    `DETAIL_ONLY_COUNTS` above are present on the same terms, minus the
+    asynchrony: there or absent, never zero to stand in for absent.
     """
     number = int(raw.get("number") or 0)
     merged = bool(raw.get("merged_at"))
@@ -652,7 +668,7 @@ def pull_to_wire(slug: str, raw: dict[str, Any], *, with_checks: bool = True) ->
     checks = "unknown"
     if with_checks and sha:
         checks = summarise_checks(slug, sha)
-    return {
+    wire: dict[str, object] = {
         "number": number,
         "title": _str(raw, "title"),
         "state": "merged" if merged else _str(raw, "state", "open"),
@@ -665,6 +681,13 @@ def pull_to_wire(slug: str, raw: dict[str, Any], *, with_checks: bool = True) ->
         "created_at": _str(raw, "created_at"),
         "updated_at": _str(raw, "updated_at"),
     }
+    for key in DETAIL_ONLY_COUNTS:
+        count = raw.get(key)
+        # `isinstance(True, int)` is true in Python, so bools are excluded by
+        # hand: a malformed answer must not arrive on a screen as "1 commit".
+        if isinstance(count, int) and not isinstance(count, bool):
+            wire[key] = count
+    return wire
 
 
 def chat_pulls(chat: Chat) -> list[dict[str, object]]:
@@ -681,9 +704,11 @@ def chat_pulls(chat: Chat) -> list[dict[str, object]]:
         if not isinstance(entry, dict):
             continue
         number = int(entry.get("number") or 0)
-        # The list form omits `mergeable`, so without this every row would
-        # arrive null and the Merge button could never appear. A flaky detail
-        # call degrades one row rather than blanking the list.
+        # The list form omits `mergeable` and the four size counts, so without
+        # this every row would arrive null and unmeasured and the Merge button
+        # could never appear. A flaky detail call degrades one row rather than
+        # blanking the list: that row keeps its title and state, and loses the
+        # fields only the detail carries.
         detail: dict[str, Any] = entry
         try:
             fetched = gh("GET", f"/repos/{slug}/pulls/{number}")
