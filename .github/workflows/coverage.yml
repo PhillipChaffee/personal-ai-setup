@@ -47,17 +47,39 @@ jobs:
           MANAGER_PY="coverage run --parallel-mode --data-file=$PWD/.coverage" \
             scripts/verify/test-code-agent-manager.sh
 
-      - name: Combine and report
+      - name: Combine
+        run: coverage combine --data-file="$PWD/.coverage"
+
+      # --fail-under=0 here is deliberate and overrides .coveragerc. VERIFIED:
+      # `coverage json` and `coverage lcov` HONOUR fail_under and exit 2, which
+      # would kill this step before the gate below ever runs -- and report the
+      # failure as "the artifact step broke" rather than "coverage dropped".
+      # The artifacts must always exist; the gating happens in its own step.
+      - name: Emit artifacts
         run: |
-          coverage combine --data-file="$PWD/.coverage"
-          coverage report --data-file="$PWD/.coverage"
-          coverage lcov --data-file="$PWD/.coverage" -o lcov.info
+          coverage json --data-file="$PWD/.coverage" -o coverage.json --fail-under=0
+          coverage lcov --data-file="$PWD/.coverage" -o lcov.info --fail-under=0
+
+      # Gate 1: the total floor (fail_under in .coveragerc). Its own step, so a
+      # coverage regression reads differently in the UI from a broken test.
+      - name: Coverage gate — total floor
+        run: coverage report --data-file="$PWD/.coverage"
+
+      # Gate 2: per-file floor + file inventory. `always()` so a total-floor
+      # failure does not mask an inventory failure -- you get every reason at
+      # once instead of one per push.
+      - name: Coverage gate — per-file floor and inventory
+        if: always()
+        run: scripts/verify/check-coverage.sh coverage.json
 
       # Coveralls authenticates with the GITHUB_TOKEN that Actions provides
       # automatically: no account to create, no repository secret, and it
       # registers the repo on its first upload. Codecov was tried first and
       # needs both — it answered "Repository not found" and reported nothing.
+      # Advisory dashboard, never the gate: an external service must not be
+      # able to make CI green, and its outage must not block a merge.
       - name: Upload to Coveralls
+        if: always()
         uses: coverallsapp/github-action@8d6379e14d29928660c4ba802d8e85393440b329  # v2.3.8
         with:
           file: lcov.info

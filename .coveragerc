@@ -41,6 +41,20 @@ include_namespace_packages = True
 # ahead of the threshold itself so the two can never be separated, and so the
 # reported number stops rounding 83.87% up to "84%".
 precision = 2
+# THE FLOOR. Deliberately below the measured number, not equal to it.
+#
+# Observed on effectively identical code: 91.04% and 91.84%. Eight lines flap
+# between runs -- pending_permissions' probe-failure arms (480-485),
+# container_state's "absent" (892) and session_state's error arm (1282-1283).
+# They are covered when a socket happens to time out under load, which is luck
+# rather than a test, so ~0.65pp of any single reading is noise.
+#
+# 90 sits a point below the LOWEST observation. The rule for raising it is
+# "actual minus one, never actual": a floor set to the current number turns the
+# next unlucky run red for no reason, and that is how a coverage gate earns the
+# reputation that gets it deleted. Covering those eight deliberately is what
+# unlocks 95.
+fail_under = 90
 show_missing = True
 skip_covered = False
 exclude_also =

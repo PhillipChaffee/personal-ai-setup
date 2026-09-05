@@ -57,3 +57,7 @@ __pycache__/
 coverage.xml
 lcov.info
 htmlcov/
+
+# Coverage artifacts (emitted by CI, never committed).
+coverage.json
+lcov.info
