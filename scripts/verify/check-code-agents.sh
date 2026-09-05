@@ -42,10 +42,11 @@ PORT=4300
 MAX_DISK_GB="${CODE_AGENT_MAX_DISK_GB:-20}"
 
 # ---- mode detection ---------------------------------------------------------
-MODE="remote"
-if [ "$FORCE_LOCAL" = "yes" ] || { [ -e /data/code-agents ] && command -v systemctl >/dev/null 2>&1; }; then
-  MODE="local"
-fi
+# One sentinel, in lib.sh. This used to probe /data/code-agents, so a brain
+# running goose with code agents not yet deployed read as "remote" and tried to
+# ssh to itself — while check-brain.sh, probing /data/goose, called the same
+# host "local".
+MODE="$(pai_mode "$FORCE_LOCAL")"
 if [ "$MODE" = "local" ]; then
   load_secrets OPENCODE_SERVER_PASSWORD
   HOST="$(tailscale ip -4 2>/dev/null | head -n1 || true)"

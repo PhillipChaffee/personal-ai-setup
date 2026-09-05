@@ -43,12 +43,10 @@ while [ "$#" -gt 0 ]; do
 done
 
 # ---- mode detection ---------------------------------------------------------
-MODE="remote"
-# /data/goose is GOOSE_PATH_ROOT; /data/goose-data is the pre-path-root layout,
-# still accepted so this detects a brain that has not been redeployed yet.
-if [ "$FORCE_LOCAL" = "yes" ] || { { [ -e /data/goose ] || [ -e /data/goose-data ]; } && command -v systemctl >/dev/null 2>&1; }; then
-  MODE="local"
-fi
+# One sentinel, in lib.sh. This used to probe /data/goose (or /data/goose-data,
+# the pre-GOOSE_PATH_ROOT layout) — both of which are add-on artefacts, not
+# host facts. See lib.sh's pai_mode for why /data itself is the right test.
+MODE="$(pai_mode "$FORCE_LOCAL")"
 
 GOOSE_BIN="goose"
 if [ "$MODE" = "local" ]; then
