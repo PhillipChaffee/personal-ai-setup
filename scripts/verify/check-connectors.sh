@@ -37,6 +37,9 @@
 # envKeys before any of it is echoed.
 set -euo pipefail
 
+# shellcheck source=scripts/verify/lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
 usage() {
   cat <<'EOF'
 Usage: check-connectors.sh [--smoke <id>] [--acp-roundtrip <id>] [--acp-url <url>]
@@ -85,15 +88,15 @@ while [ $# -gt 0 ]; do
   case "$1" in
     -h|--help)          usage; exit 0 ;;
     --offline)          OFFLINE="yes" ;;
-    --smoke)            shift; [ $# -gt 0 ] || { echo "check-connectors.sh: --smoke needs an <id>" >&2; exit 2; }; SMOKE_ID="$1" ;;
+    --smoke)            shift; [ $# -gt 0 ] || die 2 "--smoke needs an <id>"; SMOKE_ID="$1" ;;
     --smoke=*)          SMOKE_ID="${1#*=}" ;;
-    --acp-roundtrip)    shift; [ $# -gt 0 ] || { echo "check-connectors.sh: --acp-roundtrip needs an <id>" >&2; exit 2; }; ROUNDTRIP_ID="$1" ;;
+    --acp-roundtrip)    shift; [ $# -gt 0 ] || die 2 "--acp-roundtrip needs an <id>"; ROUNDTRIP_ID="$1" ;;
     --acp-roundtrip=*)  ROUNDTRIP_ID="${1#*=}" ;;
-    --acp-url)          shift; [ $# -gt 0 ] || { echo "check-connectors.sh: --acp-url needs a URL" >&2; exit 2; }; ACP_URL="$1" ;;
+    --acp-url)          shift; [ $# -gt 0 ] || die 2 "--acp-url needs a URL"; ACP_URL="$1" ;;
     --acp-url=*)        ACP_URL="${1#*=}" ;;
-    --goose-version)    shift; [ $# -gt 0 ] || { echo "check-connectors.sh: --goose-version needs a tag" >&2; exit 2; }; GOOSE_TAG_FLAG="$1" ;;
+    --goose-version)    shift; [ $# -gt 0 ] || die 2 "--goose-version needs a tag"; GOOSE_TAG_FLAG="$1" ;;
     --goose-version=*)  GOOSE_TAG_FLAG="${1#*=}" ;;
-    *) echo "check-connectors.sh: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+    *) die_usage "unknown argument: $1" ;;
   esac
   shift
 done
@@ -109,14 +112,7 @@ CLOUD_INIT="$REPO_ROOT/infra/terraform/templates/cloud-init.yaml.tftpl"
 # check-mcp.sh and register-schedules.sh do. Unlike those, a missing goose is
 # NOT fatal here: manifest validation is text work and must run in CI on a
 # machine that has never installed goose.
-GOOSE_BIN="${GOOSE_BIN:-}"
-if [ -z "$GOOSE_BIN" ]; then
-  if command -v goose >/dev/null 2>&1; then
-    GOOSE_BIN="$(command -v goose)"
-  elif [ -x "$HOME/.local/bin/goose" ]; then
-    GOOSE_BIN="$HOME/.local/bin/goose"
-  fi
-fi
+GOOSE_BIN="$(resolve_goose_bin)"
 
 # ---- the pinned goose version ----------------------------------------------
 # Single source of truth is the brain's installer line in cloud-init; the Mac
@@ -143,19 +139,17 @@ GOOSE_VER="${GOOSE_TAG#v}"
 # stub-engine.sh). PyYAML is not universally present, so fall back to uv, which
 # both bootstrap-mac.sh and cloud-init install.
 if ! command -v python3 >/dev/null 2>&1; then
-  echo "check-connectors.sh: python3 not found (needed to parse YAML/JSON)" >&2
-  exit 2
+  die 2 "python3 not found (needed to parse YAML/JSON)"
 fi
 PY=(python3)
 if ! python3 -c 'import yaml' >/dev/null 2>&1; then
   if command -v uv >/dev/null 2>&1; then
     PY=(uv run --quiet --with pyyaml python)
   else
-    echo "check-connectors.sh: python3 cannot import yaml (PyYAML)." >&2
-    echo "  Mac:   uv is installed by scripts/mac/bootstrap-mac.sh — re-run it," >&2
-    echo "         or: python3 -m pip install --user pyyaml" >&2
-    echo "  Brain: apt-get install -y python3-yaml" >&2
-    exit 2
+    die 2 "python3 cannot import yaml (PyYAML)." \
+      "  Mac:   uv is installed by scripts/mac/bootstrap-mac.sh — re-run it," \
+      "         or: python3 -m pip install --user pyyaml" \
+      "  Brain: apt-get install -y python3-yaml"
   fi
 fi
 
@@ -167,15 +161,6 @@ ACP_CHECK="$WORK/acp_contract.py"
 SMOKE_PY="$WORK/smoke.py"
 ROUNDTRIP_PY="$WORK/roundtrip.py"
 SCHEMA_KEYS="$WORK/schema-keys.json"
-
-PASS_COUNT=0
-FAIL_COUNT=0
-SKIP_COUNT=0
-SUMMARY=""
-
-pass() { echo "PASS  $1"; PASS_COUNT=$((PASS_COUNT + 1)); }
-fail() { echo "FAIL  $1"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
-skip() { echo "SKIP  $1"; SKIP_COUNT=$((SKIP_COUNT + 1)); }
 
 # run_check <summary-label> <command...> — runs a python checker that emits
 # "PASS  ", "FAIL  ", "SKIP  ", "NOTE  " and "      | " lines, counts them here
@@ -191,23 +176,23 @@ run_check() {
   "$@" >"$OUT_FILE" 2>&1 || rc=$?
   while IFS= read -r line; do
     case "$line" in
-      "PASS  "*) PASS_COUNT=$((PASS_COUNT + 1)) ;;
-      "FAIL  "*) FAIL_COUNT=$((FAIL_COUNT + 1)) ;;
-      "SKIP  "*) SKIP_COUNT=$((SKIP_COUNT + 1)) ;;
+      "PASS  "*) record_pass ;;
+      "FAIL  "*) record_fail ;;
+      "SKIP  "*) record_skip ;;
     esac
     printf '%s\n' "$line"
   done <"$OUT_FILE"
   if [ "$rc" -ne 0 ]; then
     echo "FAIL  $label: checker exited $rc (a bug in the checker, or a manifest that broke the parser)"
-    FAIL_COUNT=$((FAIL_COUNT + 1))
+    record_fail
   fi
   if [ "$FAIL_COUNT" -gt "$before" ]; then
-    SUMMARY="$SUMMARY  FAIL  $label ($((FAIL_COUNT - before)) problem(s))"$'\n'
+    summary_row "FAIL  $label ($((FAIL_COUNT - before)) problem(s))"
   elif [ "$PASS_COUNT" -eq "$before_pass" ] && [ "$SKIP_COUNT" -gt "$before_skip" ]; then
     # Nothing was actually proven — say so rather than reporting a green PASS.
-    SUMMARY="$SUMMARY  SKIP  $label (nothing asserted)"$'\n'
+    summary_row "SKIP  $label (nothing asserted)"
   else
-    SUMMARY="$SUMMARY  PASS  $label"$'\n'
+    summary_row "PASS  $label"
   fi
 }
 
@@ -1987,7 +1972,4 @@ if [ -n "$ROUNDTRIP_ID" ]; then
   fi
 fi
 
-echo
-echo "== summary: $PASS_COUNT passed, $FAIL_COUNT failed, $SKIP_COUNT skipped =="
-printf '%s' "$SUMMARY"
-[ "$FAIL_COUNT" -eq 0 ] || exit 1
+finish --skips
