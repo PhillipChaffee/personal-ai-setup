@@ -1,0 +1,66 @@
+# Infrastructure gates: the Terraform that provisions the brain, and the
+# Containerfile every code agent runs inside.
+name: infra-lint
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  terraform:
+    name: terraform fmt + validate + tflint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd  # v3.1.2
+        with:
+          terraform_version: 1.16.1
+          terraform_wrapper: false
+
+      # Uniquely safe to gate: it is already clean (zero diff today, so wiring
+      # it changes not one byte) and it reads only .tf/.tfvars, so it
+      # structurally cannot reach deploy-vps.sh or cloud-init.yaml.tftpl.
+      - name: terraform fmt
+        run: terraform -chdir=infra/terraform fmt -check -recursive -diff
+
+      # `init -backend=false`: validate needs the provider schema but must not
+      # touch remote state. This is the only gate that can catch a typo'd
+      # hcloud_server attribute -- no tflint ruleset exists for Hetzner.
+      - name: terraform validate
+        run: |
+          terraform -chdir=infra/terraform init -backend=false -input=false
+          terraform -chdir=infra/terraform validate
+
+      - uses: terraform-linters/setup-tflint@90f302c255ef959cbfb4bd10581afecdb7ece3e6  # v4.1.1
+        with:
+          tflint_version: v0.64.0
+
+      - name: tflint
+        run: |
+          tflint --chdir=infra/terraform --init
+          tflint --chdir=infra/terraform --format=compact
+
+  container:
+    name: hadolint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+
+      # The file is named Containerfile (podman's spelling), not Dockerfile, so
+      # the action's default glob would miss it entirely.
+      - uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387  # v3.5.0
+        with:
+          dockerfile: config/code-agents/Containerfile
+          config: .hadolint.yaml
