@@ -395,6 +395,58 @@ else
   bad "state-shape / config-template checks (see the assertion above)"
 fi
 
+# ---- 0c. the probes, when the thing they probe is not there (unit) ----------
+# pending_permissions, session_state and container_state all have arms for "the
+# chat did not answer", and those arms were being covered BY ACCIDENT: a socket
+# occasionally timed out under load, so the same commit measured 91.04% on one
+# run and 91.84% on another, with exactly these eight lines flapping.
+#
+# Coverage that depends on a race is not coverage of the behaviour, and it puts
+# noise under the fail_under floor. These reach the same arms deterministically
+# and in-process, by pointing the probes at a port nothing is listening on --
+# pending_permissions takes its running list as a parameter precisely so a
+# caller can supply one.
+cat >"$WORK/preflight-probes.py" <<'PY'
+import importlib.util, socket, sys
+
+spec = importlib.util.spec_from_file_location("cam", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+sys.modules["cam"] = mod
+spec.loader.exec_module(mod)
+
+# A port that is bound and immediately closed: connect() gets ECONNREFUSED
+# right away rather than hanging, so this costs no wall clock.
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+dead_port = s.getsockname()[1]
+s.close()
+
+dead = mod.Chat(id="dead-chat", repo="r", title="t", port=dead_port, branch="b")
+
+# --- the permission sweep: a chat that will not answer is UNREACHABLE, and
+# must not be silently dropped. "In neither list" is the one outcome the
+# docstring forbids, because the app reads it as "nothing pending".
+found, unreachable = mod.pending_permissions(running=[dead])
+assert found == [], f"a dead chat produced asks: {found}"
+assert unreachable == ["dead-chat"], f"a dead chat was not reported unreachable: {unreachable}"
+
+# --- session_state: unknown, NOT idle. The reaper must not spin down a chat
+# it merely failed to reach.
+state = mod.session_state(dead)
+assert state == "unknown", f"an unreachable chat reported {state!r}, not 'unknown'"
+
+# --- container_state: absent when the engine says nothing exists.
+assert mod.container_state("no-such-chat-at-all") == "absent"
+PY
+if "${MANAGER_PY[@]}" "$WORK/preflight-probes.py" "$REPO_ROOT/scripts/vps/code-agent-manager.py"
+then
+  ok "an unreachable chat is reported unreachable, never silently dropped"
+  ok "an unreachable chat's session reads 'unknown', not 'idle'"
+  ok "a container the engine does not know is 'absent'"
+else
+  bad "probe-failure arms (see the assertion above)"
+fi
+
 # ---- 1. auth ----------------------------------------------------------------
 # shellcheck disable=SC2086
 CODE="$($CURL -o /dev/null -w '%{http_code}' "$BASE/api/health" || echo 000)"
