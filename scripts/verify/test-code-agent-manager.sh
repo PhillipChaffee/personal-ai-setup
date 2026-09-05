@@ -215,7 +215,12 @@ echo "== test-code-agent-manager (work dir: $WORK) =="
 #     UnicodeEncodeError from putrequest — neither an OSError nor an
 #     HTTPException, and the second one's message quotes a character of the
 #     topic. The topic is a password. The net has to be wider than the log.
-if python3 - "$REPO_ROOT/scripts/vps/code-agent-manager.py" <<'PY'
+# Written to a file, not piped: `coverage run -` refuses stdin ("No file to
+# run"), so a heredoc here would have to fall back to a bare python3 -- which
+# is exactly what it used to do, and why the coverage of everything these
+# checks exercise was silently thrown away. $WORK is outside scripts/, so
+# preflight.py is itself unmeasured, which is correct: it is test code.
+cat >"$WORK/preflight.py" <<'PY'
 import contextlib, importlib.util, io, sys, time
 
 spec = importlib.util.spec_from_file_location("cam", sys.argv[1])
@@ -286,6 +291,7 @@ assert "Traceback" not in e, f"an uncaught daemon-thread traceback reached stder
 assert "agent notification lost" in o, f"the failure was not logged at all: {o!r}"
 assert TOPIC not in o + e and "ó" not in o + e, "the topic leaked into the log"
 PY
+if "${MANAGER_PY[@]}" "$WORK/preflight.py" "$REPO_ROOT/scripts/vps/code-agent-manager.py"
 then
   ok "the reaper stamps sampled_at before the walk, and withholds an unsettled turn"
   ok "a malformed ntfy target is logged by TYPE — no traceback, no topic"
