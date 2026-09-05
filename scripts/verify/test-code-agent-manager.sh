@@ -1121,6 +1121,112 @@ CODE="$($CURL -o /dev/null -w '%{http_code}' "$BASE/api/health")"
 [ "$CODE" = "200" ] && ok "a malformed index.json degrades to no chats" \
   || bad "malformed index.json: HTTP $CODE"
 
+# ---- 9. startup, which the long-lived instance cannot reach ----------------
+# Everything above runs against ONE manager, started once with a good
+# configuration. main()'s guards therefore never execute, and neither does the
+# TLS branch -- the harness deliberately points CODE_AGENT_TLS_CERT at a path
+# that does not exist, so the configuration PRODUCTION ACTUALLY RUNS has never
+# once been started under test. These are sub-second launches, each with its
+# own root and port, each reaped before the next.
+#
+# They go through "${MANAGER_PY[@]}" like the main instance, so their coverage
+# counts; --parallel-mode unions the data files.
+
+SHIMS="$WORK/shims"; mkdir -p "$SHIMS"
+AUX_ROOT="$WORK/aux"
+
+# launch_aux <name> <expect-exit> <env-assignments...> -- runs the manager to
+# completion (these all exit on their own) and captures its log.
+launch_aux() {
+  local name="$1" want="$2"; shift 2
+  local logf="$WORK/aux-$name.log" rc=0
+  rm -rf "$AUX_ROOT"; mkdir -p "$AUX_ROOT"
+  env -i PATH="$PATH" HOME="$HOME" CODE_AGENT_ROOT="$AUX_ROOT" "$@" \
+    "${MANAGER_PY[@]}" "$REPO_ROOT/scripts/vps/code-agent-manager.py" \
+    >"$logf" 2>&1 || rc=$?
+  [ "$rc" = "$want" ] || echo "      (exit $rc, wanted $want; log: $logf)"
+  [ "$rc" = "$want" ]
+}
+
+# 9a. No password. The one refusal that must never be soft: an unauthenticated
+# code plane is remote code execution for anyone on the tailnet.
+if launch_aux nopass 1 OPENCODE_SERVER_PASSWORD= CODE_AGENT_BIND=127.0.0.1 \
+   && grep -q "FATAL: OPENCODE_SERVER_PASSWORD is empty" "$WORK/aux-nopass.log"; then
+  ok "an empty password is fatal at startup, not a warning"
+else
+  bad "empty-password guard"
+fi
+
+# 9b. Password set, but no PAT, no repos.json and no tailnet: both warnings,
+# then the deliberate nonzero exit that makes systemd's Restart=always the
+# wait-for-the-tailnet loop. `tailscale` is shimmed to exit 1 -- the real one
+# lives on PATH on this Mac, and finding it would give the manager an address
+# and change the outcome.
+printf '#!/bin/sh\nexit 1\n' > "$SHIMS/tailscale"; chmod +x "$SHIMS/tailscale"
+if launch_aux notailnet 1 OPENCODE_SERVER_PASSWORD=x GITHUB_CODE_AGENT_PAT= \
+     PATH="$SHIMS:$PATH" \
+   && grep -q "WARNING: GITHUB_CODE_AGENT_PAT is empty" "$WORK/aux-notailnet.log" \
+   && grep -q "missing — the allowlist is empty" "$WORK/aux-notailnet.log" \
+   && grep -q "no Tailscale IPv4 yet — exiting for systemd to retry" "$WORK/aux-notailnet.log"; then
+  ok "no PAT, no allowlist and no tailnet: two warnings, then exit for systemd"
+else
+  bad "startup warnings / tailnet retry exit"
+fi
+
+# 9c. tailnet_ip's success arm, and its empty-output arm. Without a shim the
+# only way to reach either is to be on a tailnet.
+printf '#!/bin/sh\necho 100.64.0.9\n' > "$SHIMS/tailscale"; chmod +x "$SHIMS/tailscale"
+# It resolves an address, gets past the host guard, and then fails to BIND it
+# (100.64.0.9 is not a local interface) -- which is itself the proof that the
+# address came from the shim and was used.
+launch_aux tsok 1 OPENCODE_SERVER_PASSWORD=x PATH="$SHIMS:$PATH" >/dev/null 2>&1 || true
+if grep -qE "Cannot assign requested address|Traceback" "$WORK/aux-tsok.log" \
+   && ! grep -q "no Tailscale IPv4 yet" "$WORK/aux-tsok.log"; then
+  ok "tailnet_ip returns the address tailscale printed"
+else
+  bad "tailnet_ip success arm (log: $WORK/aux-tsok.log)"
+fi
+printf '#!/bin/sh\nexit 0\n' > "$SHIMS/tailscale"; chmod +x "$SHIMS/tailscale"
+if launch_aux tsempty 1 OPENCODE_SERVER_PASSWORD=x PATH="$SHIMS:$PATH" \
+   && grep -q "no Tailscale IPv4 yet" "$WORK/aux-tsempty.log"; then
+  ok "tailscale answering with no address is treated as no tailnet"
+else
+  bad "tailnet_ip empty-output arm"
+fi
+rm -f "$SHIMS/tailscale"
+
+# 9d. TLS. This is the configuration the brain actually runs and it has never
+# been started under test: the main instance points TLS at nonexistent paths on
+# purpose, so `have_tls` has only ever been False and the wrap_socket branch has
+# never executed.
+TLS_PORT=$((PORT + 11))
+if openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+     -keyout "$WORK/tls-key.pem" -out "$WORK/tls-cert.pem" \
+     -subj /CN=localhost >/dev/null 2>&1; then
+  rm -rf "$AUX_ROOT"; mkdir -p "$AUX_ROOT"
+  env -i PATH="$PATH" HOME="$HOME" CODE_AGENT_ROOT="$AUX_ROOT" \
+    OPENCODE_SERVER_PASSWORD="$PASS" CODE_AGENT_BIND=127.0.0.1 \
+    CODE_AGENT_PORT="$TLS_PORT" CODE_AGENT_ENGINE="$HERE/stub-engine.sh" \
+    CODE_AGENT_TLS_CERT="$WORK/tls-cert.pem" CODE_AGENT_TLS_KEY="$WORK/tls-key.pem" \
+    "${MANAGER_PY[@]}" "$REPO_ROOT/scripts/vps/code-agent-manager.py" \
+    >"$WORK/aux-tls.log" 2>&1 &
+  TLS_PID=$!
+  for _ in $(seq 1 40); do
+    curl -sk --max-time 2 -o /dev/null "https://127.0.0.1:$TLS_PORT/api/health" && break
+    sleep 0.25
+  done
+  TLS_CODE="$(curl -sk --max-time 5 -o /dev/null -w '%{http_code}' \
+    -u "opencode:$PASS" "https://127.0.0.1:$TLS_PORT/api/health" || echo 000)"
+  PLAIN_WARN="no"
+  grep -q "serving PLAIN HTTP" "$WORK/aux-tls.log" && PLAIN_WARN="yes"
+  kill "$TLS_PID" 2>/dev/null || true; wait "$TLS_PID" 2>/dev/null || true
+  [ "$TLS_CODE" = "200" ] && [ "$PLAIN_WARN" = "no" ] \
+    && ok "serves HTTPS when a cert is present, with no plain-HTTP warning" \
+    || bad "TLS launch: HTTP $TLS_CODE, plain-http-warning=$PLAIN_WARN"
+else
+  echo "SKIP  TLS launch — openssl unavailable"
+fi
+
 echo
 echo "== summary: $PASS_COUNT passed, $FAIL_COUNT failed =="
 if [ "$FAIL_COUNT" -ne 0 ]; then
