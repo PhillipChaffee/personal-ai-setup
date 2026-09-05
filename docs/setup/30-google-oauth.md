@@ -66,6 +66,7 @@ more MCP tools eating context.)
 > tokens long-lived.
 >
 > Two expected side effects, both fine for personal use:
+>
 > - Google may show a list of "requirements for verification" — **ignore it**.
 >   Verification is only mandatory for apps at scale; an unverified app in
 >   production works indefinitely for its own developer.
@@ -110,7 +111,7 @@ The wiring lives in two template files the bootstrap already put in place:
 
 - `config/goose/config.yaml` — the `workspace-mcp` stdio extension entry:
 
-  ```
+  ```console
   uvx workspace-mcp@1.25.0 --permissions gmail:send calendar:full tasks:manage --tool-tier core
   ```
 
@@ -319,8 +320,12 @@ the Google console.
 2. **Run the consent dance once per account**, exactly as in §6 (or §7b on
    the brain), but sign in as the *additional* account in the browser. To
    trigger the flow for a specific account, make the prompt name it, e.g.
+<!-- Both addresses are literals inside a prompt the reader is told to paste
+     verbatim. `--fix` wraps them in <...>, which turns a literal into what
+     reads as a placeholder to be substituted. -->
    in the §6 headless one-liner ask for
    *"...the 3 most recent inbox subjects of the account
+<!-- markdownlint-disable-next-line MD034 -->
    side-project@example.com — pass user_google_email=side-project@example.com
    on every call"*. The new account's token file lands next to the first
    one; nothing is overwritten.

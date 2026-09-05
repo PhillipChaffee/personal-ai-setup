@@ -30,7 +30,7 @@ Fine-grained):
 Add both to `/data/secrets.env` on the brain (names ship in
 `config/env/secrets.env.example`):
 
-```
+```ini
 OPENCODE_SERVER_PASSWORD=<the hex string>
 GITHUB_CODE_AGENT_PAT=<the fine-grained PAT>
 ```

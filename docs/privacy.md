@@ -118,7 +118,7 @@ relocate one — will recur with the next thing installed on the brain.
 What makes the claim true is one line in
 [`goose-serve.service`](../scripts/vps/systemd/goose-serve.service):
 
-```
+```ini
 Environment=GOOSE_PATH_ROOT=/data/goose
 ```
 

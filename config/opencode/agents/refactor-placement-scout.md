@@ -175,7 +175,7 @@ Return your output in this exact structure:
 <one paragraph: where things should end up after recommended alignments land — a 30-second scan for the orchestrator and reviewer.>
 ```
 
-Omit any section that has no content (no findings, no drift, no strengths). 
+Omit any section that has no content (no findings, no drift, no strengths).
 
 If the entire scout run produces neither placement smells nor Convention Drift findings, return **exactly this single line** (orchestrator-merge convention; the orchestrator detects "clean" via exact-match):
 

@@ -81,7 +81,7 @@ The brain's agent endpoint (`goose serve`, port 3284, systemd unit
 A dedicated Hetzner Volume, formatted LUKS2 (`scripts/vps/luks-setup.sh`, one-time),
 mounted at `/data`. Everything stateful lives there:
 
-```
+```text
 /data
 ├── secrets.env          # all runtime secrets, chmod 600
 ├── goose/               # GOOSE_PATH_ROOT — goose's config, data AND state (0700)

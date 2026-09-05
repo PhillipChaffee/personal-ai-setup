@@ -35,3 +35,15 @@ repos:
     rev: v0.11.0.1
     hooks:
       - id: shellcheck
+
+  # NEITHER markdown tool runs as a pre-commit hook, deliberately.
+  #
+  # markdownlint-cli2's hook builds its own node environment, and one of its
+  # transitive deps declares engines ^22.22.2 || ^24.15.0 || >=26.0.0 -- so it
+  # hard-fails EBADENGINE on a machine running node 24.3, which is a commit
+  # blocked by a dev tool's dependency's version range. Every other hook here
+  # is python-based and has no such coupling. CI pins node 22 and gates both
+  # tools there (.github/workflows/docs-lint.yml).
+  #
+  # lychee is out for a different reason: its hook downloads a binary and hits
+  # the network on every commit.

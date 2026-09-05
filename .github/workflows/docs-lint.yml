@@ -1,0 +1,62 @@
+# 90 tracked .md files -- the biggest file type in the repo, because this repo
+# is substantially documentation.
+#
+# Both jobs are OFFLINE and deterministic. Nothing here reaches the network, so
+# the gate cannot flake on someone else's rate limit.
+name: docs-lint
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  markdown:
+    name: markdownlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: "22"
+
+      # `npm ci` against a committed lockfile, not `npm install -g pkg@version`.
+      # The latter pins one package and lets its whole transitive tree float --
+      # the supply-chain gap zizmor's adhoc-packages audit names, and the same
+      # reasoning that made every action here hash-pinned. Keep the version in
+      # package.json in lockstep with .pre-commit-config.yaml.
+      - name: Install markdownlint-cli2 (locked)
+        run: npm ci
+
+      # git ls-files, not a glob: 272 .md exist on disk against 90 tracked --
+      # the rest are worktree copies and vendored Terraform provider changelogs
+      # that nobody can fix from a clean checkout.
+      - name: markdownlint
+        run: git ls-files '*.md' | xargs npx markdownlint-cli2
+
+  links:
+    name: lychee (offline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+
+      # --offline resolves relative links and #anchors with zero network. That
+      # is the whole point here: docs/index.md and docs/app-privacy-policy.md
+      # are served by GitHub Pages, and the privacy policy's URL is registered
+      # on a Google OAuth consent screen -- a dead link in that set is an OAuth
+      # verification risk, not a docs nit.
+      - uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8  # v2.9.0
+        with:
+          args: --offline --config lychee.toml --no-progress $(git ls-files '*.md')
+          fail: true

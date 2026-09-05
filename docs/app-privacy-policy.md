@@ -5,7 +5,7 @@ permalink: /privacy/
 
 # Privacy Policy — "personal-ai" (Google OAuth application)
 
-*Effective: 2026-08-21*
+Effective: **2026-08-21**
 
 **personal-ai** is a personal, single-user application: an instance of the
 open-source [personal-ai-setup](https://github.com/PhillipChaffee/personal-ai-setup)

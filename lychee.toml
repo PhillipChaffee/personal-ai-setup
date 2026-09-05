@@ -1,0 +1,27 @@
+# lychee. The offline pass is the gate; it resolves relative links and #anchors
+# with zero network, so it cannot flake and cannot be slowed by a rate limit.
+#
+# This matters more here than in most repos: docs/index.md and
+# docs/app-privacy-policy.md are served by GitHub Pages and the privacy policy's
+# URL is registered on a Google OAuth consent screen. A dead link in that set is
+# not a docs bug, it is an OAuth verification risk.
+
+# NOT a bool. In lychee 0.24 this is a string ("full" | "partial" | "none"),
+# and `include_fragments = true` is a hard config parse error, not a warning.
+include_fragments = "full"
+
+exclude_path = [".claude", "node_modules", "infra/terraform/.terraform"]
+
+# INERT IN THE OFFLINE GATE, and kept deliberately. --offline already excludes
+# every remote URL (verified: the run reports the same 71 excluded with and
+# without this list), so what the gate actually proves is that all 187 relative
+# links and #anchors resolve. These patterns exist for the day an online job is
+# added -- they are the placeholders the docs tell the reader to substitute,
+# and an online checker would otherwise report them as dead.
+exclude = [
+  '^https?://.*your-brain.*',
+  '^https?://.*your-tailnet.*',
+  '^https?://.*example\.com',
+  '^https?://127\.0\.0\.1',
+  '^https?://localhost',
+]

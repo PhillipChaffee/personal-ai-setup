@@ -1,0 +1,8 @@
+{
+  "name": "personal-ai-setup-devtools",
+  "private": true,
+  "description": "Dev tooling only. This repo ships no JavaScript; package-lock.json exists so the markdown linter's ENTIRE dependency tree is pinned, not just its top-level version. `npm install -g markdownlint-cli2@0.23.2` pins one package and lets everything under it float, which is the supply-chain gap zizmor's adhoc-packages audit is about -- the same reasoning that made every GitHub Action here hash-pinned.",
+  "devDependencies": {
+    "markdownlint-cli2": "0.23.2"
+  }
+}
