@@ -712,6 +712,23 @@ assert got[8]["state"] == "merged", got[8]["state"]
 ' && ok "pulls listed for this branch only, with mergeable and checks" \
   || bad "pulls payload wrong: $PULLS"
 
+# The four size counts ride the detail form the manager already fetches for
+# `mergeable`. They are what the app draws a diffstat from, so a row that
+# loses them renders a 300-line rewrite exactly like a typo fix.
+echo "$PULLS" | python3 -c '
+import json, sys
+got = {p["number"]: p for p in json.load(sys.stdin)["pulls"]}
+assert got[12]["commits"] == 1, got[12]
+assert got[12]["additions"] == 84, got[12]
+assert got[12]["changed_files"] == 4, got[12]
+# An honest zero is a measurement, not a missing field: it has to arrive.
+assert got[12]["deletions"] == 0, "a real zero was dropped as if absent"
+assert got[11]["commits"] == 4, got[11]
+assert got[11]["additions"] == 77, got[11]
+assert got[11]["deletions"] == 33, got[11]
+assert got[11]["changed_files"] == 3, got[11]
+' && ok "pull size counts survive the detail call" || bad "pull counts wrong: $PULLS"
+
 # shellcheck disable=SC2086
 BODY="$($CURL -X POST -H 'Content-Type: application/json' -d '{}' \
   "$BASE/api/chats/$PR_CHAT/pulls/7/merge")"
@@ -776,6 +793,25 @@ assert pulls, "the list itself failed when only the check scopes were missing"
 assert all(p["checks"] == "unknown" for p in pulls), [p["checks"] for p in pulls]
 assert any(p["mergeable"] is True for p in pulls), "mergeable lost with checks"
 ' && ok "missing check scopes degrade checks, not the list" || bad "noscope: $PULLS"
+
+# The other degradation on the same route: the per-pull detail call fails and
+# the list entry is all the manager has. Everything only the detail carries
+# must then be ABSENT — sending `0` would tell the app the branch changed
+# nothing, and the app has no way to disbelieve a number it was sent.
+restart_github nodetail
+# shellcheck disable=SC2086
+PULLS="$($CURL "$BASE/api/chats/$PR_CHAT/pulls")"
+echo "$PULLS" | python3 -c '
+import json, sys
+pulls = json.load(sys.stdin)["pulls"]
+assert pulls, "the list itself failed when only the detail call did"
+assert all(p["mergeable"] is None for p in pulls), [p["mergeable"] for p in pulls]
+for p in pulls:
+    for key in ("commits", "additions", "deletions", "changed_files"):
+        assert key not in p, ("invented with no detail form", key, p)
+assert all(p["title"] for p in pulls), "the row lost more than the detail fields"
+' && ok "a failed detail call omits the counts rather than zeroing them" \
+  || bad "nodetail: $PULLS"
 
 # GitHub says 405 for branch protection; the app wants one "GitHub said no"
 # case carrying GitHub's own sentence.
