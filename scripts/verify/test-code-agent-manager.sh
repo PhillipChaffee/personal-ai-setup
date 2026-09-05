@@ -550,7 +550,22 @@ SID="$(echo "$SESS" | jget "d.get('id','')")"
 # shellcheck disable=SC2086
 $CURL -N --max-time 120 "$BASE/chat/$CID/event" > "$WORK/sse.log" 2>/dev/null &
 SSE_PID=$!
-sleep 1
+# WAIT FOR THE SUBSCRIPTION, do not guess at it. The upstream emits
+# server.connected the instant the stream attaches, so this is a real signal.
+#
+# This was `sleep 1`, and under load the prompt below raced ahead of the
+# subscription: the client missed every event emitted before it attached --
+# the deltas and the permission.updated -- while still catching session.idle
+# afterwards. That is exactly the two-failure shape seen in CI ("SSE buffered"
+# plus "no deltas in SSE", with session.idle passing in between), and it is a
+# property of the test, not of the proxy it is meant to be testing.
+SSE_UP="no"
+for _ in $(seq 1 60); do
+  grep -q 'server.connected' "$WORK/sse.log" 2>/dev/null && { SSE_UP="yes"; break; }
+  sleep 0.25
+done
+[ "$SSE_UP" = "yes" ] && ok "SSE stream attached before the prompt was sent" \
+  || bad "SSE stream never attached (no server.connected after 15s)"
 
 # shellcheck disable=SC2086
 CODE="$($CURL -o /dev/null -w '%{http_code}' -X POST \
@@ -571,10 +586,26 @@ done
 # LIVE arrival: the turn is still blocked on the ask, so nothing has closed
 # or flushed the upstream — the events so far (deltas, permission.updated)
 # must already be in the client's stream. Catches proxy buffering.
-sleep 1
-grep -q "permission.updated" "$WORK/sse.log" \
+#
+# Polled rather than slept: a fixed wait either flakes or is slower than it
+# needs to be, and this is usually satisfied in well under a second. The claim
+# is unchanged because the ask stays parked -- nothing answers it until much
+# later in this section -- and the assertion below proves that rather than
+# assuming it.
+SSE_LIVE="no"
+for _ in $(seq 1 40); do
+  grep -q "permission.updated" "$WORK/sse.log" && { SSE_LIVE="yes"; break; }
+  sleep 0.25
+done
+[ "$SSE_LIVE" = "yes" ] \
   && ok "SSE events arrive live while the turn is still blocked" \
   || bad "SSE buffered — events not delivered until close (proxy must use read1)"
+# The half that makes "while still blocked" a fact rather than an assumption.
+# shellcheck disable=SC2086
+STILL_PARKED="$($CURL "$BASE/chat/$CID/permission" | jget "d[0]['id'] if d else ''")"
+[ "$STILL_PARKED" = "$PERM_ID" ] \
+  && ok "the ask was still parked when the event arrived" \
+  || bad "the turn unblocked before the liveness check (got '$STILL_PARKED')"
 
 # THE aggregate assertion: while this chat is parked on an ask, /api/permissions
 # must name it, tag it with its chat, and report the OTHER chat — which is
