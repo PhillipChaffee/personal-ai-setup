@@ -715,7 +715,7 @@ import json, sys
 pulls = json.load(sys.stdin)["pulls"]
 got = {p["number"]: p for p in pulls}
 assert 7 not in got, "listed a pull request from another branch"
-assert set(got) == {12, 11, 10, 9, 8}, f"wrong set: {sorted(got)}"
+assert set(got) == {12, 11, 10, 9, 8, 6, 5}, f"wrong set: {sorted(got)}"
 assert got[12]["mergeable"] is True, "mergeable lost — the detail call is missing"
 assert got[12]["checks"] == "passing", got[12]["checks"]
 assert got[11]["checks"] == "failing", got[11]["checks"]
@@ -945,6 +945,76 @@ restart_github ""
 # shellcheck disable=SC2086
 [ "$($CURL "$BASE/api/repos/testrepo/branches" | jget "len(d['branches'])")" = "$EXPECTED" ] \
   && ok "the branch list recovers once GitHub answers again" || bad "no recovery after the outage"
+
+# ---- 5d. what the manager says when GitHub misbehaves -----------------------
+# gh() has a careful error vocabulary -- 5xx and unparseable bodies both become
+# "GitHub is unreachable", a 4xx keeps GitHub's own sentence, and a 4xx with no
+# sentence falls back to the status code -- and none of those arms had ever
+# run, because the fake had only ever answered well-formed JSON.
+#
+# Same for the three merge refusals with no fixture. #8 is closed AND merged,
+# and merge_chat_pull tests merged_at first, so #8 can only reach the "already
+# merged" arm; "is closed" needs a pull closed WITHOUT being merged (#6), and
+# the conflict arm needs mergeable:false (#5).
+
+merge_body() { # merge_body <pull-number>
+  # shellcheck disable=SC2086
+  $CURL -X POST "$BASE/api/chats/$PR_CHAT/pulls/$1/merge"
+}
+merge_code() { # merge_code <pull-number>
+  # shellcheck disable=SC2086
+  $CURL -o /dev/null -w '%{http_code}' -X POST "$BASE/api/chats/$PR_CHAT/pulls/$1/merge"
+}
+
+case "$(merge_body 8)" in *"already merged"*) ok "merging an already-merged pull is refused" ;;
+  *) bad "merge #8: $(merge_body 8)" ;; esac
+case "$(merge_body 6)" in *"is closed"*) ok "merging a closed pull is refused" ;;
+  *) bad "merge #6: $(merge_body 6)" ;; esac
+case "$(merge_body 5)" in *"conflicts with main"*) ok "a conflicting pull is refused by name" ;;
+  *) bad "merge #5: $(merge_body 5)" ;; esac
+
+restart_github serverfail
+CODE="$(merge_code 12)"
+[ "$CODE" = "502" ] && ok "a 5xx from GitHub becomes 502, not a crash" \
+  || bad "serverfail merge: HTTP $CODE"
+
+restart_github notjson
+# shellcheck disable=SC2086
+CODE="$($CURL -o /dev/null -w '%{http_code}' "$BASE/api/chats/$PR_CHAT/pulls")"
+[ "$CODE" = "502" ] && ok "a 200 with an unparseable body becomes 502" \
+  || bad "notjson pulls: HTTP $CODE"
+
+restart_github nomessage
+BODY="$(merge_body 12)"
+case "$BODY" in *"GitHub answered 422"*) ok "a 4xx with no message falls back to the status" ;;
+  *) bad "nomessage merge: $BODY" ;; esac
+
+restart_github detailbad
+CODE="$(merge_code 12)"
+[ "$CODE" = "502" ] && ok "a pull detail that is not an object is refused, not crashed" \
+  || bad "detailbad merge: HTTP $CODE"
+
+# summarise_checks: "none" and "pending" are distinct answers and neither had a
+# fixture. "pending with nothing behind it" is GitHub saying nothing has
+# reported, which must not read as "something is running".
+checks_for_12() {
+  # shellcheck disable=SC2086
+  $CURL "$BASE/api/chats/$PR_CHAT/pulls" \
+    | jget "next((p['checks'] for p in d['pulls'] if p['number'] == 12), 'missing')"
+}
+restart_github nochecks
+[ "$(checks_for_12)" = "none" ] && ok "no runs and no statuses summarises as none" \
+  || bad "nochecks: $(checks_for_12)"
+restart_github pendingonly
+# "none", NOT "pending", and that is the point: a combined state of pending
+# with no statuses behind it is GitHub saying nothing has reported yet, which
+# must not render as "something is running". The two modes agree on the answer
+# and disagree on the route taken to it -- pendingonly is the arm where the
+# state is non-empty and the `or combined.get("statuses")` short-circuit is
+# what rejects it.
+[ "$(checks_for_12)" = "none" ] && ok "a bare pending status is 'nothing reported', not 'running'" \
+  || bad "pendingonly: $(checks_for_12)"
+restart_github ""
 
 # ---- 6. idle spin-down + wake with state intact -----------------------------
 STOPPED="no"
