@@ -300,6 +300,90 @@ else
   bad "reaper clock / notifier exception net (see the assertion above)"
 fi
 
+# ---- 0b. the shapes a hand-edited state file can take (unit, no stack) ------
+# Index.load and load_repos are written to tolerate junk -- isinstance checks at
+# every level -- and none of those arms had ever executed, because the only
+# files they ever see are ones the manager itself wrote. Same for the config
+# template guard and the handle-eviction bound: reachable in principle, never
+# reached by an end-to-end run. All in-process, no wall clock.
+cat >"$WORK/preflight-shapes.py" <<'PY'
+import importlib.util, json, sys, tempfile
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("cam", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+sys.modules["cam"] = mod
+spec.loader.exec_module(mod)
+
+tmp = Path(tempfile.mkdtemp())
+
+# --- Index.load: wrong shapes degrade, they do not raise ---
+mod.INDEX_PATH = tmp / "index.json"
+mod.INDEX_PATH.write_text(json.dumps({"chats": "not a dict"}))
+assert mod.Index.load().chats == {}, "a non-dict chats map should read as empty"
+# Only the non-dict ENTRY is reachable from a file. The companion
+# `isinstance(cid, str)` guard cannot fail for anything json.load produces --
+# JSON object keys are always strings, so an int key round-trips to "7" and is
+# legitimately kept. That guard is defensive against a caller, not a file.
+mod.INDEX_PATH.write_text(json.dumps({"chats": {"ok": {"id": "ok", "repo": "r", "title": "t",
+                                                       "port": 1, "branch": "b"},
+                                                "bad": "not a dict"}}))
+loaded = mod.Index.load().chats
+assert set(loaded) == {"ok"}, f"wrong-typed entries survived: {sorted(loaded)}"
+
+# --- load_repos: missing, wrong container, wrong entries ---
+mod.REPOS_PATH = tmp / "repos.json"
+assert mod.load_repos() == {}, "a missing repos.json should be an empty allowlist"
+mod.REPOS_PATH.write_text(json.dumps({"repos": "not a list"}))
+assert mod.load_repos() == {}, "a non-list repos value should be an empty allowlist"
+mod.REPOS_PATH.write_text(json.dumps({"repos": [
+    "not a dict",
+    {"no": "name"},
+    {"name": 7},
+    {"name": "good", "url": "https://github.com/o/n.git", "tier": 1, "setup": "",
+     "edit_only": True, "allow_push": False, "public_throwaway": False},
+]}))
+repos = mod.load_repos()
+assert set(repos) == {"good"}, f"malformed allowlist entries survived: {sorted(repos)}"
+
+# --- the handle memory is bounded, oldest first ---
+rm = mod.ReaperMemory()
+first = rm.mint_handle(["c1"])
+for i in range(mod.HANDLE_MEMORY + 5):
+    rm.mint_handle([f"c{i}"])
+assert len(rm.handles) <= mod.HANDLE_MEMORY, f"handle memory unbounded: {len(rm.handles)}"
+assert first not in rm.handles, "the oldest handle was not the one evicted"
+
+# --- the config template guard, and the model override ---
+bad_tpl = tmp / "bad-template.json"
+bad_tpl.write_text(json.dumps(["not", "an", "object"]))
+mod.CONFIG_TEMPLATE = bad_tpl
+try:
+    mod.render_chat_config(tmp / "chatA", None, allow_push=False)
+except mod.ConfigTemplateError:
+    pass
+else:
+    raise AssertionError("a non-object config template was accepted")
+
+good_tpl = tmp / "good-template.json"
+good_tpl.write_text(json.dumps({"_readme": "strip me", "model": "opencode/default"}))
+mod.CONFIG_TEMPLATE = good_tpl
+chat_dir = tmp / "chatB"
+mod.render_chat_config(chat_dir, "opencode/chosen-model", allow_push=True)
+written = json.loads((chat_dir / "home" / ".config" / "opencode" / "opencode.json").read_text())
+assert written["model"] == "opencode/chosen-model", written
+assert "_readme" not in written, "the template readme leaked into a chat config"
+assert written["permission"]["bash"]["git push*"] == "allow", written
+PY
+if "${MANAGER_PY[@]}" "$WORK/preflight-shapes.py" "$REPO_ROOT/scripts/vps/code-agent-manager.py"
+then
+  ok "a hand-mangled index.json or repos.json degrades instead of raising"
+  ok "the notification handle memory is bounded and evicts oldest-first"
+  ok "a non-object config template is refused; the model override and push grant apply"
+else
+  bad "state-shape / config-template checks (see the assertion above)"
+fi
+
 # ---- 1. auth ----------------------------------------------------------------
 # shellcheck disable=SC2086
 CODE="$($CURL -o /dev/null -w '%{http_code}' "$BASE/api/health" || echo 000)"
