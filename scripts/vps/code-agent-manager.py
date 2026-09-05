@@ -1256,7 +1256,7 @@ def session_state(chat: Chat) -> str:
 
     Three states rather than two because the reaper and the notifier want
     OPPOSITE defaults for the third one. A wrong "idle" costs the reaper a
-    running turn, so it reads unknown as busy (chat_busy below). A wrong
+    running turn, so it reads unknown as busy. A wrong
     "busy" costs the notifier nothing, but a wrong "idle" would manufacture a
     "turn finished" out of a container hiccup — so the notifier fires on the
     literal "idle" and on nothing else. Collapsing this back to a bool would
@@ -1282,19 +1282,6 @@ def session_state(chat: Chat) -> str:
     except (OSError, ValueError):
         return "unknown"
     return "busy" if ('"busy"' in blob or '"retry"' in blob) else "idle"
-
-
-def chat_busy(chat: Chat) -> bool:
-    """Report whether any session on this chat's server is mid-work.
-
-    A busy chat is never stopped by the idle reaper, whatever the clock says.
-    Anything that makes the answer unknowable counts as busy — the cost of a
-    wrong "idle" is killing a running turn.
-    """
-    return session_state(chat) != "idle"
-
-
-# ------------------------------------------------------- the reaper's pass
 
 
 def notify_new_asks(
