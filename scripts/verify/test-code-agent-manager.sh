@@ -458,10 +458,29 @@ BID="$(echo "$B" | jget "d.get('id','')")"
 [ -n "$BID" ] && ok "second chat created (throwaway repo)" || bad "second chat: $B"
 grep -q '"git push\*": "allow"' "$WORK/root/chats/$BID/home/.config/opencode/opencode.json" 2>/dev/null \
   && ok "allow_push repo renders push=allow" || bad "allow_push override missing"
+# The cap counts RUNNING chats, and this harness deliberately runs a fast
+# reaper (IDLE_SECONDS=4, REAPER_INTERVAL=2) so section 6 can watch a spin-down
+# happen. Those two facts race: on a loaded runner, more than 4s can pass
+# between creating the first chat and getting here, the reaper spins it down,
+# admission_count drops to 1, and the third create is admitted -- 201 instead
+# of 409. Observed in CI, and it is exactly the kind of flake that makes a
+# green build a coin toss.
+#
+# Wake anything the reaper took, so the refusal is tested against the state it
+# is a claim about rather than against the clock. Waking is the honest fix
+# here: raising IDLE_SECONDS would slow every run and weaken section 6.
+for _cap_id in "$CID" "$BID"; do
+  if [ "$(cstate "$_cap_id")" != "running" ]; then
+    # shellcheck disable=SC2086
+    $CURL --max-time 120 -X POST "$BASE/api/chats/$_cap_id/wake" >/dev/null
+  fi
+done
+CAP_STATES="$(cstate "$CID")/$(cstate "$BID")"
 # shellcheck disable=SC2086
 CODE="$($CURL -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
   -d '{"repo":"testrepo","task":"third"}' "$BASE/api/chats")"
-[ "$CODE" = "409" ] && ok "max-active refusal (409) at the cap" || bad "cap: got $CODE"
+[ "$CODE" = "409" ] && ok "max-active refusal (409) at the cap" \
+  || bad "cap: got $CODE (both chats must be running for this to mean anything; states were $CAP_STATES)"
 # shellcheck disable=SC2086
 $CURL -X POST "$BASE/api/chats/$BID/stop" >/dev/null
 [ "$(cstate "$BID")" = "exited" ] && ok "explicit stop" || bad "stop did not stop ($(cstate "$BID"))"
