@@ -46,6 +46,16 @@ Set FAKE_GITHUB_MODE to make it misbehave on purpose:
                                                    carried through
     nodefault GET /repos/:o/:r alone answers 403 -> the branch list survives,
                                                    the default label does not
+    serverfail every call answers 500            -> gh() maps 5xx to 502
+    notjson   a 200 whose body is not JSON       -> gh() maps the parse error
+                                                   to 502, not a crash
+    nomessage the merge answers 422 with {}      -> gh() falls back to
+                                                   "GitHub answered 422"
+    nochecks  no check runs and no statuses      -> summarise_checks -> "none"
+    pendingonly combined state pending, nothing  -> summarise_checks ->
+              behind it                             "pending"
+    detailbad GET /pulls/:n answers a LIST        -> merge refuses with 502
+                                                   rather than crashing
 """
 
 from __future__ import annotations
@@ -95,6 +105,12 @@ PULLS: dict[int, Wire] = {
     9: _pull(9, "WIP: spike the parser", draft=True),
     8: _pull(8, "Bump the toolchain", state="closed", merged=True),
     7: _pull(7, "Someone else's work", head="feature/unrelated"),
+    # Closed WITHOUT being merged, and open-but-conflicting: the two merge
+    # refusals with no fixture. #8 is closed AND merged, and merge_chat_pull
+    # tests merged_at first, so #8 can only ever reach the "already merged"
+    # arm -- the "is closed" arm needs a pull that was closed unmerged.
+    6: _pull(6, "Abandoned approach", state="closed"),
+    5: _pull(5, "Conflicts with main", mergeable=False),
 }
 
 # sha -> (check-run conclusions, combined status state)
@@ -105,6 +121,8 @@ CHECKS: dict[str, tuple[list[str], str]] = {
     "sha9": ([], "pending"),
     "sha8": (["success"], "success"),
     "sha7": (["success"], "success"),
+    "sha6": (["success"], "success"),
+    "sha5": (["success"], "success"),
 }
 
 # Branch fixtures. Stand-alone default: enough shapes to render (a default, a
@@ -170,9 +188,32 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self) -> None:
         self.route()
 
-    def route(self) -> None:
+    def send_raw(self, code: int, raw: bytes) -> None:
+        """Answer with a body that is NOT json — the one shape send() cannot make."""
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def whole_request_mode(self) -> bool:
+        """Answer the modes that apply to EVERY route; True if answered.
+
+        Split from route() to keep one dispatcher readable as a dispatcher:
+        these arms care only about the mode, never about the path.
+        """
         if MODE == "denied":
             self.send(403, {"message": "Resource not accessible by personal access token"})
+        elif MODE == "serverfail":
+            self.send(500, {"message": "Server Error"})
+        elif MODE == "notjson":
+            self.send_raw(200, b"<html>502 Bad Gateway</html>")
+        else:
+            return False
+        return True
+
+    def route(self) -> None:
+        if self.whole_request_mode():
             return
         parsed = urlparse(self.path)
         path = parsed.path
@@ -213,6 +254,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send(200, rows)
 
     def route_one(self, number: int) -> None:
+        if MODE == "detailbad":
+            # GitHub answering a LIST where the manager expects an object.
+            self.send(200, [{"number": number}])
+            return
         pull = PULLS.get(number)
         if pull is None:
             self.send(404, {"message": "Not Found"})
@@ -224,6 +269,11 @@ class Handler(BaseHTTPRequestHandler):
         if pull is None:
             self.send(404, {"message": "Not Found"})
             return
+        if MODE == "nomessage":
+            # A 4xx with no "message" key. gh() has a fallback sentence for
+            # exactly this and nothing has ever produced it.
+            self.send(422, {})
+            return
         if MODE == "blocked":
             self.send(405, {"message": "At least 1 approving review is required."})
             return
@@ -233,6 +283,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send(200, {"merged": True, "sha": f"merged{number}", "message": "Pull Request merged"})
 
     def route_check_runs(self, sha: str) -> None:
+        if MODE in ("nochecks", "pendingonly"):
+            self.send(200, {"check_runs": []})
+            return
         if MODE == "noscope":
             self.send(403, {"message": "Resource not accessible by personal access token"})
             return
@@ -240,6 +293,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send(200, {"check_runs": [{"conclusion": c, "status": "completed"} for c in runs]})
 
     def route_status(self, sha: str) -> None:
+        if MODE == "nochecks":
+            # Nothing has reported at all: no runs, no statuses, no state.
+            self.send(200, {"state": "", "statuses": []})
+            return
+        if MODE == "pendingonly":
+            # GitHub's way of saying nothing has reported yet -- which the
+            # manager must not confuse with "something is running".
+            self.send(200, {"state": "pending", "statuses": []})
+            return
         if MODE == "noscope":
             self.send(403, {"message": "Resource not accessible by personal access token"})
             return
