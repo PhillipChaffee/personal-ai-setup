@@ -19,8 +19,13 @@ jobs:
     name: shellcheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          # Nothing in this repo pushes from CI, so the token has no
+          # business surviving in .git/config where an artifact upload
+          # or a later step could pick it up (zizmor: artipacked).
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.12"
       # shellcheck-py bundles the real binary as a wheel: no Docker, no apt, and
@@ -58,6 +63,9 @@ jobs:
         run: |
           set -euo pipefail
           probe="$RUNNER_TEMP/broken.sh"
+          # shellcheck disable=SC2016  # $1 must reach the probe file unexpanded;
+          # expanding it here would write a literal empty string and the probe
+          # would be clean, silently turning this negative test into a no-op.
           printf '#!/usr/bin/env bash\nrm -rf $1/\n' > "$probe"
           if shellcheck --format=gcc "$probe"; then
             echo "::error::shellcheck accepted an unquoted rm -rf — the gate is inert"

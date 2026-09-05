@@ -1,0 +1,17 @@
+# Hash-pinned actions do not update themselves. Without this, the repo would
+# trade "mutable tag" risk for "silently stale action" risk -- and a public
+# blueprint teaching the second is arguably worse than one teaching neither.
+# Dependabot bumps the SHA and rewrites the trailing `# vX.Y.Z` comment.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # A brand-new release is the one most likely to be a compromised release
+    # (the tj-actions failure mode). Wait a week before proposing a bump, so a
+    # bad publish has time to be caught and yanked.
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ci
