@@ -1,0 +1,14 @@
+# hadolint config for config/code-agents/Containerfile.
+failure-threshold: warning
+
+ignored:
+  # DL3018 (pin versions in `apk add`). Deliberately ignored, and the reason is
+  # coherence rather than convenience: the base image is
+  # ghcr.io/anomalyco/opencode:latest by documented choice, so pinning the
+  # packages layered on top of a floating base pins the wrong half. Worse, apk
+  # pins fail CLOSED in the hostile direction -- Alpine drops old versions from
+  # its index, so a pinned `git=2.x.y` stops the image building outright the
+  # week it rotates, while the floating base merely changes. If the base is
+  # ever pinned to a release tag (the Containerfile header says how), revisit
+  # this line in the same commit.
+  - DL3018
