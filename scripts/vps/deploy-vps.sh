@@ -405,6 +405,8 @@ echo "==> Waiting for goose serve at $STATUS_URL"
 # fingerprint, but this is only a local liveness probe.
 UP=0
 for _ in $(seq 1 45); do
+  # shellcheck disable=SC2154  # exported into the environment by
+  # `set -a; source "$SECRETS_FILE"` in the preflight block above
   if curl -fsSk -m 5 -H "X-Secret-Key: $GOOSE_SERVER__SECRET_KEY" "$STATUS_URL" >/dev/null 2>&1; then
     UP=1
     break

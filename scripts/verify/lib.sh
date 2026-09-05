@@ -40,8 +40,6 @@ PAI_VERIFY_LIB=1
 # The prefix every error message in scripts/verify/ carries. $0 is the caller's
 # path when this file is sourced, which is what we want.
 PAI_PROG="$(basename "$0")"
-PAI_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PAI_REPO_ROOT="$(cd "$PAI_LIB_DIR/../.." && pwd)"
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -71,6 +69,7 @@ note() { echo "      $1"; }
 
 # summary_footer [--skips] — the standard tail. Pass --skips for scripts that
 # can legitimately skip; omitting it keeps a zero-skip script's line short.
+# shellcheck disable=SC2120  # --skips is optional; most callers pass nothing
 summary_footer() {
   echo
   if [ "${1:-}" = "--skips" ]; then
@@ -84,6 +83,7 @@ summary_footer() {
 
 # finish [--skips] — footer, then the exit-1-on-any-failure guard that every
 # check script ends with.
+# shellcheck disable=SC2120  # --skips is optional; most callers pass nothing
 finish() {
   summary_footer "$@"
   [ "$FAIL_COUNT" -eq 0 ] || exit 1

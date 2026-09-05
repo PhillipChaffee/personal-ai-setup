@@ -37,6 +37,7 @@ fail_notify() {
     "Recipe '$NAME' failed: $2 (exit $1). Check the brain's logs." || true
 }
 
+# shellcheck disable=SC2329  # invoked by `trap on_err ERR` below, not by name
 on_err() {
   local rc=$?
   fail_notify "$rc" "wrapper aborted unexpectedly"

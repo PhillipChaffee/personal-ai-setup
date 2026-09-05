@@ -1,0 +1,66 @@
+# ShellCheck over every tracked shell script. 21 files, ~6.5k lines, and until
+# this workflow existed none of it was linted by anything -- while the tree
+# carried ~90 `# shellcheck disable=` directives for a tool no job ran.
+name: shell-lint
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # shellcheck-py bundles the real binary as a wheel: no Docker, no apt, and
+      # it pins like every other tool here. PINNED -- keep in lockstep with the
+      # rev in .pre-commit-config.yaml. (shellcheck-py's version does not track
+      # shellcheck's: 0.11.0.1 bundles shellcheck 0.11.0.)
+      - name: Install ShellCheck
+        run: pip install --quiet shellcheck-py==0.11.0.1
+
+      # git ls-files, not find: .claude/worktrees holds untracked copies of
+      # these scripts, and linting those would report findings against files no
+      # one can fix from this checkout.
+      - name: shellcheck
+        run: git ls-files '*.sh' | xargs shellcheck --format=gcc
+
+      # The glob above is the ONLY thing binding these scripts to the gate, so
+      # a shell script without a .sh extension would be silently unlinted.
+      # Mirrors the mypy.ini coverage guard in python-types.yml.
+      - name: No shell script may hide from the glob
+        run: |
+          set -euo pipefail
+          missed=""
+          while IFS= read -r f; do
+            case "$f" in *.sh) continue ;; esac
+            head -c 2 "$f" 2>/dev/null | grep -q '#!' || continue
+            head -1 "$f" | grep -qE '^#!.*(bash|/bin/sh|env sh)' && missed="$missed $f"
+          done < <(git ls-files)
+          if [ -n "$missed" ]; then
+            echo "::error::shell scripts without a .sh extension are not linted:$missed"
+            exit 1
+          fi
+          echo "Every tracked shell script ends in .sh and is covered."
+
+      - name: Negative test — a real defect must fail the gate
+        run: |
+          set -euo pipefail
+          probe="$RUNNER_TEMP/broken.sh"
+          printf '#!/usr/bin/env bash\nrm -rf $1/\n' > "$probe"
+          if shellcheck --format=gcc "$probe"; then
+            echo "::error::shellcheck accepted an unquoted rm -rf — the gate is inert"
+            exit 1
+          fi
+          echo "shellcheck correctly rejected an unquoted expansion."

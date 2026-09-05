@@ -1921,7 +1921,7 @@ if [ -n "$SMOKE_ID" ]; then
   SMOKE_FILE="$CONNECTOR_DIR/$SMOKE_ID.yaml"
   if [ ! -f "$SMOKE_FILE" ]; then
     fail "no manifest for id '$SMOKE_ID' at config/connectors/$SMOKE_ID.yaml"
-    AVAILABLE="$(ls "$CONNECTOR_DIR"/*.yaml 2>/dev/null | xargs -n 1 basename 2>/dev/null | sed 's/\.yaml$//' | tr '\n' ' ' || true)"
+    AVAILABLE="$(for f in "$CONNECTOR_DIR"/*.yaml; do [ -e "$f" ] || continue; b="${f##*/}"; printf '%s ' "${b%.yaml}"; done)"
     echo "      known ids: ${AVAILABLE:-(none)}"
   else
     echo "  Speaking MCP straight to the server — goose is not in the loop, so what comes"
@@ -1949,7 +1949,7 @@ if [ -n "$ROUNDTRIP_ID" ]; then
   RT_FILE="$CONNECTOR_DIR/$ROUNDTRIP_ID.yaml"
   if [ ! -f "$RT_FILE" ]; then
     fail "no manifest for id '$ROUNDTRIP_ID' at config/connectors/$ROUNDTRIP_ID.yaml"
-    AVAILABLE="$(ls "$CONNECTOR_DIR"/*.yaml 2>/dev/null | xargs -n 1 basename 2>/dev/null | sed 's/\.yaml$//' | tr '\n' ' ' || true)"
+    AVAILABLE="$(for f in "$CONNECTOR_DIR"/*.yaml; do [ -e "$f" ] || continue; b="${f##*/}"; printf '%s ' "${b%.yaml}"; done)"
     echo "      known ids: ${AVAILABLE:-(none)}"
   else
     echo "  Driving config/extensions/add then config/extensions/list against $ACP_URL."
