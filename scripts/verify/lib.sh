@@ -101,11 +101,15 @@ die() {
   exit "$code"
 }
 
-# die_usage <line> — the argument-parsing error every script spells the same
-# way: complain, print usage to stderr, exit 2. Requires the caller to have
+# die_usage <line> [line...] — the argument-parsing error every script spells
+# the same way: complain, print usage to stderr, exit 2. Extra lines land
+# between the complaint and the usage text (check-security.sh's no-target
+# refusal prints the terraform incantation there). Requires the caller to have
 # defined usage() already, which all of them do immediately after their header.
 die_usage() {
-  echo "$PAI_PROG: $1" >&2
+  echo "$PAI_PROG: $1" >&2; shift
+  local line
+  for line in "$@"; do echo "$line" >&2; done
   usage >&2
   exit 2
 }

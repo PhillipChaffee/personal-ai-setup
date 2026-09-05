@@ -14,6 +14,9 @@
 # no-clobber config install cannot deliver to a brain that already has one.
 set -euo pipefail
 
+# shellcheck source=scripts/verify/lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
 TIMEOUT_S=5
 PORTS="22 80 443 3284"
 
@@ -39,29 +42,21 @@ case "${1:-}" in
   -h|--help) usage; exit 0 ;;
   --local)   MODE="local" ;;
   "")        ;;
-  -*)        echo "check-security.sh: unknown option: $1" >&2; usage >&2; exit 2 ;;
+  -*)        die_usage "unknown option: $1" ;;
   *)         TARGET="$1" ;;
 esac
-
-PASS_COUNT=0
-FAIL_COUNT=0
-pass() { echo "PASS  $1"; PASS_COUNT=$((PASS_COUNT + 1)); }
-fail() { echo "FAIL  $1"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
 
 # ---------------------------------------------------------------- probe mode
 if [ "$MODE" = "probe" ]; then
   if [ -z "$TARGET" ]; then
-    echo "check-security.sh: no target. Pass the brain's PUBLIC IP:" >&2
-    echo "  ./scripts/verify/check-security.sh \$(cd infra/terraform && terraform output -raw server_public_ip)" >&2
-    usage >&2
-    exit 2
+    die_usage "no target. Pass the brain's PUBLIC IP:" \
+      "  ./scripts/verify/check-security.sh \$(cd infra/terraform && terraform output -raw server_public_ip)"
   fi
   case "$TARGET" in
     *.ts.net|100.6[4-9].*|100.[7-9][0-9].*|100.1[0-1][0-9].*|100.12[0-7].*)
-      echo "check-security.sh: '$TARGET' looks like a TAILNET address." >&2
-      echo "The probe must target the PUBLIC IP (terraform output -raw server_public_ip) —" >&2
-      echo "the tailnet reaching the brain is expected and proves nothing." >&2
-      exit 2
+      die 2 "'$TARGET' looks like a TAILNET address." \
+        "The probe must target the PUBLIC IP (terraform output -raw server_public_ip) —" \
+        "the tailnet reaching the brain is expected and proves nothing."
       ;;
   esac
 
@@ -394,6 +389,4 @@ PYEOF
   fi
 fi
 
-echo
-echo "== summary: $PASS_COUNT passed, $FAIL_COUNT failed =="
-[ "$FAIL_COUNT" -eq 0 ] || exit 1
+finish
