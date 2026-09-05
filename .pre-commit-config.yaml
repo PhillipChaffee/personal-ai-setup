@@ -22,3 +22,10 @@ repos:
     rev: v0.15.8
     hooks:
       - id: ruff-check
+
+  # Keep this rev in lockstep with the pin in .github/workflows/data-lint.yml.
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+        args: [--strict]

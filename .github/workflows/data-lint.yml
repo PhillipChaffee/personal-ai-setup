@@ -1,0 +1,51 @@
+# Structural gates for the repo's data files. These are the formats that carry
+# configuration onto a live machine, so a defect here is a deployment defect,
+# not a style nit.
+#
+# yamllint's load-bearing rule is key-duplicates. PyYAML's safe_load -- the
+# idiom scripts/verify/check-connectors.sh uses to validate connector
+# manifests -- accepts a duplicated mapping key silently and keeps the LAST
+# one. config/goose/config.yaml carries two live `available_tools` allowlists
+# and is the file deploy-vps.sh copies onto the brain, so a duplicated key with
+# a wider allowlist would validate clean and ship the wrong tool surface.
+# Verified: safe_load raises nothing on such a file; yamllint reports it.
+name: data-lint
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  yaml:
+    name: yamllint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # PINNED, and kept in lockstep with the rev in .pre-commit-config.yaml.
+      - name: Install yamllint
+        run: pip install --quiet yamllint==1.38.0
+      - name: yamllint
+        run: yamllint --strict --format github .
+
+      # Proves the gate can actually fail. Confined to $RUNNER_TEMP so the
+      # checkout is never modified.
+      - name: Negative test — a duplicated key must fail
+        run: |
+          set -euo pipefail
+          probe="$RUNNER_TEMP/dup.yaml"
+          printf 'a: 1\nb: 2\na: 3\n' > "$probe"
+          if yamllint --strict -c .yamllint.yml "$probe"; then
+            echo "::error::yamllint accepted a duplicated key — the gate is inert"
+            exit 1
+          fi
+          echo "yamllint correctly rejected a duplicated key."
