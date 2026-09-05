@@ -51,6 +51,14 @@ case "$cmd" in
     if [ "$ONESHOT" = "yes" ]; then
       [ -n "$DIR" ] || die "one-shot without a volume"
       [ -n "$SCRIPT" ] || die "one-shot without -c script"
+      # STUB_ENGINE_FAIL_ONESHOT names a SENTINEL FILE, not a flag: the
+      # engine inherits its environment from the manager, which was launched
+      # once, so an env var could never be toggled mid-run. A file lets the
+      # harness arm and disarm the clone/setup failure between requests.
+      if [ -n "${STUB_ENGINE_FAIL_ONESHOT:-}" ] && [ -f "$STUB_ENGINE_FAIL_ONESHOT" ]; then
+        echo "stub-engine: forced one-shot failure (sentinel present)" >&2
+        exit 1
+      fi
       # Emulate the bind mount textually: /chat -> the volume dir.
       exec sh -c "${SCRIPT//\/chat/$DIR}"
     fi

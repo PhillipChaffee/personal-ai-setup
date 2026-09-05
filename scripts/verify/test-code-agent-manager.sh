@@ -165,6 +165,7 @@ env -i PATH="$PATH" HOME="$HOME" \
   CODE_AGENT_TLS_CERT="$WORK/no-cert" \
   CODE_AGENT_TLS_KEY="$WORK/no-key" \
   STUB_ENGINE_STATE="$WORK/stub" \
+  STUB_ENGINE_FAIL_ONESHOT="$WORK/fail-oneshot" \
   STUB_ENGINE_MOCK="$HERE/mock-opencode-server.py" \
   OPENCODE_SERVER_PASSWORD="$PASS" \
   GITHUB_CODE_AGENT_PAT="fake-pat-for-tests" \
@@ -1177,6 +1178,34 @@ CODE="$($CURL -o /dev/null -w '%{http_code}' "$BASE/api/repos/scpstyle/branches"
 [ "$CODE" = "200" ] && ok "scp-style git remote parses to owner/name" \
   || bad "scp-style remote: HTTP $CODE (want 200)"
 cp "$WORK/repos.json.bak" "$WORK/root/repos.json"
+
+# 8h2. The create rollback -- the largest single block of untested code in the
+# manager, and the one that decides whether a failed create leaves a half-built
+# chat behind. Nothing had ever failed a clone, because stub-engine always
+# succeeds, so none of it had run: not the index removal, not the container
+# force-remove, not the rmtree, not the failure notification.
+touch "$WORK/fail-oneshot"
+printf '{"repo":"testrepo","task":"this create will fail"}' > "$WORK/fail-body.json"
+# shellcheck disable=SC2086
+FAIL_CODE="$($CURL -o "$WORK/fail-resp.json" -w '%{http_code}' \
+  -X POST --data-binary @"$WORK/fail-body.json" "$BASE/api/chats")"
+rm -f "$WORK/fail-oneshot"
+LEAKED="$(python3 - "$WORK/root" <<'EOP'
+import json, pathlib, sys
+idx = json.loads((pathlib.Path(sys.argv[1]) / "index.json").read_text())
+print(sum(1 for c in idx.get("chats", {}).values() if c.get("title") == "this create will fail"))
+EOP
+)"
+[ "$FAIL_CODE" = "502" ] && [ "$LEAKED" = "0" ] \
+  && ok "a failed create rolls back: 502, and no index entry survives" \
+  || bad "create rollback: HTTP $FAIL_CODE, leaked index entries $LEAKED"
+# The rollback also has to TELL someone. This is why the ntfy assertion above
+# allowlists both topics rather than demanding the agent channel.
+if grep -q "chat create failed" "$NTFY_LOG" 2>/dev/null; then
+  ok "a failed create raises an operational alert"
+else
+  bad "no failure notification for a failed create"
+fi
 
 # 8i. LAST, because they corrupt the manager's own state files. A gateway that
 # 500s on a hand-edited index.json is a gateway you cannot recover by hand.
