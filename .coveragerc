@@ -1,14 +1,23 @@
-# Coverage configuration for the manager, measured the only way it is ever
-# exercised: as a live server driven end to end by
-# scripts/verify/test-code-agent-manager.sh (30 checks over the whole chat
-# lifecycle). The harness starts it under `coverage run` when MANAGER_PY says
-# so; CI does that in .github/workflows/coverage.yml.
+# SCOPE, stated once so the number cannot be misread: this measures every
+# tracked .py under scripts/ EXCEPT scripts/verify/, branch-aware. Today that
+# resolves to one file, scripts/vps/code-agent-manager.py. It is NOT a repo-wide
+# number — ~1,645 lines of shipped bash are gated by the check-*.sh verifiers
+# and by shellcheck, not by this percentage.
 #
-# Only shipped code is measured. scripts/verify/ is the test harness itself —
-# the mock OpenCode server and the stub container engine exist to drive this
-# code, so counting them would inflate the number with test-only lines.
+# Measured the only way the manager is ever exercised: as a live server driven
+# end to end by scripts/verify/test-code-agent-manager.sh, plus the in-process
+# checks it runs from $WORK/preflight.py under the same interpreter.
+# CI: .github/workflows/coverage.yml.
 [run]
-source = scripts/vps
+# A DIRECTORY, not a file list. `source = scripts/vps` was a promise about a
+# directory that happens to hold one file; when scripts/pai/ lands it must show
+# up at 0% and be visible, not be silently absent from the denominator.
+source = scripts
+omit =
+    # The harness itself: the mock OpenCode server, the stub container engine
+    # and the GitHub/ntfy fakes exist to drive the manager. Counting them would
+    # inflate the number with test-only lines. This is the ONLY exemption.
+    scripts/verify/*
 branch = True
 parallel = True
 # The harness stops the manager with SIGTERM (its cleanup trap). Without this
@@ -16,6 +25,22 @@ parallel = True
 sigterm = True
 
 [report]
+# LOAD BEARING, and verified against coverage 7.15.4: with this off,
+# `source = scripts` does not discover scripts/pai/doctor.py AT ALL —
+# find_python_files() refuses to descend into a directory with no __init__.py,
+# and these are standalone executables, not packages. So the naive "just widen
+# source" fix is a silent no-op for exactly the case it was meant to catch.
+#
+# It belongs in [report]. Placed in [run], coverage 7.15 emits
+# "CoverageWarning: Unrecognized option" and ignores it — a no-op that looks
+# correct in the diff.
+include_namespace_packages = True
+# Verified against 7.15.4: should_fail_under() is
+# `round(total, precision) < fail_under`, and precision DEFAULTS TO 0 — so a
+# bare `fail_under = 95` silently accepts anything from 94.50% up. Set here
+# ahead of the threshold itself so the two can never be separated, and so the
+# reported number stops rounding 83.87% up to "84%".
+precision = 2
 show_missing = True
 skip_covered = False
 exclude_also =
