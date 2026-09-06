@@ -138,7 +138,15 @@ NTFY_TIMEOUT = 5
 
 CONFIG_TEMPLATE = Path(__file__).resolve().parents[2] / "config" / "code-agents" / "opencode.json"
 
-BASE_CHAT_PORT = 4310  # per-chat opencode ports: 4310, 4311, ... on 127.0.0.1
+# Per-chat opencode ports: 4310, 4311, ... on 127.0.0.1.
+#
+# Overridable for the same reason CODE_AGENT_PORT is, and it was the one port in
+# the set that was not. next_port() allocates from the INDEX rather than from the
+# OS, so two harness runs on one machine both hand chat #1 port 4310 and the
+# second one's mock server cannot bind. That surfaces as several unrelated
+# assertion failures rather than "address already in use" -- exactly the
+# confusion test-code-agent-manager.sh already warns about for its own PORT.
+BASE_CHAT_PORT = int(os.environ.get("CODE_AGENT_BASE_CHAT_PORT", "4310"))
 WAIT_FOR_CHAT_SECONDS = 90  # opencode boot budget, create and wake alike
 
 # Zen's free models train on user data (docs/privacy.md, hard rule 1). Refused
