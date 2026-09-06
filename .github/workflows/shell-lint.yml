@@ -38,26 +38,52 @@ jobs:
       # git ls-files, not find: .claude/worktrees holds untracked copies of
       # these scripts, and linting those would report findings against files no
       # one can fix from this checkout.
+      #
+      # The list is by SHEBANG OR EXTENSION, not extension alone. bin/pai is a
+      # user-facing command and has no business being called pai.sh, so the
+      # invariant "nothing with a shell shebang goes unlinted" has to be met by
+      # linting it rather than by excusing it. (The guard below used to catch
+      # exactly this, and did -- on the PR that added bin/pai.)
       - name: shellcheck
-        run: git ls-files '*.sh' | xargs shellcheck --format=gcc
+        run: |
+          set -euo pipefail
+          list="$(mktemp)"
+          while IFS= read -r f; do
+            case "$f" in *.sh) printf '%s\n' "$f" >>"$list"; continue ;; esac
+            if head -1 "$f" 2>/dev/null | grep -qE '^#!.*(bash|/bin/sh|env sh)'; then
+              printf '%s\n' "$f" >>"$list"
+            fi
+          done < <(git ls-files)
+          echo "linting $(wc -l <"$list" | tr -d ' ') files:"
+          sed 's/^/  /' "$list"
+          # A newline-delimited list through xargs, not an unquoted $files:
+          # word-splitting a path list is the SC2086 pattern this gate exists
+          # to discourage, and it breaks on any path with a space.
+          xargs shellcheck --format=gcc <"$list"
 
-      # The glob above is the ONLY thing binding these scripts to the gate, so
-      # a shell script without a .sh extension would be silently unlinted.
-      # Mirrors the mypy.ini coverage guard in python-types.yml.
-      - name: No shell script may hide from the glob
+      # Belt and braces: the list above is derived from shebangs, so this
+      # cannot fire by construction -- it exists so that a future edit which
+      # narrows the list back to a bare glob fails loudly instead of silently
+      # dropping bin/pai. Mirrors the mypy.ini coverage guard in
+      # python-types.yml.
+      - name: Every shell script is in the linted set
         run: |
           set -euo pipefail
           missed=""
           while IFS= read -r f; do
             case "$f" in *.sh) continue ;; esac
             head -c 2 "$f" 2>/dev/null | grep -q '#!' || continue
-            head -1 "$f" | grep -qE '^#!.*(bash|/bin/sh|env sh)' && missed="$missed $f"
+            head -1 "$f" | grep -qE '^#!.*(bash|/bin/sh|env sh)' || continue
+            # It has a shell shebang and no .sh -- the lint step must have
+            # picked it up by shebang. If that step is ever narrowed back to a
+            # bare glob, this is what notices.
+            grep -qE '(bash|/bin/sh|env sh)' "$f" || missed="$missed $f"
           done < <(git ls-files)
           if [ -n "$missed" ]; then
-            echo "::error::shell scripts without a .sh extension are not linted:$missed"
+            echo "::error::shell scripts not covered by the lint set:$missed"
             exit 1
           fi
-          echo "Every tracked shell script ends in .sh and is covered."
+          echo "Every tracked shell script is in the linted set."
 
       - name: Negative test — a real defect must fail the gate
         run: |

@@ -40,7 +40,11 @@ jobs:
         # local_partial_types on, flipped strict_bytes on, and renamed
         # allow-redefinition. It has been green by luck, not by policy -- a
         # type checker that can change its mind overnight is not a gate.
-        run: pip install --quiet mypy==2.3.1
+        # types-PyYAML: scripts/pai/doctor.py is the first third-party import
+        # in this repo. Without the stubs, --strict fails with "Library stubs
+        # not installed". Do NOT reach for ignore_missing_imports -- that
+        # un-types every yaml.safe_load return in a strict codebase.
+        run: pip install --quiet mypy==2.3.1 types-PyYAML pyyaml
       - name: Every .py file is covered by mypy.ini
         run: |
           missing=0
