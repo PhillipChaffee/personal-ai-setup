@@ -44,16 +44,16 @@ tier. When genuinely on the fence between two tiers, pick the lower one but say 
 
 ## Models
 
-- `researcher-lite`: `opencode/minimax-m2.7` (cheap/fast collection)
-- `researcher-mid`: `opencode/kimi-k2.6` (standard research)
+- `researcher-lite`: `togetherai/MiniMaxAI/MiniMax-M2.7` (cheap/fast collection)
+- `researcher-mid`: `togetherai/moonshotai/Kimi-K2.6` (standard research)
 - `researcher-deep`, `research-planner`, and `research-synthesizer`:
-  `opencode/claude-sonnet-5` (deep reasoning)
+  `togetherai/zai-org/GLM-5.3` (deep reasoning)
 
 Models are pinned in each agent's frontmatter (`~/.config/opencode/agents/`) per
 `docs/model-routing.md`. If you pass a model explicitly on a subagent call, keep it
 aligned with the agent frontmatter.
 
-The `claude-sonnet-5` roles are the expensive escalation tier. Assigning a subtask to
+The `GLM-5.3` roles are the expensive escalation tier. Assigning a subtask to
 them **is** the escalation decision — escalate by launching the deeper agent, not by
 switching models on a cheaper role:
 
@@ -78,7 +78,7 @@ missing evidence rather than gathering anything.
 1. Answer directly from your own knowledge.
 2. If a single fact / file / symbol needs confirming, spawn **one**
    `researcher-lite` for it; otherwise use your own tools inline. If the session
-   is running on the escalation model (`claude-sonnet-5`), do not use tools
+   is running on the escalation model (`GLM-5.3`), do not use tools
    inline — always spawn a cheap collector instead.
 3. Give a concise answer with citations (`file:line` for code, URLs for web). No
    planner, no synthesizer, no report file.
@@ -187,13 +187,13 @@ means to another deliverable.
   evidence, researchers did not inspect the sources, and a synthesizer did not
   merge their findings, you did not run Tier 3.
 - **Cheap tiers by default, escalate by role**: collection and standard research run
-  on the `minimax-m2.7` / `kimi-k2.6` roles. Reserve the `claude-sonnet-5` roles
+  on the `MiniMax-M2.7` / `Kimi-K2.6` roles. Reserve the `GLM-5.3` roles
   (deep, planner, synthesizer) for genuinely hard reasoning after the evidence
   packet is complete, and state why when you escalate.
 - **The deep tier never does the broad sweep**: give `researcher-deep`,
   `research-planner`, and `research-synthesizer` complete evidence packets;
   delegate broad source sweeps, searches, and commands to `researcher-lite` /
-  `researcher-mid`. If the session itself runs on `claude-sonnet-5`, delegate every
+  `researcher-mid`. If the session itself runs on `GLM-5.3`, delegate every
   source lookup and command to cheap collectors — including Tier 1 confirmations
   (never use tools inline from an escalation-model session).
 - **Cite everything**: `file:line` for code, URLs for web, tool/source name for MCP.

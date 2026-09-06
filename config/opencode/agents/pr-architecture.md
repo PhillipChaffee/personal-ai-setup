@@ -1,7 +1,7 @@
 ---
 description: Use as part of multi-agent plan review. Evaluates structure, boundaries, coupling, and placement of responsibilities proposed in the plan.
 mode: subagent
-model: opencode/claude-sonnet-5
+model: togetherai/zai-org/GLM-5.3
 permission:
   edit: deny
 ---

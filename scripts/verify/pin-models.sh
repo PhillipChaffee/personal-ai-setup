@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # pin-models.sh — model-drift detector. Every model ID pinned in this repo
 # (config/goose/custom_providers/*.json, config/goose/config.yaml,
-# config/opencode/opencode.json, recipes/*.yaml) is checked against the live
-# catalogs:
+# config/opencode/opencode.json, config/code-agents/opencode.json,
+# recipes/*.yaml) is checked against the live catalogs:
 #   Zen      GET https://opencode.ai/zen/v1/models
 #   Together GET https://api.together.xyz/v1/models
 #
@@ -96,12 +96,20 @@ echo
   # recipes: per-recipe pinned models
   grep -hE '^[[:space:]]*goose_model:' "$REPO_ROOT"/recipes/*.yaml 2>/dev/null | awk '{print $2}'
 
-  # opencode.json: default/small models (opencode/<id> = a Zen model) and any
+  # opencode.json: default/small models (opencode/<id> = a Zen model;
+  # togetherai/<id> or together/<id> = a Together registry ID) and any
   # models declared under custom providers
   jq -r '[.model, .small_model] | .[] | select(. != null)' \
-    "$REPO_ROOT/config/opencode/opencode.json" 2>/dev/null | sed 's|^opencode/||'
+    "$REPO_ROOT/config/opencode/opencode.json" 2>/dev/null \
+    | sed 's|^opencode/||; s|^togetherai/||; s|^together/||'
   jq -r '(.provider // {}) | to_entries[] | (.value.models // {}) | keys[]' \
     "$REPO_ROOT/config/opencode/opencode.json" 2>/dev/null
+
+  # code-agents opencode.json: per-chat container defaults (same provider
+  # prefix conventions as the interactive config)
+  jq -r '[.model, .small_model] | .[] | select(. != null)' \
+    "$REPO_ROOT/config/code-agents/opencode.json" 2>/dev/null \
+    | sed 's|^opencode/||; s|^togetherai/||; s|^together/||'
 } | grep -v '^$' | sort -u >"$PINNED"
 
 if [ ! -s "$PINNED" ]; then
@@ -150,6 +158,7 @@ Update each occurrence in the SAME commit, then re-run until clean:
   - config/goose/custom_providers/*.json  (models[] lists)
   - config/goose/config.yaml              (per-provider default models)
   - config/opencode/opencode.json
+  - config/code-agents/opencode.json
   - recipes/*.yaml                        (goose_model pins)
   - docs/model-routing.md                 (the routing table)
 Mind the routing rules when substituting: a sensitive-tier model must stay

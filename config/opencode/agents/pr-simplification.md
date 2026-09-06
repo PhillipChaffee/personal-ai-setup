@@ -1,7 +1,7 @@
 ---
 description: Use as part of multi-agent plan review. Evaluates whether the plan's proposed work is the simplest path that meets the goal — flags premature abstraction, over-engineering, and reuse misses.
 mode: subagent
-model: opencode/kimi-k2.6
+model: togetherai/moonshotai/Kimi-K2.6
 permission:
   edit: deny
 ---

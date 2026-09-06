@@ -1,7 +1,7 @@
 ---
 description: Mid-tier researcher for one subtask of a deep-research investigation. Use for moderate-reasoning work - tracing data flows, summarizing how a subsystem works, gathering and reconciling information across several sources. Runs on kimi-k2.6; if deep claude-sonnet-5 reasoning is needed, use researcher-deep instead. Reads the codebase, the web, and MCP tools; never edits files.
 mode: subagent
-model: opencode/kimi-k2.6
+model: togetherai/moonshotai/Kimi-K2.6
 permission:
   edit: deny
 ---

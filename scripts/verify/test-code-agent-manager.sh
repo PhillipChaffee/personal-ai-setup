@@ -485,7 +485,7 @@ if [ -n "$CID" ]; then
     && ok "no base named: the chat records none" || bad "base leaked onto a default create"
   [ -f "$CD/workspace/setup-ran.marker" ] \
     && ok "repo setup command ran in the workspace" || bad "setup marker missing"
-  grep -q '"opencode/deepseek-v4-flash"' "$CD/home/.config/opencode/opencode.json" 2>/dev/null \
+  grep -q '"together/deepseek-ai/DeepSeek-V4-Flash-0731"' "$CD/home/.config/opencode/opencode.json" 2>/dev/null \
     && ok "per-chat opencode config rendered (default model)" || bad "chat config missing/wrong"
   grep -q '"git push\*": "ask"' "$CD/home/.config/opencode/opencode.json" 2>/dev/null \
     && ok "push=ask policy in chat config" || bad "push policy missing"

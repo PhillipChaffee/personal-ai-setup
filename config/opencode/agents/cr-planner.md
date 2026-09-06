@@ -1,7 +1,7 @@
 ---
 description: Use as the mandatory first step of multi-agent code review. Selects reviewers and writes their focus briefs and the verifier's instructions before findings are gathered.
 mode: subagent
-model: opencode/claude-sonnet-5
+model: togetherai/zai-org/GLM-5.3
 permission:
   edit: deny
 ---

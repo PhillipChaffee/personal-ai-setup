@@ -189,27 +189,27 @@ Delegate unfamiliar code or architecture, multi-file tracing, debugging and root
 
 Choose by the work the agent must actually perform, not by the overall complexity of the parent task.
 
-- `researcher-lite` (`opencode/minimax-m2.7`): mechanical retrieval from known sources, one-fact confirmation, a small bounded read, read-only repository search and file discovery, or command-only collection such as git state, test output, build output, or environment facts.
-- `researcher-mid` (`opencode/kimi-k2.6`): normal multi-file or multi-source gathering, call-flow tracing, evidence comparison, and research summaries.
-- `researcher-deep` (`opencode/claude-sonnet-5`): broad, ambiguous, high-stakes, security-sensitive, or novel evidence gathering. The `deep` label does not itself justify it — prefer `researcher-mid` unless the reasoning is genuinely hard.
-- Named specialists — the `cr-*` code reviewers, `pr-*` plan reviewers, and `refactor-code-scout` / `refactor-placement-scout`: use when their rubric matches the task. Standard reviewers, scouts, and implementers run on `opencode/kimi-k2.6`; planners, verifiers, and the architecture/adversarial reviewers run on `opencode/claude-sonnet-5` (per their frontmatter).
-- `research-planner` / `research-synthesizer` (`opencode/claude-sonnet-5`): decomposition and final synthesis inside the `deep-research` skill's pipeline — do not launch them for ordinary tasks.
+- `researcher-lite` (`togetherai/MiniMaxAI/MiniMax-M2.7`): mechanical retrieval from known sources, one-fact confirmation, a small bounded read, read-only repository search and file discovery, or command-only collection such as git state, test output, build output, or environment facts.
+- `researcher-mid` (`togetherai/moonshotai/Kimi-K2.6`): normal multi-file or multi-source gathering, call-flow tracing, evidence comparison, and research summaries.
+- `researcher-deep` (`togetherai/zai-org/GLM-5.3`): broad, ambiguous, high-stakes, security-sensitive, or novel evidence gathering. The `deep` label does not itself justify it — prefer `researcher-mid` unless the reasoning is genuinely hard.
+- Named specialists — the `cr-*` code reviewers, `pr-*` plan reviewers, and `refactor-code-scout` / `refactor-placement-scout`: use when their rubric matches the task. Standard reviewers, scouts, and implementers run on `togetherai/moonshotai/Kimi-K2.6`; planners, verifiers, and the architecture/adversarial reviewers run on `togetherai/zai-org/GLM-5.3` (per their frontmatter).
+- `research-planner` / `research-synthesizer` (`togetherai/zai-org/GLM-5.3`): decomposition and final synthesis inside the `deep-research` skill's pipeline — do not launch them for ordinary tasks.
 - General-purpose subagent: use only as a carrier when a required named agent is unavailable. Inline that agent's definition from `~/.config/opencode/agents/` in the prompt and pin the same model.
 - The `deep-research` skill: use only when the task truly needs planning, multiple collectors, and final synthesis.
 
 ### Model Selection
 
-- `opencode/minimax-m2.7`: cheap, fast mechanical work — file reading, searches, command output, and mechanical lookup.
-- `opencode/kimi-k2.6`: default for most subagent work — research, source interpretation, debugging, standard reviews, triage, scouts, and implementation.
-- `opencode/claude-sonnet-5`: deep reasoning — planning, verification, synthesis, architecture and adversarial review, and rare, bounded, thinking-only work after all evidence has already been gathered.
+- `togetherai/MiniMaxAI/MiniMax-M2.7`: cheap, fast mechanical work — file reading, searches, command output, and mechanical lookup.
+- `togetherai/moonshotai/Kimi-K2.6`: default for most subagent work — research, source interpretation, debugging, standard reviews, triage, scouts, and implementation.
+- `togetherai/zai-org/GLM-5.3`: deep reasoning — planning, verification, synthesis, architecture and adversarial review, and rare, bounded, thinking-only work after all evidence has already been gathered.
 
-Choose the lowest tier that can do the work reliably. Complexity alone does not justify `claude-sonnet-5`. It is justified when the remaining task is a difficult reasoning problem such as selecting among architectural options, synthesizing conflicting specialist findings, performing a strategic premortem, or decomposing a high-stakes plan.
+Choose the lowest tier that can do the work reliably. Complexity alone does not justify `GLM-5.3`. It is justified when the remaining task is a difficult reasoning problem such as selecting among architectural options, synthesizing conflicting specialist findings, performing a strategic premortem, or decomposing a high-stakes plan.
 
 ### Prefer Thinking-Only Dispatch on the Deep Tier
 
-Before dispatching a `claude-sonnet-5` subagent, ask: "Can this prompt be fully self-contained without asking the agent to inspect, fetch, search, or run anything?" If no, gather the missing information with the cheaper tiers first.
+Before dispatching a `GLM-5.3` subagent, ask: "Can this prompt be fully self-contained without asking the agent to inspect, fetch, search, or run anything?" If no, gather the missing information with the cheaper tiers first.
 
-Outside a justified `researcher-deep` dispatch, do not use `claude-sonnet-5` to:
+Outside a justified `researcher-deep` dispatch, do not use `GLM-5.3` to:
 
 - read or search files, diffs, repositories, transcripts, logs, or command output
 - fetch web, MCP, GitHub, GitLab, Notion, Linear, Sentry, Grafana, or other external data
@@ -218,10 +218,10 @@ Outside a justified `researcher-deep` dispatch, do not use `claude-sonnet-5` to:
 
 Use a two-stage pipeline for complex work:
 
-1. Collector agents on `opencode/minimax-m2.7` / `opencode/kimi-k2.6` gather facts, relevant excerpts, source references, constraints, competing findings, and unresolved questions.
-2. A `claude-sonnet-5` reasoning agent receives one compact evidence packet and performs only the named decision, synthesis, critique, or planning task.
+1. Collector agents on `togetherai/MiniMaxAI/MiniMax-M2.7` / `togetherai/moonshotai/Kimi-K2.6` gather facts, relevant excerpts, source references, constraints, competing findings, and unresolved questions.
+2. A `GLM-5.3` reasoning agent receives one compact evidence packet and performs only the named decision, synthesis, critique, or planning task.
 
-The `claude-sonnet-5` prompt must:
+The `GLM-5.3` prompt must:
 
 - contain the full evidence packet, not links or instructions to read more
 - define one discrete reasoning question and the required output
@@ -232,7 +232,7 @@ If the deep-tier agent reports an evidence gap, send that exact gap to a cheaper
 
 ### Review and Planning Defaults
 
-Code and plan review agents that must inspect the diff, plan, or codebase stay on `opencode/kimi-k2.6`. A `claude-sonnet-5` planner or synthesizer may be added only after the cheaper agents provide the necessary evidence. Preserve the reason for escalation in its prompt.
+Code and plan review agents that must inspect the diff, plan, or codebase stay on `togetherai/moonshotai/Kimi-K2.6`. A `GLM-5.3` planner or synthesizer may be added only after the cheaper agents provide the necessary evidence. Preserve the reason for escalation in its prompt.
 
 Specialized single-shot skills keep their prescribed invocation. Do not override a workflow's required model or roster unless the workflow explicitly permits it.
 

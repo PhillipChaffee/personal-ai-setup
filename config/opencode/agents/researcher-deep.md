@@ -1,7 +1,7 @@
 ---
 description: High-knowledge, heavy-reasoning researcher for one subtask of a deep-research investigation. Runs on claude-sonnet-5. Use for architecture and tradeoff analysis, security/performance reasoning, ambiguous or novel questions, and synthesis across many or conflicting sources. Reads the codebase, the web, and MCP tools; never edits files.
 mode: subagent
-model: opencode/claude-sonnet-5
+model: togetherai/zai-org/GLM-5.3
 permission:
   edit: deny
 ---

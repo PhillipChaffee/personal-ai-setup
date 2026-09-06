@@ -84,8 +84,9 @@ your call.
 
 ## Models, privacy, cost
 
-- Default model: `opencode/deepseek-v4-flash` (Zen paid open — cheap,
-  Tier-3-safe posture, big context). Pick **any** catalog model per chat;
+- Default model: `together/deepseek-ai/DeepSeek-V4-Flash-0731` (Together —
+  cheap, Tier-3-safe posture, big context; Zen paid open remains a manual
+  per-chat pick). Pick **any** catalog model per chat;
   the routing table row and hard rules live in
   [model-routing.md](model-routing.md).
 - **Zen free models are refused** unless the repo is flagged

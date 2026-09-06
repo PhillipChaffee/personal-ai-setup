@@ -1,7 +1,7 @@
 ---
 description: Fast, low-cost researcher for simple, high-volume reads in a deep-research investigation. Use for mechanical subtasks - locating a definition or call sites, reading a specific file, extracting config values, confirming a single fact. Reads the codebase, the web, and MCP tools; never edits files.
 mode: subagent
-model: opencode/minimax-m2.7
+model: togetherai/MiniMaxAI/MiniMax-M2.7
 permission:
   edit: deny
 ---

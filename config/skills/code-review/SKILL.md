@@ -23,7 +23,7 @@ Gather the diff and changed file paths before launching subagents.
 
 Before launching reviewers, run exactly one **cr-planner** subagent.
 
-`cr-planner` runs on `opencode/claude-sonnet-5` — planning reviewer dispatch is a
+`cr-planner` runs on `togetherai/zai-org/GLM-5.3` — planning reviewer dispatch is a
 deep-reasoning role (see the personal-ai-setup repo's `docs/model-routing.md`), and the model is pinned in the agent's
 frontmatter. Do not downgrade it for simple diffs; a cheap plan that picks the wrong
 reviewers costs more than it saves.
@@ -62,8 +62,8 @@ Each reviewer:
 - Returns structured findings or an exact "no issues" string
 
 Reviewers run on the models pinned in their agent frontmatter (see the personal-ai-setup
-repo's `docs/model-routing.md`): `opencode/kimi-k2.6` for every reviewer — diff-reading
-review work stays on the daily tier; the deep tier (`opencode/claude-sonnet-5`) belongs to
+repo's `docs/model-routing.md`): `togetherai/moonshotai/Kimi-K2.6` for every reviewer — diff-reading
+review work stays on the daily tier; the deep tier (`togetherai/zai-org/GLM-5.3`) belongs to
 `cr-planner` and `cr-verifier`. When the changeset is clearly high stakes —
 cross-service contracts, schema/deploy sequencing, auth or security boundaries,
 concurrency/state-machine behavior, or a large heterogeneous changeset with ambiguous
@@ -82,7 +82,7 @@ file from `~/.config/opencode/agents/` inlined and the same model. Never skip a 
 
 After the selected reviewers complete (but before synthesis), launch **cr-verifier** as a single subagent to filter the reviewer findings. The verifier tags each finding as `confirmed`, `false_positive`, or `needs_rephrase`.
 
-`cr-verifier` runs on `opencode/claude-sonnet-5` — false-positive filtering across a large,
+`cr-verifier` runs on `togetherai/zai-org/GLM-5.3` — false-positive filtering across a large,
 conflicting, or high-stakes finding set is deep-reasoning work, and the model is pinned in the
 agent's frontmatter. If the named agent is unavailable, use a general-purpose subagent with
 `cr-verifier.md` inlined and the same model.
@@ -182,7 +182,7 @@ Apply 3 approved fixes now via the implementer subagent? [yes / no / edit list]
 
 After fixes apply, suggest: "If you want to verify nothing regressed, re-run the code-review skill and re-run your tests."
 
-Use the named **cr-implementer** agent on `opencode/kimi-k2.6`. If the named agent is
+Use the named **cr-implementer** agent on `togetherai/moonshotai/Kimi-K2.6`. If the named agent is
 unavailable, use a general-purpose subagent with `cr-implementer.md` inlined and the same model.
 
 ## Review-only mode

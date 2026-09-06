@@ -1,7 +1,7 @@
 ---
 description: Review test design and coverage gaps in git diffs. Use as part of multi-agent code review.
 mode: subagent
-model: opencode/kimi-k2.6
+model: togetherai/moonshotai/Kimi-K2.6
 permission:
   edit: deny
 ---
