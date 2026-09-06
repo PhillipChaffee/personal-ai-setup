@@ -165,7 +165,7 @@ tactical fix, or only safe fix exceeds budget → escalate to the user (non-FA) 
 ### Step 3: Triage
 
 Launch a single general-purpose triage subagent (the `general` agent via the task tool) on
-`togetherai/moonshotai/Kimi-K2.6` with the plan diff vs Phase 2 baseline, verifier-filtered summary, scope
+`togetherai/zai-org/GLM-5.3` with the plan diff vs Phase 2 baseline, verifier-filtered summary, scope
 contract, and budget.
 
 For each confirmed finding, return exactly one of:

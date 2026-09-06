@@ -1,7 +1,7 @@
 ---
 description: Use as part of multi-agent plan review. Evaluates step completeness, dependency ordering, deploy sequencing, validation checkpoints, and sizing.
 mode: subagent
-model: togetherai/moonshotai/Kimi-K2.6
+model: togetherai/zai-org/GLM-5.3
 permission:
   edit: deny
 ---

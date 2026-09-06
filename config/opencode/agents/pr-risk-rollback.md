@@ -1,7 +1,7 @@
 ---
 description: Use as part of multi-agent plan review. Evaluates operational risk, failure modes, mitigations, rollback/recovery, blast radius, and observability.
 mode: subagent
-model: togetherai/moonshotai/Kimi-K2.6
+model: togetherai/zai-org/GLM-5.3
 permission:
   edit: deny
 ---

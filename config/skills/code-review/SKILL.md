@@ -61,10 +61,10 @@ Each reviewer:
 - Is read-only (its agent `permission` denies edits — it cannot modify files)
 - Returns structured findings or an exact "no issues" string
 
-Reviewers run on the models pinned in their agent frontmatter (see the personal-ai-setup
-repo's `docs/model-routing.md`): `togetherai/moonshotai/Kimi-K2.6` for every reviewer — diff-reading
-review work stays on the daily tier; the deep tier (`togetherai/zai-org/GLM-5.3`) belongs to
-`cr-planner` and `cr-verifier`. When the changeset is clearly high stakes —
+Reviewers run on the model pinned in their agent frontmatter (see the personal-ai-setup
+repo's `docs/model-routing.md`): `togetherai/zai-org/GLM-5.3` for every reviewer — the daily
+and deep tiers share a model, so the deep tier is a role, not a cost tier. `cr-planner` and
+`cr-verifier` hold that role. When the changeset is clearly high stakes —
 cross-service contracts, schema/deploy sequencing, auth or security boundaries,
 concurrency/state-machine behavior, or a large heterogeneous changeset with ambiguous
 intent — make sure the planner selected the reviewers matching those stakes rather than
@@ -182,7 +182,7 @@ Apply 3 approved fixes now via the implementer subagent? [yes / no / edit list]
 
 After fixes apply, suggest: "If you want to verify nothing regressed, re-run the code-review skill and re-run your tests."
 
-Use the named **cr-implementer** agent on `togetherai/moonshotai/Kimi-K2.6`. If the named agent is
+Use the named **cr-implementer** agent on `togetherai/zai-org/GLM-5.3`. If the named agent is
 unavailable, use a general-purpose subagent with `cr-implementer.md` inlined and the same model.
 
 ## Review-only mode

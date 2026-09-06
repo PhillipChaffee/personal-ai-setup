@@ -100,7 +100,7 @@ Anti-stall rule: if two consecutive iterations produce the same confirmed blocke
 
 ### Step 3: Triage — decide the smallest safe fixes
 
-Launch a **single general-purpose triage subagent** (the `general` agent via the task tool) on `togetherai/moonshotai/Kimi-K2.6` with:
+Launch a **single general-purpose triage subagent** (the `general` agent via the task tool) on `togetherai/zai-org/GLM-5.3` with:
 
 - The current diff and changed file paths.
 - The full verifier-filtered summary from Step 1 (confirmed findings, rephrased findings, rejected findings with reasons).

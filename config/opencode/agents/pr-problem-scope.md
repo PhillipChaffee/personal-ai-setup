@@ -1,7 +1,7 @@
 ---
 description: Use as part of multi-agent plan review. Evaluates problem statement clarity, success criteria, scope boundaries, and constraints.
 mode: subagent
-model: togetherai/moonshotai/Kimi-K2.6
+model: togetherai/zai-org/GLM-5.3
 permission:
   edit: deny
 ---

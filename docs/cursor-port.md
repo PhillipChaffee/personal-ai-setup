@@ -33,8 +33,8 @@ each agent's frontmatter:
 
 | Role | Agents | Model |
 |---|---|---|
-| Fast/mechanical | `researcher-lite` | `togetherai/MiniMaxAI/MiniMax-M2.7` |
-| Standard reviewers & workers | all `cr-*` reviewers, `cr-implementer`, 7 structural `pr-*` reviewers, `pr-implementer`, `researcher-mid`, both `refactor-*-scout`s | `togetherai/moonshotai/Kimi-K2.6` |
+| Fast/mechanical | `researcher-lite` | `togetherai/zai-org/GLM-5.3-Flash` |
+| Standard reviewers & workers | all `cr-*` reviewers, `cr-implementer`, 7 structural `pr-*` reviewers, `pr-implementer`, `researcher-mid`, both `refactor-*-scout`s | `togetherai/zai-org/GLM-5.3` |
 | Deep reasoning | `cr-planner`, `cr-verifier`, `pr-planner`, `pr-verifier`, `pr-adversarial`, `pr-architecture`, `researcher-deep`, `research-planner`, `research-synthesizer` | `togetherai/zai-org/GLM-5.3` |
 
 Because models are now **pinned per agent**, the skills' old "upgrade this
