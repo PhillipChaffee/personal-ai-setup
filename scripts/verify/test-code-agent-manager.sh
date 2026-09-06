@@ -42,6 +42,11 @@ PORT="${PORT:-4399}"
 # `--serve` does not: a 4-second idle timeout means a client being driven by
 # hand re-wakes the container between every tap. Override for that case.
 IDLE_SECONDS="${IDLE_SECONDS:-4}"
+# The per-chat container port band, derived from PORT so a single override moves
+# everything. This is what lets several worktrees run this harness at once: the
+# manager allocates chat ports from its index rather than from the OS, so two
+# runs sharing a base both try to bind the same port for their first chat.
+BASE_CHAT_PORT="${BASE_CHAT_PORT:-$((PORT + 20))}"
 PASS="test-secret-$$"
 BASE="http://127.0.0.1:$PORT"
 CURL="curl -sS --max-time 30 -u opencode:$PASS"
@@ -167,6 +172,7 @@ env -i PATH="$PATH" HOME="$HOME" \
   NTFY_AGENT_TOPIC="$AGENT_TOPIC" \
   CODE_AGENT_BIND=127.0.0.1 \
   CODE_AGENT_PORT="$PORT" \
+  CODE_AGENT_BASE_CHAT_PORT="$BASE_CHAT_PORT" \
   CODE_AGENT_ROOT="$WORK/root" \
   CODE_AGENT_ENGINE="$HERE/stub-engine.sh" \
   CODE_AGENT_IMAGE=mock \
