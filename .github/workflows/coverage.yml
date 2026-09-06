@@ -40,12 +40,24 @@ jobs:
       - name: Install coverage.py
         # Pinned like the other Python tooling: the reported number should
         # move when the code moves, not when a dependency releases.
-        run: pip install --quiet coverage==7.15.4
+        run: pip install --quiet coverage==7.15.4 pyyaml
 
       - name: Run the integration harness under coverage
         run: |
           MANAGER_PY="coverage run --parallel-mode --data-file=$PWD/.coverage" \
             scripts/verify/test-code-agent-manager.sh
+
+      # THE PATTERN EVERY LATER scripts/pai/*.py OWES. `source = scripts` plus
+      # check-coverage.sh's 85% per-file floor apply the instant such a file is
+      # committed, so a new module without a harness here does not merely go
+      # unmeasured -- it lands at 0% and turns the gate red. Add your harness
+      # to this job in the SAME PR that adds the module.
+      #
+      # --parallel-mode means both runs' data files combine below.
+      - name: Run the pai harness under coverage
+        run: |
+          PAI_PY="coverage run --parallel-mode --data-file=$PWD/.coverage" \
+            scripts/verify/test-pai.sh
 
       - name: Combine
         run: coverage combine --data-file="$PWD/.coverage"

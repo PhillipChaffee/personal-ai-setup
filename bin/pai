@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# pai — the entry point. A shim on purpose: `bin/` is a stable place to put on
+# PATH, while the implementation stays with the rest of the scripts.
+set -euo pipefail
+exec "$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts/pai" && pwd)/cli.sh" "$@"
