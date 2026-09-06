@@ -15,15 +15,16 @@ pricing/model pages). Both catalogs churn — re-verify at signup and monthly vi
 
 | Job class | Route | Model | Price |
 |---|---|---|---|
-| Interactive coding (daily) | OpenCode → Zen | `kimi-k2.6` | $0.95/$4.00 |
-| Coding escalation | OpenCode → Zen | `claude-sonnet-5` | $2/$10 |
+| Interactive coding (daily) | OpenCode → Together | `zai-org/GLM-5.3` | $1.40/$4.40 (ZDR) |
+| Coding escalation | OpenCode → Together | `zai-org/GLM-5.3` (deep-tier agents; Zen `claude-sonnet-5` by manual pick) | $1.40/$4.40 (manual Zen: $2/$10) |
 | Throwaway/non-personal code | OpenCode → Zen | `big-pickle` (free) | $0 — **never personal data** |
 | Hub daily driver (brain) — **default** | Goose → `together` | `Qwen/Qwen3.5-397B-A17B` | $0.60/$3.60 (ZDR — private by default) |
 | Hub premium alternative (non-sensitive) | Goose → `zen-anthropic` | `claude-sonnet-5` | $2/$10 (30-day retention) |
 | Hub cost-saver | Goose → `zen-openai` | `kimi-k2.6` | $0.95/$4.00 |
 | Sensitive doc Q&A | Goose → `together` | `Qwen3.5-397B-A17B` | $0.60/$3.60 (ZDR/HIPAA) |
 | Sensitive long-context (big PDFs) | Goose → `together` | DeepSeek V4 Flash | $0.14/$0.28, 1M ctx |
-| Code agents (brain, per-chat containers) | OpenCode in container → Zen/Together | **owner's choice at kick-off** — default `deepseek-v4-flash` | Zen: peak/off-peak; Together alt $0.14/$0.28 |
+| Code agents (brain, per-chat containers) | OpenCode in container → Together | **owner's choice at kick-off** — default `deepseek-ai/DeepSeek-V4-Flash-0731` | Together $0.14/$0.28; manual Zen alt: peak/off-peak |
+| Backup phone chat (Pal Chat) | Together direct | gpt-oss-120b / Qwen3.5 | cheap, ZDR |
 | Image/screenshot chats | Goose → `together` | `google/gemma-4-31B-it` | serverless vision, ZDR |
 | Embeddings (roadmap RAG) | Together | M2-BERT-80M-32K | ~$0.01 |
 
@@ -45,14 +46,16 @@ Notes on reading the table:
   Treat it like `zen-anthropic`: ~30-day retention, hard rule 2 applies. (OpenCode
   reaches Zen's GPT models natively, and OpenAI's open-weight `gpt-oss` models are
   already on `together`.)
-- "OpenCode → Zen" rows run wherever OpenCode runs — the brain under herdr
-  (Phase 2), or a local OpenCode you installed yourself. The repo ships no
-  OpenCode config and writes no credential; you connect OpenCode to Zen
-  yourself. Those rows never pass through Goose.
-- The **coding agents** row is the one deliberately unpinned job class: model choice is
-  per-pane at kick-off (`docs/coding-agents.md`) — no default is baked in; you pick per
-  pane, and free ids never see personal data (hard rule 1 — in the herdr plane that is
-  a discipline, not a runtime gate). The
+- "OpenCode → Together" rows run wherever OpenCode runs — the brain under herdr,
+  or a local OpenCode you installed yourself. The repo ships no OpenCode config
+  and writes no credential; you connect OpenCode to Together yourself on its
+  built-in `togetherai` provider (Zen stays in the catalog for explicit
+  `/models` picks). Those rows never pass through Goose.
+- The **code agents** row is the one deliberately unpinned job class: model choice is
+  per-chat at kick-off (`docs/coding-agents.md`) — the repo bakes no default in; you
+  pick per chat, and free ids never see personal data (hard rule 1 — in the herdr
+  plane that is a discipline, not a runtime gate). The owner's current kick-off
+  default is `deepseek-ai/DeepSeek-V4-Flash-0731` on Together. The
   hard rules still bind — the session manager refuses zen-free models for any repo not
   flagged `public_throwaway` in the allowlist, and only Tier 1/2 repos are allowlistable
   at all, so the free-tier and retention rules cannot be violated by a model pick.
