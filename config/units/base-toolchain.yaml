@@ -1,0 +1,79 @@
+---
+# base-toolchain — the macOS prerequisites every other Mac unit stands on:
+# the platform guard, Homebrew itself, and the three general-purpose formulae.
+#
+# DESCRIBES TODAY. It has no unit_base_toolchain() function and no verify
+# script; both absences are recorded below rather than smoothed over.
+id: base-toolchain
+manifest_version: 1
+verified_on: "2026-09-07"
+summary: macOS guard, Homebrew presence check, and the uv/node/jq formulae.
+host: mac
+tier: base
+requires: []
+
+# The Homebrew formulae here are free, and the `tailscale` cask's cost is the
+# tailnet PLAN, which belongs to the `tailnet` unit rather than to the loop
+# that installs the app. Nothing on README.md's budget table is this unit's.
+cost: []
+
+installer:
+  script: scripts/mac/bootstrap-mac.sh
+  function: unit_base_toolchain
+  status: planned
+
+# NOTHING VERIFIES THIS UNIT. `check-goose.sh` needs the goose binary and
+# `check-providers.sh` needs the provider JSON, so neither one notices a
+# missing `jq` or a missing `uv` — and `uv` is load-bearing: bootstrap-mac.sh
+# falls back to `uv run --with pyyaml` to read config/pins.yaml at :169.
+verify: []
+runbook: docs/setup/20-mac-setup.md#1-run-the-bootstrap
+
+secrets: []
+
+owns:
+  # From the FORMULAE string at bootstrap-mac.sh:118. `block-goose-cli` and
+  # `anomalyco/tap/opencode` are in that same string but belong to base-goose
+  # and opencode: one line installs three units' formulae, which is exactly
+  # why installer.status is a manifest field and not a comment anchor.
+  - {kind: brew_formula, target: uv}
+  - {kind: brew_formula, target: node}
+  - {kind: brew_formula, target: jq}
+  # From the cask loop at bootstrap-mac.sh:131, which serves two units. The
+  # `tailnet` unit owns the human steps (account, sign-in, MagicDNS), not the
+  # app; splitting it this way keeps `owns` disjoint.
+  - {kind: brew_cask, target: tailscale}
+
+manual_steps:
+  - id: install-homebrew
+    summary: Install Homebrew and open a new terminal, then re-run the
+      bootstrap. bootstrap-mac.sh:104-114 prints the command and exits 1; it
+      never installs Homebrew for you.
+    doc: docs/setup/20-mac-setup.md#1-run-the-bootstrap
+    blocking: true
+  - id: resolve-tailscale-variant
+    summary: If you already run the Mac App Store Tailscale, keep it and
+      `brew uninstall --cask tailscale` — the two variants conflict.
+    doc: docs/setup/10-accounts.md
+    blocking: false
+
+blockers:
+  - id: no-verify
+    severity: warn
+    detail: No check-*.sh asserts uv, node or jq are installed. The closest
+      thing is bootstrap-mac.sh's own `brew list --versions` guard, which runs
+      only during an install and reports nothing afterwards.
+  - id: homebrew-is-a-precondition-not-an-install
+    severity: note
+    detail: bootstrap-mac.sh:104-114 exits 1 with instructions when brew is
+      absent rather than installing it, so this unit's first step is a manual
+      step by design (piping a remote installer to bash is the thing the
+      script declines to do for you).
+
+uninstall:
+  supported: false
+  reason: "`brew uninstall uv node jq` would break any other tool on the
+    machine that depends on them; these are shared, machine-global formulae
+    that this repo installs but does not own exclusively."
+
+notes: null

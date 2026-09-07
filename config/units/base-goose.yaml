@@ -1,0 +1,84 @@
+---
+# base-goose — the pinned goose CLI, its four custom providers, and the
+# shipped config template.
+#
+# DESCRIBES TODAY. installer.status is `planned` because no unit_*() function
+# exists in either installer yet; #37 creates them and flips this to `present`.
+id: base-goose
+manifest_version: 1
+verified_on: "2026-09-07"
+summary: Pinned goose CLI and Desktop cask, four custom providers, config template.
+host: mac
+tier: base
+requires: [base-toolchain, base-secrets]
+
+# Both entries are copied VERBATIM from README.md's budget table (:149, :150).
+# The validator re-reads that file and requires `line` and `amount` to appear
+# on the same line of it, so no figure can originate here or drift from there.
+cost:
+  - line: OpenCode Zen inference (PAYG — **disable auto-reload, set a cap**)
+    amount: ~$5–20/mo typical
+    source: README.md
+  - line: Together AI inference (min $5 top-up; sensitive tier + default hub)
+    amount: ~$5–10/mo
+    source: README.md
+
+installer:
+  script: scripts/mac/bootstrap-mac.sh
+  function: unit_base_goose
+  status: planned
+
+verify:
+  - scripts/verify/check-goose.sh
+  - scripts/verify/check-providers.sh
+runbook: docs/setup/20-mac-setup.md
+
+secrets:
+  - key: TOGETHER_API_KEY
+    store: mac_keychain
+    secret: true
+    optional: false
+  - key: OPENCODE_ZEN_API_KEY
+    # Not an OpenCode-CLI artifact: three of goose's four custom providers name
+    # it in api_key_env, so it stays here whatever tier the opencode unit gets.
+    store: mac_keychain
+    secret: true
+    optional: false
+
+owns:
+  - {kind: brew_formula, target: block-goose-cli}
+  - {kind: brew_cask, target: block-goose}
+  - {kind: repo_file, target: config/goose/config.base.yaml}
+  - {kind: repo_file, target: config/goose/config.yaml}
+  - {kind: repo_file, target: config/goose/goosehints.example}
+  - {kind: home_path, target: ~/.config/goose/config.yaml}
+  - {kind: home_path, target: ~/.config/goose/custom_providers}
+  - {kind: home_path, target: ~/.config/goose/.goosehints}
+
+manual_steps:
+  - id: edit-goosehints
+    summary: Replace the <placeholders> in ~/.config/goose/.goosehints with
+      your name, email and timezone.
+    doc: docs/setup/20-mac-setup.md
+    blocking: false
+
+blockers:
+  - id: goosehints-not-rendered
+    severity: warn
+    detail: bootstrap-mac.sh:215-216 PRINTS a reminder to edit the placeholders
+      rather than substituting them (#37 renders them from prompted values).
+  - id: brew-pin-asserts-it-cannot-install
+    severity: note
+    detail: bootstrap-mac.sh:163-190 COMPARES the installed goose against
+      config/pins.yaml's goose.version and warns on a mismatch; it cannot
+      install a prior release, because brew has no versioned formula. The
+      brain installs the pinned version exactly, so the two surfaces can
+      legitimately differ and only one side can honour the pin.
+
+uninstall:
+  supported: false
+  reason: "`brew pin block-goose-cli` is a machine-global side effect with no
+    counterpart, and docs/connecting.md treats the pin as a load-bearing
+    invariant."
+
+notes: null
