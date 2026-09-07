@@ -1,0 +1,106 @@
+# A full Mac base install, on a Linux runner, with no Mac, no VPS and no keys.
+#
+# bootstrap-mac.sh is the one program in this repo whose entire job is side
+# effects on external systems, and until now nothing could execute it: it exits
+# 1 on non-Darwin, and every step it takes runs `brew`. It is now routed through
+# a single substitutable binary (PAI_EXEC), exactly as the code-agent manager is
+# routed through CODE_AGENT_ENGINE, so the whole install can be driven against
+# fakes that assert on what it invoked.
+#
+# All the logic lives in scripts/verify/test-base-install.sh, not here. A
+# python3 heredoc inside a `run:` block is invisible to ruff, mypy and the
+# tracked-file scans, and cannot be run on a laptop -- which is where this gets
+# debugged.
+name: install-test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  base-install:
+    name: base install against fakes
+    runs-on: ubuntu-latest
+    # The only workflow here that sets one. This job starts a background HTTP
+    # fake and runs three full bootstraps; if any of that ever wedges, the
+    # default six hours of a hung runner is a poor way to find out.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Nothing in this repo pushes from CI, so the token has no
+          # business surviving in .git/config where an artifact upload
+          # or a later step could pick it up (zizmor: artipacked).
+          persist-credentials: false
+          # LOAD BEARING. Assertion A14 proves the seam is a strict no-op by
+          # unwinding it and diffing against the PRE-SEAM bootstrap-mac.sh,
+          # which it finds in git history. On a shallow clone that history is
+          # absent and A14 degrades to a counted SKIP -- so acceptance
+          # criterion 4 would be asserted on a laptop and nowhere else.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # bootstrap-mac.sh branches on `python3 -c 'import yaml'` and falls back
+      # to `uv run --with pyyaml` -- but uv here is a fake, so without this the
+      # pin comparison takes its "could not compare ... skipping" arm and BOTH
+      # of its real arms (match and mismatch) go untested. The harness asserts
+      # this is present and dies with a named message if not. Pinned to match
+      # data-lint.yml.
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml==6.0.2
+
+      - name: Base install against the fakes
+        run: scripts/verify/test-base-install.sh
+
+      # The two negative tests below prove this gate can FAIL. Both work on a
+      # COPY extracted into $RUNNER_TEMP, so the checkout is never modified --
+      # the same rule data-lint.yml and secret-scan.yml follow.
+      #
+      # `test -x` first, deliberately: a script committed with mode 100644
+      # would make the whole negative test a silent no-op that always "passes".
+      - name: Negative test — a formula-list change must fail the golden
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/neg-formula"
+          rm -rf "$work"; mkdir -p "$work"
+          git archive HEAD | tar -x -C "$work"
+          test -x "$work/scripts/verify/test-base-install.sh" \
+            || { echo "::error::harness is not executable in the archive"; exit 1; }
+          sed -i 's|^FORMULAE=.*|FORMULAE="block-goose-cli anomalyco/tap/opencode uv node jq docker"|' \
+            "$work/scripts/mac/bootstrap-mac.sh"
+          if "$work/scripts/verify/test-base-install.sh" --only brew; then
+            echo "::error::the brew golden accepted an extra formula — assertion A1" \
+                 "is inert and the formula list is unguarded"
+            exit 1
+          fi
+          echo "The golden correctly rejected an unannounced formula-list change."
+
+      - name: Negative test — an unrouted external call must fail
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/neg-routing"
+          rm -rf "$work"; mkdir -p "$work"
+          git archive HEAD | tar -x -C "$work"
+          test -x "$work/scripts/verify/test-base-install.sh" \
+            || { echo "::error::harness is not executable in the archive"; exit 1; }
+          # Take one call back OUT of the seam. The deny-PATH must catch it even
+          # though this particular shape swallows its own exit status, which is
+          # precisely what no grep over the source could reliably find.
+          sed -i 's|^if pai_exec brew list --pinned|if brew list --pinned|' \
+            "$work/scripts/mac/bootstrap-mac.sh"
+          if "$work/scripts/verify/test-base-install.sh" --only routing; then
+            echo "::error::an unrouted brew call went unnoticed — the deny-PATH" \
+                 "invariant is inert"
+            exit 1
+          fi
+          echo "The deny-PATH correctly caught a call that left the seam."
