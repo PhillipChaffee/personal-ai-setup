@@ -257,8 +257,9 @@ agent@brain$ /home/agent/personal-ai-setup/scripts/verify/check-security.sh --lo
 
 # From the Mac — the external probe targets the brain's PUBLIC IP:
 ./scripts/verify/check-security.sh "$(cd infra/terraform && terraform output -raw server_public_ip)"
-# probes ports 22/80/443/3284 over the open internet (not the tailnet) — zero
-# ports may answer
+# probes ports 22/80/443/3284/4300/4310 over the open internet (not the
+# tailnet) — zero ports may answer. 4300/4310 are the code plane: the gateway
+# and a per-chat opencode server (docs/code-agents.md)
 ```
 
 Then, by hand:

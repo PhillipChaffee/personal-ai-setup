@@ -18,7 +18,13 @@ set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 TIMEOUT_S=5
-PORTS="22 80 443 3284"
+# 4300 is the code-agent gateway and 4310 is the first per-chat opencode server
+# (CODE_AGENT_PORT / CODE_AGENT_BASE_CHAT_PORT). Both were missing here, so the
+# entire code plane — the half of this system that runs autonomous agents with a
+# GitHub PAT — was never externally probed at all. 4310 is included as the
+# representative of the whole 4310+ band: it binds 127.0.0.1 by design, so if it
+# answers on the public IP the loopback binding has regressed.
+PORTS="22 80 443 3284 4300 4310"
 
 usage() {
   cat <<'EOF'
@@ -90,6 +96,10 @@ if [ "$MODE" = "probe" ]; then
       case "$port" in
         22)   echo "      SSH must be tailnet-only after bootstrap (docs/security.md)." ;;
         3284) echo "      goose serve is exposed publicly — this is the worst case." ;;
+        4300) echo "      The code-agent gateway is public. It fronts containers holding a" \
+                   "GitHub PAT that can open pull requests (docs/code-agents.md)." ;;
+        4310) echo "      A per-chat opencode server is public. These bind 127.0.0.1 and are" \
+                   "reachable only through the gateway — that binding has regressed." ;;
       esac
       echo "      Fix: Hetzner Cloud Firewall (infra/terraform) + ufw on the host"
       echo "      must both default-deny inbound. Re-apply terraform, then re-probe."
