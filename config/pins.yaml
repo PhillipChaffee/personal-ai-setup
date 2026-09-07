@@ -1,0 +1,36 @@
+# Version pins that MORE THAN ONE installer needs, in one file so the two can
+# never quietly disagree.
+#
+# Before this file the goose version was pinned twice, by two different
+# mechanisms, to two potentially different versions:
+#
+#   the brain   cloud-init.yaml.tftpl ran the installer with GOOSE_VERSION=v1.46.0
+#               -- an exact version, every time.
+#   the Mac     bootstrap-mac.sh ran `brew pin block-goose-cli` -- which freezes
+#               WHATEVER BREW HAPPENED TO INSTALL at bootstrap time, and on a Mac
+#               set up today that is whatever brew's latest is.
+#
+# So "both are pinned" was true and "both are pinned to the same thing" was not.
+#
+# The two sides consume this differently, and deliberately:
+#
+#   the brain   INSTALLS exactly `goose.version` -- Terraform reads this file and
+#               interpolates it into cloud-init, so a new brain gets this version
+#               and no other.
+#   the Mac     keeps Homebrew (an unmanaged binary on a laptop is worse than a
+#               version skew) and ASSERTS instead: bootstrap-mac.sh compares the
+#               installed `goose --version` against this and says so when they
+#               differ. One source of truth, both sides read it, and only the
+#               side that can honour it exactly is asked to.
+#
+# Bumping: change it here, re-run scripts/mac/bootstrap-mac.sh (it will tell you
+# to `brew upgrade block-goose-cli`), and re-provision or upgrade the brain in
+# the same sitting. Note that editing this file changes the rendered cloud-init
+# and therefore `user_data`, which main.tf's lifecycle block deliberately
+# ignores -- an existing brain is NOT rebuilt by a pin bump, and re-running
+# cloud-init needs the documented `terraform apply -replace=hcloud_server.brain`.
+goose:
+  # The version this whole setup is verified against. goose releases roughly
+  # weekly and 2.0 is in RC churn, so upgrades are opt-in rather than automatic.
+  version: "1.46.0"
+  verified_on: "2026-08-20"

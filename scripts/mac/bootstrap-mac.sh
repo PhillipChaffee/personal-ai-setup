@@ -28,7 +28,11 @@ esac
 
 if [ "$(uname -s)" != "Darwin" ]; then
   echo "bootstrap-mac.sh: this script is macOS-only (Mac surface setup)." >&2
-  echo "The VPS brain is provisioned by infra/terraform + scripts/vps/ instead." >&2
+  echo "The VPS brain is provisioned by infra/terraform + scripts/vps/ instead," >&2
+  echo "and it runs Linux — goose itself is not the Mac-only part." >&2
+  echo "" >&2
+  echo "What is Mac-only, and what a Linux laptop would need instead, is listed" >&2
+  echo "per component in docs/setup/00-overview.md under 'Supported platforms'." >&2
   exit 1
 fi
 
@@ -91,6 +95,40 @@ else
 fi
 echo "NOTE: casks can't be pinned; open Goose Desktop's settings and turn OFF"
 echo "      automatic updates so Desktop stays on the same major as the CLI."
+
+# The pin above freezes whatever brew INSTALLED; it does not choose a version.
+# config/pins.yaml does, and the brain's cloud-init installs exactly it. Brew
+# cannot install an arbitrary prior release without a versioned formula, so this
+# side ASSERTS rather than installs — one source of truth, and only the side
+# that can honour it exactly is asked to. See config/pins.yaml for the argument.
+PIN_FILE="$REPO_ROOT/config/pins.yaml"
+if [ -r "$PIN_FILE" ]; then
+  # The repo's usual ladder: python3 with PyYAML, else uv (installed above).
+  if python3 -c 'import yaml' >/dev/null 2>&1; then
+    read -r -a PIN_PY <<<"python3"
+  else
+    read -r -a PIN_PY <<<"uv run --quiet --with pyyaml python"
+  fi
+  WANT_GOOSE="$("${PIN_PY[@]}" -c \
+    'import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))["goose"]["version"])' \
+    "$PIN_FILE" 2>/dev/null || true)"
+  # `goose --version` prints a bare version on 1.x; take the first version-shaped
+  # token so a future format change degrades to "cannot tell" rather than a
+  # spurious mismatch.
+  HAVE_GOOSE="$(goose --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+  if [ -z "$WANT_GOOSE" ] || [ -z "$HAVE_GOOSE" ]; then
+    echo "NOTE: could not compare the goose version against config/pins.yaml"
+    echo "      (want='${WANT_GOOSE:-?}' have='${HAVE_GOOSE:-?}') — skipping the check."
+  elif [ "$WANT_GOOSE" = "$HAVE_GOOSE" ]; then
+    echo "==> goose $HAVE_GOOSE matches config/pins.yaml"
+  else
+    echo "WARNING: goose $HAVE_GOOSE is installed; config/pins.yaml says $WANT_GOOSE."
+    echo "         The brain installs exactly $WANT_GOOSE, so the two surfaces differ."
+    echo "         Fix: brew unpin block-goose-cli && brew upgrade block-goose-cli"
+    echo "         && brew pin block-goose-cli — or bump config/pins.yaml if $HAVE_GOOSE"
+    echo "         is what you actually want, and re-provision the brain to match."
+  fi
+fi
 
 # ------------------------------------------------------- Config templates ---
 # No-clobber on purpose: your local edits (e.g. a base_url variant fix from
