@@ -23,6 +23,29 @@ Implements, for owner/repo `testowner/testrepo`:
     GET /repos/:owner/:repo/branches?per_page=&page=  the base-branch picker's
                                                     list, really paginated
     GET /repos/:owner/:repo/branches/:name          "does this ref exist"
+    GET /repos/:owner/:repo/compare/:base...:head   the per-tree change stat.
+                                                    Keyed on the HEAD ref: the
+                                                    fixture branch is `ahead`
+                                                    with three files, the
+                                                    default branch is
+                                                    `identical` with none, and
+                                                    anything else 404s — which
+                                                    is the "never pushed" arm
+                                                    every other chat gets free.
+                                                    `total_commits` is 99 while
+                                                    `ahead_by` is 3 ON PURPOSE:
+                                                    a manager that reports the
+                                                    wrong one is caught.
+    GET /__calls                                    how many requests this fake
+                                                    has served. Answered BEFORE
+                                                    any failure mode, so it
+                                                    stays readable under
+                                                    `denied`/`serverfail`; it
+                                                    backs "a cached route costs
+                                                    the same calls whether it is
+                                                    read 10 times or 30".
+                                                    Unreadable under `down`,
+                                                    which binds no socket.
 
 The branch fixture is 119 names ON PURPOSE: GitHub caps `per_page` at 100, so
 a client that does not paginate silently loses the tail — `zzz-last-branch`
@@ -68,6 +91,8 @@ Set FAKE_GITHUB_MODE to make it misbehave on purpose:
               behind it                             "pending"
     detailbad GET /pulls/:n answers a LIST        -> merge refuses with 502
                                                    rather than crashing
+    nocompare the compare alone answers 404       -> the tree loses its `stat`
+                                                   and keeps its pull requests
 """
 
 from __future__ import annotations
@@ -80,7 +105,7 @@ import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import ParseResult, parse_qs, urlparse
 
 Wire = dict[str, Any]
 
@@ -200,6 +225,12 @@ class Handler(BaseHTTPRequestHandler):
     BRANCH_ONE = re.compile(r"^/repos/([^/]+)/([^/]+)/branches/(.+)$")
     # Two segments only, so it can never shadow any of the routes above.
     REPO_ONE = re.compile(r"^/repos/([^/]+)/([^/]+)$")
+    # `(.+)$`, NOT segment-anchored, matching BRANCH_ONE's precedent above and
+    # mandatory here: every branch this system makes is `agent/<chat id>` and a
+    # base can be `release/2.x`. A `[^/]+` route would 404 every fixture, the
+    # manager would read that as the legitimate "never pushed" arm, and the
+    # whole stat matrix would go green having tested nothing.
+    COMPARE = re.compile(r"^/repos/([^/]+)/([^/]+)/compare/(.+)$")
 
     def send(self, code: int, obj: object) -> None:
         raw = json.dumps(obj).encode()
@@ -266,6 +297,13 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def route(self) -> None:
+        """Pull-scoped routes; repo-scoped ones are delegated.
+
+        Split in two along that seam rather than grown into one chain, because
+        a single dispatcher for all nine routes trips ruff's complexity limit —
+        and the limit is right that a ten-branch chain is where a route gets
+        added in the wrong place.
+        """
         if self.whole_request_mode():
             return
         parsed = urlparse(self.path)
@@ -280,14 +318,22 @@ class Handler(BaseHTTPRequestHandler):
             self.route_check_runs(m.group(3))
         elif m := self.COMMIT_STATUS.match(path):
             self.route_status(m.group(3))
-        elif self.BRANCH_LIST.match(path):
+        elif not self.route_repo_scoped(path, parsed):
+            self.send(404, {"message": "Not Found"})
+
+    def route_repo_scoped(self, path: str, parsed: ParseResult) -> bool:
+        """Branches, compare and the repo itself. True when it answered."""
+        if self.BRANCH_LIST.match(path):
             self.route_branch_list(parse_qs(parsed.query))
         elif m := self.BRANCH_ONE.match(path):
             self.route_branch_one(m.group(3))
+        elif m := self.COMPARE.match(path):
+            self.route_compare(m.group(3))
         elif self.REPO_ONE.match(path):
             self.route_repo()
         else:
-            self.send(404, {"message": "Not Found"})
+            return False
+        return True
 
     def route_list(self, query: dict[str, list[str]]) -> None:
         want = (query.get("head") or [""])[0]
@@ -386,6 +432,48 @@ class Handler(BaseHTTPRequestHandler):
             self.send(404, {"message": "Branch not found"})
             return
         self.send(200, {"name": name, "commit": {"sha": f"sha-{name}"}})
+
+    def route_compare(self, refs: str) -> None:
+        """`base...head` — the change stat the manager caches per tree.
+
+        Keyed on the HEAD ref only. Split on the LAST `...` because a ref may
+        legitimately contain dots (`release/2.x`).
+
+        Deliberately no truncated-diff fixture: 300 files is covered in-process,
+        and a mode only one assertion reaches is a mode that rots.
+        """
+        if MODE == "nocompare":
+            # Compare alone fails, so the pull list still answers. This is what
+            # proves a lost stat does not cost the row its pull requests.
+            self.send(404, {"message": "Not Found"})
+            return
+        head = refs.rsplit("...", 1)[-1]
+        if head == BRANCH:
+            # Distinct per file, so a client that sums them wrong cannot pass.
+            self.send(200, {
+                "status": "ahead",
+                "ahead_by": 3,
+                "behind_by": 0,
+                # Deliberately DIFFERENT from ahead_by: the manager must report
+                # ahead_by as `commits`, and an equal value would not prove it.
+                "total_commits": 99,
+                "files": [
+                    {"filename": "a.py", "additions": 40, "deletions": 5},
+                    {"filename": "b.py", "additions": 2, "deletions": 11},
+                    {"filename": "c.md", "additions": 7, "deletions": 0},
+                ],
+            })
+            return
+        if head == DEFAULT_BRANCH:
+            # The honest-zeros arm: a real measurement, not an absence.
+            self.send(200, {
+                "status": "identical",
+                "ahead_by": 0, "behind_by": 0, "total_commits": 0, "files": [],
+            })
+            return
+        # Every other chat's branch was never pushed, which is the dominant
+        # steady state and must read as "no answer" rather than as zeros.
+        self.send(404, {"message": "Not Found"})
 
     def route_repo(self) -> None:
         if MODE == "nodefault":
