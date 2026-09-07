@@ -246,20 +246,28 @@ jobs:
       - name: check-units.sh --offline
         run: scripts/verify/check-units.sh --offline
 
-      # AC#5, discharged by construction rather than by argument. The manifests
-      # describe the installers; they must not touch them. Comment anchors would
-      # have needed an argument about test-base-install.sh's strip_noise(); an
-      # empty diff needs none.
-      - name: The installers are byte-identical to main
+      # AC#5 (#36), discharged by construction rather than by argument. The
+      # manifests describe the installers; they must not touch them. Comment
+      # anchors would have needed an argument about test-base-install.sh's
+      # strip_noise(); an empty diff needs none.
+      #
+      # NARROWED to the VPS installer by #37. scripts/mac/bootstrap-mac.sh is
+      # what #37 carves into selectable units, so a text freeze on it is no
+      # longer a statement about behaviour -- it is a veto on the ticket. The
+      # property the freeze was standing in for ("the Mac install does not
+      # change") is now asserted directly and more strongly by assertion A14b in
+      # scripts/verify/test-base-install.sh: it runs the pre-carve blob and the
+      # working tree into two fake $HOMEs and diffs the resulting trees, which
+      # catches a behaviour change that a byte-identical-source rule can only
+      # approximate. deploy-vps.sh has no such differential, so it stays frozen.
+      - name: The VPS installer is byte-identical to main
         if: github.event_name == 'pull_request'
         run: |
           set -euo pipefail
           git fetch --quiet origin main
-          if ! git diff --quiet origin/main -- \
-              scripts/mac/bootstrap-mac.sh scripts/vps/deploy-vps.sh; then
-            echo "::error::#36 must not change install behaviour, and an installer changed:"
-            git diff --stat origin/main -- \
-              scripts/mac/bootstrap-mac.sh scripts/vps/deploy-vps.sh
+          if ! git diff --quiet origin/main -- scripts/vps/deploy-vps.sh; then
+            echo "::error::a manifest/data PR must not change VPS install behaviour, and scripts/vps/deploy-vps.sh changed:"
+            git diff --stat origin/main -- scripts/vps/deploy-vps.sh
             exit 1
           fi
 

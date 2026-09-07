@@ -22,7 +22,9 @@
 # E1..E2) so a failure names the thing the installer did not do, rather than the
 # line that happened to notice. Two ids are this file's own: E1b, because E1 as
 # written cannot fail the way its negative control claims (see phase E), and
-# D-deny, which extends the deny-PATH invariant over the check-goose step.
+# D-deny, which extends the deny-PATH invariant over the check-goose step. A14
+# is now A14a + A14b -- the seam's SHAPE and the installer's OUTPUT are two
+# claims, and #37 makes only the first of them expressible as a diff of source.
 #
 # THE BREW GOLDEN IS HAND-WRITTEN, and that is not a style choice. It is typed
 # out below from the shapes bootstrap-mac.sh is supposed to emit, NEVER derived
@@ -81,7 +83,7 @@ REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 
 usage() {
   cat <<'EOF'
-Usage: test-base-install.sh [--only brew|goose|providers|routing] [--help]
+Usage: test-base-install.sh [--only brew|goose|providers|routing|select] [--help]
 
 Runs bootstrap-mac.sh and the verify checks against the fakes in this
 directory, in a throwaway $HOME, with no network and fixture keys.
@@ -92,6 +94,12 @@ directory, in a throwaway $HOME, with no network and fixture keys.
   --only goose       phase A + check-goose.sh against fake-provider.py
   --only providers   phase A + check-providers.sh, and the phase E default-
                      endpoint proof
+  --only select      the selective-install phases (--with/--without/--only and
+                     --dry-run on bootstrap-mac.sh). EMPTY TODAY, on purpose:
+                     the leg name is the contract the workflow steps and the
+                     later phases are written against, so it lands before there
+                     is anything to run rather than with it. Until then this is
+                     phase A and nothing else.
   (no flag)          all of it
 
 Needs python3 with PyYAML (bootstrap compares config/pins.yaml with it) and
@@ -111,7 +119,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$ONLY" in
-  ""|brew|goose|providers|routing) ;;
+  ""|brew|goose|providers|routing|select) ;;
   *) echo "test-base-install.sh: unknown --only leg: $ONLY" >&2; usage >&2; exit 2 ;;
 esac
 
@@ -142,9 +150,15 @@ die() { echo "test-base-install.sh: $*" >&2; exit 2; }
 # Everything the installer, the fakes and the two checks shell out to under the
 # scrubbed PATH. `bash` and `env` are on it because every script here starts
 # `#!/usr/bin/env bash`, and env resolves bash through PATH.
-REQUIRED_TOOLS="bash env python3 curl grep sed head tail tr cat cp mv rm mkdir chmod basename dirname mktemp"
+#
+# `cmp` is on the list for the installer's sake, not this harness's: the render
+# reconciliation (#37) compares a rendered temp against the destination before
+# it decides to rewrite it, and $WORK/pathmin is built from exactly this list.
+# A `cmp` the installer can reach here but not in pathmin would exit 127 under
+# `set -e` -- a failure with no relation to what the assertion is about.
+REQUIRED_TOOLS="bash env python3 curl grep sed head tail tr cat cmp cp mv rm mkdir chmod basename dirname mktemp"
 # timeout/gtimeout: check-goose.sh:74-80 falls back to running unbounded, so a
-# Mac without coreutils is fine. git: only assertion A14 needs it.
+# Mac without coreutils is fine. git: only assertion A14b needs it.
 OPTIONAL_TOOLS="timeout gtimeout git"
 
 MISSING=""
@@ -270,6 +284,14 @@ run_bootstrap() {
   # INVARIANT, which is the one assertion that names that exact failure. An
   # empty log weakens nothing: the golden diff fails on it, and so does A2.
   : >"$2"
+  # `</dev/null` — stdin is CLOSED, deliberately, and it is an assertion in the
+  # shape of a redirection. The installer is a non-interactive program; the
+  # moment it grows a `read -r -p` (#37's prompted values) an inherited
+  # terminal would make this harness hang waiting for a human in CI, and an
+  # inherited pipe would feed it whatever the caller happened to be piping.
+  # With /dev/null the read returns EOF immediately, which is the same answer a
+  # cron/CI run gets on a real Mac -- so the path under test is the one that
+  # actually ships.
   PATH="$BOOT_PATH" \
   PAI_EXEC="$REPO_ROOT/scripts/verify/fake-exec.sh" \
   PAI_FAKE_ROOT="$WORK" \
@@ -278,7 +300,7 @@ run_bootstrap() {
   FAKE_BREW_STATE="$STATE" \
   FAKE_BREW_PREFIX="$PREFIX" \
   FAKE_GOOSE_VERSION="$3" \
-    "$REPO_ROOT/scripts/mac/bootstrap-mac.sh" >"$1" 2>&1 || rc=$?
+    "$REPO_ROOT/scripts/mac/bootstrap-mac.sh" >"$1" 2>&1 </dev/null || rc=$?
   echo "$rc"
 }
 
@@ -715,41 +737,33 @@ fi
 # ---- 8. structural — the seam itself ----------------------------------------
 if leg routing; then
   echo
-  echo "== structural: the seam, the containment gate and the HOME interlock =="
+  echo "== structural: the seam, the pre-carve differential, the gate, the interlock =="
 
-  # A14 (AC4) — PAI_EXEC unset is a strict no-op, proved by unwinding the seam
-  # and comparing what is left against the pre-seam file from git history.
+  # A14a (AC4) — THE SEAM IS EXACTLY THESE 17 LINES, and nothing outside them
+  # reads $PAI_EXEC.
   #
-  # Located rather than hardcoded: the newest commit touching bootstrap-mac.sh
-  # whose blob has no `pai_exec` IS the file before the seam, on this branch and
-  # on any later one. A shallow clone cannot answer that, so this SKIPS loudly
-  # rather than passing vacuously -- a structural assertion that quietly
-  # degrades to green is the failure this whole file exists to prevent.
-  PRE_SEAM=""
-  if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
-    for sha in $(git -C "$REPO_ROOT" rev-list HEAD -- scripts/mac/bootstrap-mac.sh 2>/dev/null || true); do
-      if git -C "$REPO_ROOT" show "$sha:scripts/mac/bootstrap-mac.sh" 2>/dev/null | grep -q 'pai_exec'; then
-        continue
-      fi
-      PRE_SEAM="$sha"
-      break
-    done
-  fi
+  # This REPLACES the older A14, which sed-unwound the seam and diffed the whole
+  # file against the pre-seam blob from git history. That assertion could only
+  # hold while bootstrap-mac.sh's executable text stayed frozen at its pre-seam
+  # shape, and #37 changes that text on purpose (the shared brew/skill helpers,
+  # then the carve into unit functions). An unwind cannot reproduce text that no
+  # longer exists. So the two things A14 was really proving are now asserted
+  # separately, and each one more directly than the diff did:
+  #
+  #   A14a (here)   the seam is this block verbatim, and no second, undocumented
+  #                 substitution point has appeared next to it
+  #   A14b (below)  the pre-carve installer and this one write the SAME tree
+  #                 into a fake $HOME -- the behaviour the whole-file diff was
+  #                 only ever a proxy for, asserted on output instead of source
+  #
+  # Comments and blank lines go first: a comment cannot change what a Mac does,
+  # and both #37 and the seam before it add paragraphs of them.
+  strip_noise() { grep -vE '^[[:space:]]*(#|$)' "$1"; }
 
-  if [ -z "$PRE_SEAM" ]; then
-    skipped "A14: no pre-seam revision of bootstrap-mac.sh reachable (shallow clone? needs fetch-depth: 0)"
-  else
-    git -C "$REPO_ROOT" show "$PRE_SEAM:scripts/mac/bootstrap-mac.sh" >"$WORK/orig.sh"
-    # Comments and blank lines are stripped from BOTH sides first: the seam adds
-    # a documented paragraph (AC5) and several WHY comments, and a comment
-    # cannot change what a Mac does. What is left is executable text, and it has
-    # to be identical modulo the two inert additions and the hoist.
-    strip_noise() { grep -vE '^[[:space:]]*(#|$)' "$1"; }
-
-    # The seam, typed out from the spec rather than cut from the file it checks:
-    # this doubles as "the seam is exactly these 17 lines and nothing else", so
-    # a future edit to the helpers or the gate has to be re-justified here.
-    cat >"$WORK/seam-block.txt" <<'EOF'
+  # The seam, typed out from the spec rather than cut from the file it checks,
+  # so a future edit to the helpers or to the containment gate has to be
+  # re-justified HERE rather than absorbed silently.
+  cat >"$WORK/seam-block.txt" <<'EOF'
 pai_exec() { ${PAI_EXEC:+"$PAI_EXEC"} "$@"; }
 pai_have() {
   if [ -n "${PAI_EXEC:-}" ]; then
@@ -770,14 +784,13 @@ if [ -n "${PAI_EXEC:-}" ]; then
   }
 fi
 EOF
-    strip_noise "$REPO_ROOT/scripts/mac/bootstrap-mac.sh" >"$WORK/patched-code.txt"
-    strip_noise "$WORK/orig.sh" >"$WORK/orig-code.txt"
+  strip_noise "$REPO_ROOT/scripts/mac/bootstrap-mac.sh" >"$WORK/patched-code.txt"
 
-    # Cut the seam block out as a contiguous run (python3, because a line-wise
-    # `grep -v` would also delete the `fi`, `}` and `exit 2` lines that belong
-    # to the rest of the script).
-    A14_CUT=0
-    "$WORK/pathmin/python3" -c '
+  # Cut the seam block out as a contiguous run (python3, because a line-wise
+  # `grep -v` would also delete the `fi`, `}` and `exit 2` lines that belong to
+  # the rest of the script).
+  A14_CUT=0
+  "$WORK/pathmin/python3" -c '
 import sys
 code = open(sys.argv[1]).read().splitlines()
 seam = open(sys.argv[2]).read().splitlines()
@@ -791,48 +804,119 @@ del code[i:i + len(seam)]
 open(sys.argv[3], "w").write("\n".join(code) + "\n")
 ' "$WORK/patched-code.txt" "$WORK/seam-block.txt" "$WORK/unseamed.txt" || A14_CUT=1
 
-    if [ "$A14_CUT" -ne 0 ]; then
-      bad "A14: the seam in bootstrap-mac.sh is not the block this harness was written against"
+  if [ "$A14_CUT" -ne 0 ]; then
+    bad "A14a: the seam in bootstrap-mac.sh is not the block this harness was written against"
+  else
+    # `pai_exec`/`pai_have` CALLS are expected all through what is left -- that
+    # is the seam being used. A bare $PAI_EXEC out there is a different thing:
+    # a second dispatcher, or a guard that decides for itself what "under test"
+    # means, either of which the containment gate above would never see.
+    A14_RESIDUE="$(count_in "$WORK/unseamed.txt" 'PAI_EXEC')"
+    { grep -nE 'PAI_EXEC' "$WORK/unseamed.txt" || true; } >"$WORK/a14a-residue.txt"
+    [ "$A14_RESIDUE" -eq 0 ] &&
+      ok "A14a: the seam is exactly the 17 lines this harness names, and PAI_EXEC is read nowhere else" || {
+      bad "A14a: PAI_EXEC is read outside the seam block ($A14_RESIDUE line(s))"
+      evidence "$WORK/a14a-residue.txt"
+    }
+  fi
+
+  # A14b (AC1) — THE OUTPUT DIFFERENTIAL, and the reason #37 is allowed to touch
+  # this installer at all.
+  #
+  # Run the PRE-CARVE bootstrap-mac.sh (a blob out of git, pinned by sha) and
+  # the one in this working tree into two fake $HOMEs, and diff the trees. The
+  # claim "the carve changes no behaviour" is then a measurement, not a review
+  # opinion -- and it covers what nothing else here does: the 30 OpenCode agents
+  # and the files INSIDE the 12 skill directories (A6 compares 8 named files,
+  # A7 only checks that 12 directory names exist).
+  #
+  # THE NEW SIDE IS $REPO_ROOT, NEVER `git archive HEAD`. A differential between
+  # two committed blobs is green on a laptop whose working tree is broken, and
+  # this harness advertises laptop use in its header.
+  #
+  # PINNED, not located: the pre-carve revision is a fact about #37's history,
+  # not something a rule over the file could still find once the carve has
+  # landed (every later blob has unit functions in it). Bump it only when the
+  # baseline it names is deliberately being moved forward.
+  PRE_CARVE_SHA="5f016b3736d7ec017d30e4d98e61197958f3dae9"
+
+  A14B_HAVE_GIT=0
+  if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1 &&
+     git -C "$REPO_ROOT" cat-file -e "$PRE_CARVE_SHA:scripts/mac/bootstrap-mac.sh" 2>/dev/null; then
+    A14B_HAVE_GIT=1
+  fi
+
+  if [ "$A14B_HAVE_GIT" -ne 1 ]; then
+    # Loud SKIP, never a silent pass: install-test.yml's `fetch-depth: 0` is
+    # what makes this reachable in CI, and a differential that degrades to green
+    # when history is absent proves nothing at the moment it matters most.
+    skipped "A14b: pre-carve blob ${PRE_CARVE_SHA:0:9} is not in this clone (shallow? needs fetch-depth: 0)"
+  else
+    # A SHADOW TREE, entirely inside $WORK: config/ and scripts/verify/ are
+    # symlinked to the real ones (the fakes and the templates are inputs to both
+    # sides and must be the same inputs), and only scripts/mac/bootstrap-mac.sh
+    # is the archived blob. bootstrap-mac.sh derives REPO_ROOT from BASH_SOURCE
+    # with a LOGICAL pwd, so it resolves to $WORK/pre-carve and its own
+    # containment gate accepts $WORK/pre-carve/scripts/verify/fake-exec.sh.
+    # Nothing is written into the checkout.
+    SHADOW="$WORK/pre-carve"
+    mkdir -p "$SHADOW/scripts/mac"
+    # NORMALISED, and not for tidiness: macOS's $TMPDIR ends in a slash, so
+    # $WORK carries a `//` that `cd`+`pwd` inside bootstrap-mac.sh collapses
+    # when it derives REPO_ROOT. The containment gate then compares a collapsed
+    # REPO_ROOT against an uncollapsed PAI_EXEC with a lexical `case`, refuses
+    # it, and the whole differential exits 2 for a reason that has nothing to do
+    # with the installer. (Measured: this is exactly how it failed first.)
+    SHADOW="$(cd "$SHADOW" && pwd)"
+    ln -sfn "$REPO_ROOT/config" "$SHADOW/config"
+    ln -sfn "$REPO_ROOT/scripts/verify" "$SHADOW/scripts/verify"
+    git -C "$REPO_ROOT" show "$PRE_CARVE_SHA:scripts/mac/bootstrap-mac.sh" \
+      >"$SHADOW/scripts/mac/bootstrap-mac.sh"
+    chmod 755 "$SHADOW/scripts/mac/bootstrap-mac.sh"
+
+    run_bootstrap_at() {
+      # run_bootstrap_at <script> <home> <pai-exec> <tag>; echoes rc.
+      # Same seam wiring as run_bootstrap, but with the script, the $HOME and
+      # the brew state all parameterised, because the whole point is two runs
+      # that share NOTHING except the repo's config/ and the fakes. A shared
+      # FAKE_BREW_STATE would make the second run take the idempotent path and
+      # install nothing, and the diff would then compare a full tree against
+      # itself-from-the-first-run.
+      local rc=0
+      mkdir -p "$2" "$WORK/state-$4" "$WORK/prefix-$4"
+      : >"$WORK/brew-$4.log"
+      HOME="$2" \
+      PATH="$BOOT_PATH" \
+      PAI_EXEC="$3" \
+      PAI_FAKE_ROOT="$WORK" \
+      PAI_DENY_LOG="$WORK/deny-$4.log" \
+      FAKE_BREW_LOG="$WORK/brew-$4.log" \
+      FAKE_BREW_STATE="$WORK/state-$4" \
+      FAKE_BREW_PREFIX="$WORK/prefix-$4" \
+      FAKE_GOOSE_VERSION="$PINS_VERSION" \
+        "$1" >"$WORK/out/$4.log" 2>&1 </dev/null || rc=$?
+      echo "$rc"
+    }
+
+    A14B_PRE_RC="$(run_bootstrap_at "$SHADOW/scripts/mac/bootstrap-mac.sh" \
+      "$WORK/home-pre" "$SHADOW/scripts/verify/fake-exec.sh" "pre")"
+    A14B_POST_RC="$(run_bootstrap_at "$REPO_ROOT/scripts/mac/bootstrap-mac.sh" \
+      "$WORK/home-post" "$REPO_ROOT/scripts/verify/fake-exec.sh" "post")"
+
+    # THE SELF-TEST. `diff -r` over two empty directories is also empty, so a
+    # pre-carve run that died at its first line would satisfy the diff while
+    # proving nothing. 61 is what a no-flag run writes today (8 config
+    # templates + 30 OpenCode agents + the files inside the 12 skills);
+    # `-ge` rather than `-eq` so adding a skill is not a failure here -- A6/A7
+    # and this diff's own right-hand side are what police the contents.
+    A14B_FILES="$(find "$WORK/home-pre" -type f | wc -l | tr -d ' ')"
+
+    if [ "$A14B_PRE_RC" = "0" ] && [ "$A14B_POST_RC" = "0" ] && [ "$A14B_FILES" -ge 61 ] &&
+       diff -r "$WORK/home-pre" "$WORK/home-post" >"$WORK/a14b.diff" 2>&1; then
+      ok "A14b: the working tree installs the same $A14B_FILES-file \$HOME as pre-carve ${PRE_CARVE_SHA:0:9}"
     else
-      # THE UNWIND, verbatim from the spec: strip the `pai_exec ` prefix and put
-      # `command -v ... >/dev/null 2>&1` back where `pai_have` stands. Then the
-      # hoisted pair is removed from both sides -- moving a pure `cd/dirname/pwd`
-      # assignment past a `uname` test is the one intentional change, and it is
-      # asserted separately below rather than being allowed to hide in the diff.
-      sed -e 's/pai_exec //g' \
-          -e 's|pai_have \([a-z]*\)|command -v \1 >/dev/null 2>\&1|' \
-          "$WORK/unseamed.txt" | grep -vE '^(SCRIPT_DIR|REPO_ROOT)=' >"$WORK/unwound.txt"
-      grep -vE '^(SCRIPT_DIR|REPO_ROOT)=' "$WORK/orig-code.txt" >"$WORK/orig-nohoist.txt"
-
-      # In the patched file SCRIPT_DIR must come BEFORE the platform guard (the
-      # containment gate needs REPO_ROOT); in the original it came after it.
-      # Each anchor is located on its own -- a single grep would return the two
-      # hits in FILE order, which is the same list either way and could never
-      # tell the two arrangements apart.
-      # `|| true` is load bearing: a NO-MATCH is a legitimate outcome here (it
-      # is what a moved or unrouted guard looks like), and the HOIST_OK tests
-      # below already treat an empty answer as a failure. Without it, grep's
-      # exit 1 propagates through `pipefail` into an assignment and `set -e`
-      # kills the harness before A14 reports and before A15/A16 run at all.
-      line_of() { { grep -nE "$2" "$1" || true; } | head -1 | cut -d: -f1; }
-      SD_PATCHED="$(line_of "$WORK/patched-code.txt" '^SCRIPT_DIR=')"
-      GUARD_PATCHED="$(line_of "$WORK/patched-code.txt" '^if \[ "\$\(pai_exec uname -s\)"')"
-      SD_ORIG="$(line_of "$WORK/orig-code.txt" '^SCRIPT_DIR=')"
-      GUARD_ORIG="$(line_of "$WORK/orig-code.txt" '^if \[ "\$\(uname -s\)"')"
-      HOIST_OK=0
-      [ -n "$SD_PATCHED" ] && [ -n "$GUARD_PATCHED" ] && [ "$SD_PATCHED" -lt "$GUARD_PATCHED" ] &&
-        HOIST_OK=$((HOIST_OK + 1))
-      [ -n "$SD_ORIG" ] && [ -n "$GUARD_ORIG" ] && [ "$SD_ORIG" -gt "$GUARD_ORIG" ] &&
-        HOIST_OK=$((HOIST_OK + 1))
-
-      A14_RESIDUE="$(count_in "$WORK/unwound.txt" 'pai_exec|pai_have|PAI_EXEC')"
-      if diff -u "$WORK/orig-nohoist.txt" "$WORK/unwound.txt" >"$WORK/a14.diff" 2>&1 &&
-         [ "$A14_RESIDUE" -eq 0 ] && [ "$HOIST_OK" -eq 2 ]; then
-        ok "A14: the sed-unwind of the seam is byte-identical to the pre-seam script (${PRE_SEAM:0:9}), hoist aside"
-      else
-        bad "A14: unwinding the seam does not reproduce the pre-seam script (residue=$A14_RESIDUE, hoist=$HOIST_OK/2)"
-        evidence "$WORK/a14.diff"
-      fi
+      bad "A14b: the installed tree differs from pre-carve ${PRE_CARVE_SHA:0:9} (pre rc=$A14B_PRE_RC, post rc=$A14B_POST_RC, files=$A14B_FILES want >=61)"
+      evidence "$WORK/a14b.diff"
     fi
   fi
 
@@ -840,7 +924,7 @@ open(sys.argv[3], "w").write("\n".join(code) + "\n")
   # must not become a way to skip the platform guard.
   A15_ERR="$WORK/out/a15.err"; A15_RC=0
   PATH="$BOOT_PATH" PAI_DENY_LOG="$WORK/deny-a15.log" PAI_EXEC="/bin/true" \
-    "$REPO_ROOT/scripts/mac/bootstrap-mac.sh" >/dev/null 2>"$A15_ERR" || A15_RC=$?
+    "$REPO_ROOT/scripts/mac/bootstrap-mac.sh" >/dev/null 2>"$A15_ERR" </dev/null || A15_RC=$?
   [ "$A15_RC" -eq 2 ] && grep -qF "scripts/verify/" "$A15_ERR" &&
     ok "A15: PAI_EXEC=/bin/true is refused with exit 2, naming scripts/verify/" || {
     bad "A15: the containment gate did not refuse /bin/true (exit $A15_RC)"
@@ -861,7 +945,7 @@ open(sys.argv[3], "w").write("\n".join(code) + "\n")
   PAI_FAKE_ROOT="$WORK/home" \
   FAKE_BREW_LOG="$A16_BREW" FAKE_BREW_STATE="$WORK/state-a16" \
   FAKE_BREW_PREFIX="$WORK/prefix-a16" FAKE_GOOSE_VERSION="$PINS_VERSION" \
-    "$REPO_ROOT/scripts/mac/bootstrap-mac.sh" >/dev/null 2>"$A16_ERR" || A16_RC=$?
+    "$REPO_ROOT/scripts/mac/bootstrap-mac.sh" >/dev/null 2>"$A16_ERR" </dev/null || A16_RC=$?
   [ "$A16_RC" -ne 0 ] && grep -qF "is not under PAI_FAKE_ROOT" "$A16_ERR" &&
     [ ! -e "$A16_BREW" ] && [ ! -e "$A16_HOME/.config" ] &&
     ok "A16: a HOME outside PAI_FAKE_ROOT is refused before any brew call or any write" || {
