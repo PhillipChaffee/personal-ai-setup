@@ -140,19 +140,67 @@ if [ "$MODE" = "local" ]; then
 else
   SCHEDULES="$(brain_exec /home/agent/.local/bin/goose schedule list 2>&1 || true)"
 fi
-EXPECTED="morning-brief inbox-triage weekly-review health-followups budget-checkin"
-MISSING=""
-for id in $EXPECTED; do
-  printf '%s' "$SCHEDULES" | grep -q "$id" || MISSING="$MISSING $id"
+# DERIVED from register-schedules.sh, never restated. A second hardcoded roster
+# here is what made this check fail permanently and unfixably on a brain with no
+# life vault: register-schedules.sh deliberately refuses to register
+# health-followups and budget-checkin until their vault inputs exist — and
+# actively UNREGISTERS them if an earlier deploy added them — so the remedy this
+# check printed ("run register-schedules.sh") removed them again.
+#
+# Deriving rather than duplicating follows pin-models.sh, which reads every
+# pinned model out of the files that declare them instead of keeping a list.
+REGISTER_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../vps" && pwd)/register-schedules.sh"
+ROSTER="$(sed -n 's/^ORDER=(\(.*\))$/\1/p' "$REGISTER_SH")"
+if [ -z "$ROSTER" ]; then
+  fail "could not read the schedule roster from register-schedules.sh"
+  ROSTER=""
+fi
+
+# The prerequisite map, read out of the same file's `declare -A PREREQ=(...)`.
+prereq_for() { # prereq_for <schedule-id>
+  awk -v want="$1" '
+    /^declare -A PREREQ=\(/ { inblock = 1; next }
+    inblock && /^\)/        { exit }
+    inblock && index($0, "[" want "]") {
+      sub(/^[^=]*="/, ""); sub(/"[[:space:]]*$/, ""); print; exit
+    }
+  ' "$REGISTER_SH"
+}
+
+MISSING=""; SKIPPED=""; FOUND=0; WANTED=0
+for id in $ROSTER; do
+  PREREQ="$(prereq_for "$id")"
+  # A schedule gated on a vault file that does not exist is CORRECTLY absent.
+  # Asked on the brain, not here: /data/life-vault only exists there.
+  if [ -n "$PREREQ" ] && ! brain_exec test -e "$PREREQ" 2>/dev/null; then
+    SKIPPED="$SKIPPED $id"
+    continue
+  fi
+  WANTED=$((WANTED + 1))
+  if printf '%s' "$SCHEDULES" | grep -q "$id"; then
+    FOUND=$((FOUND + 1))
+  else
+    MISSING="$MISSING $id"
+  fi
 done
 if [ -z "$MISSING" ]; then
-  pass "goose schedule list shows all 5 schedules"
+  pass "goose schedule list shows all $WANTED schedule(s) this brain should have"
   echo "      (budget-checkin ships disabled/paused — that still counts; enable it"
   echo "       when finance/ledger.csv is real: docs/automations.md)"
 else
   fail "goose schedule list is missing:$MISSING"
   echo "      Register them: scripts/vps/register-schedules.sh (idempotent). Raw list:"
   printf '%s\n' "$SCHEDULES" | sed 's/^/      | /'
+fi
+if [ -n "$SKIPPED" ]; then
+  # Not a finding. Phase 3 without Phase 4 is a documented resting point, and
+  # these are absent BY DESIGN until the vault is real.
+  note "not expected yet (life-vault inputs absent):$SKIPPED"
+  for id in $SKIPPED; do
+    echo "      $id needs $(prereq_for "$id")"
+  done
+  echo "      Phase 4 creates them (docs/setup/60-vault-setup.md). REGISTER_ALL=1"
+  echo "      registers them anyway, which schedules a weekly failure until then."
 fi
 
 # ---- 4. live fire: run-now morning-brief (optional) -------------------------
@@ -202,8 +250,9 @@ Nothing can verify this for you; do it once, now:
       docs/setup/40-phone-setup.md) -> the SAME session is listed; open it,
       reply from the phone.
   [ ] Desktop -> the phone's reply appears in the same session.
-  [ ] Desktop Scheduler UI -> the 5 schedules are visible; the run-now run
-      from check 4 shows up in its per-schedule session history.
+  [ ] Desktop Scheduler UI -> the schedules check 3 listed are visible (three
+      before the life vault exists, five after); the run-now run from check 4
+      shows up in its per-schedule session history.
 
 All boxes ticked = shared sessions.db confirmed across surfaces.
 EOF
