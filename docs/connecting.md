@@ -60,6 +60,47 @@ connection.
 or whether the `session/…` call is always required. The workflow issues both, so the
 happy path is correct either way.)*
 
+### The client: `scripts/pai/goosecfg.py`
+
+One adapter, imported rather than re-implemented, by `scripts/verify/check-connectors.sh
+--acp-roundtrip` and (from #34) by `pai doctor --fix`. It is stdlib-only and prints nothing:
+failures are typed exceptions carrying a machine-readable reason, and the prose belongs to
+whichever surface has a reader.
+
+Its one rule: **success from a write is not evidence.** `config/extensions/add` accepts
+camelCase `availableTools`, answers `{"result":{}}`, and stores an entry with *no allowlist
+key at all*; `config/extensions/remove` answers `{"result":{}}` for a key that has never
+existed. So every write is followed by a read-back that has to agree, and only the read-back
+is believed.
+
+**Where the server comes from, and when there must not be one.**
+
+| Situation | What happens |
+|---|---|
+| `GOOSE_ACP_URL` is set | that server is used and **nothing is spawned** |
+| nothing is set, no `goose serve` is running for this uid | an ephemeral `goose serve` on loopback, killed and proven closed afterwards |
+| a `goose serve` is already running for this uid | **refused**, naming `GOOSE_ACP_URL` as the remedy |
+
+The last row is the brain. `goose-serve.service` holds a permanent server on the same config
+directory (`GOOSE_PATH_ROOT=/data/goose`), and two writers on one `config.yaml` is a lost
+update, not a race anything can win. So on the brain:
+
+```bash
+export GOOSE_ACP_URL=https://127.0.0.1:3284/acp
+set -a; . /data/secrets.env; set +a      # GOOSE_SERVER__SECRET_KEY, by name only
+```
+
+The ephemeral server needs **no `--dangerously-unauthenticated`**: a fresh
+`secrets.token_hex(32)` goes into the child's environment as `GOOSE_SERVER__SECRET_KEY` and
+comes back as the `X-Secret-Key` header. Verified against 1.46.0 — no header 401, wrong key
+401, right key 200, plain http on loopback. The secret is never printed, never logged, and
+never on the argv where `ps` would show it; it *is* in the child's environment, which the
+same uid can read, and that residual is strictly smaller than turning authentication off.
+
+Offline test double: `scripts/verify/fake-goose-acp.py`, which reproduces the measured
+misbehaviours above (and a dozen more) so `scripts/verify/test-pai.sh` can drive every arm
+without a real goose.
+
 ## Which direction does traffic go?
 
 The brain has **zero public inbound ports** ([`security.md`](security.md)), which raises an

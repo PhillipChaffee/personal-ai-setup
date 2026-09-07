@@ -213,6 +213,18 @@ if ! python3 -c 'import yaml' >/dev/null 2>&1; then
   fi
 fi
 
+# THE ACP CLIENT IS NOT IN THIS FILE ANY MORE. scripts/pai/goosecfg.py owns the
+# transport, the read-back contract and the method list; the two checkers that
+# speak ACP import it rather than carrying a second copy that can drift from the
+# one `pai doctor --fix` uses.
+#
+# A PREFIX, NOT AN EXPORT: --smoke launches MCP servers as child processes, and
+# an exported PYTHONPATH would put scripts/pai/ on the import path of every one
+# of them, where a module called `doctor` is a plausible name to shadow. Written
+# as `env VAR=... cmd` so it survives $PY being `uv run`, which honours the
+# environment but not a -m path.
+PYPATH=(env "PYTHONPATH=$REPO_ROOT/scripts/pai${PYTHONPATH:+:$PYTHONPATH}")
+
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 OUT_FILE="$WORK/out"
@@ -304,19 +316,35 @@ import sys
 import yaml
 
 # The eleven methods this feature calls. All verified present at v1.46.0.
-METHODS = [
+#
+# FIVE OF THEM ARE NOT WRITTEN HERE. They are imported from
+# scripts/pai/goosecfg.ACP_METHODS -- the only code in this repo that actually
+# calls them -- so the gate and the caller cannot drift: adding a call there
+# adds it to the contract assertion here, in the same commit, without anyone
+# remembering to. It is also the one place anything OFFLINE executes
+# `import goosecfg`; --offline is the only mode any workflow runs and no
+# workflow passes --acp-roundtrip, so without this a PYTHONPATH typo would ship
+# green. A failed import is a NAMED failure below, never a silently short list.
+#
+# The other six have no single caller to import from: docs/connecting.md's
+# adapter names them, and a session-scoped extension is added by goose itself.
+ADAPTER_METHODS = [
     "_goose/unstable/extensions/available",
-    "_goose/unstable/config/extensions/list",
-    "_goose/unstable/config/extensions/add",
-    "_goose/unstable/config/extensions/remove",
-    "_goose/unstable/config/extensions/set-enabled",
     "_goose/unstable/session/extensions/add",
     "_goose/unstable/session/extensions/remove",
     "_goose/unstable/session/extensions/list",
     "_goose/unstable/config/upsert",
-    "_goose/unstable/config/read",
     "_goose/unstable/config/remove",
 ]
+
+try:
+    from goosecfg import ACP_METHODS as CLIENT_METHODS
+    IMPORT_ERROR = ""
+except Exception as exc:                                    # noqa: BLE001
+    CLIENT_METHODS = ()
+    IMPORT_ERROR = "%s: %s" % (type(exc).__name__, exc)
+
+METHODS = sorted(set(ADAPTER_METHODS) | set(CLIENT_METHODS))
 
 MODE = sys.argv[1]
 TAG = ""
@@ -366,6 +394,14 @@ def extension_fields(schema):
 
 def audit_methods(names):
     passes, failures = [], []
+    if IMPORT_ERROR:
+        failures.append((
+            "scripts/pai/goosecfg.py could not be imported: %s" % IMPORT_ERROR,
+            "The ACP method list this check asserts comes from goosecfg.ACP_METHODS, so",
+            "an unimportable module means five of the eleven methods went unchecked.",
+            "PYTHONPATH is set by check-connectors.sh; a syntax error in goosecfg.py or a",
+            "missing scripts/pai/ is the usual cause.",
+        ))
     missing = [m for m in METHODS if m not in names]
     if missing:
         failures.append((
@@ -1782,6 +1818,12 @@ deny_unknown_fields — leaves an extension configured with an EMPTY allowlist,
 and an empty allowlist means every tool is allowed. The only way to see that is
 to read it back from the agent that persisted it.
 
+THE TRANSPORT IS NOT HERE. scripts/pai/goosecfg.py owns the ACP session, the
+JSON-RPC framing, the SSE reply channel, the TLS downgrade and the read-back
+proof itself; this file supplies the manifests, the prose and the cleanup. Two
+copies of that client is exactly how `pai doctor --fix` and this check would
+come to disagree about what "goose kept it" means.
+
 What it does, per extension in the manifest:
 
   * if the extension is already configured, assert the LIVE entry's allowlist
@@ -1793,33 +1835,27 @@ What it does, per extension in the manifest:
 goose's own config only, needs none of the connector's credentials, and leaves
 the config exactly as it found it.
 
-Transport: POST /acp for requests; goose assigns a connection id in the
-`acp-connection-id` response header on `initialize` and every later request
-carries it back as `Acp-Connection-Id`. Replies to those later calls may arrive
-on the separate `GET /acp` SSE channel rather than in the POST body, so both are
-read.
+A BEHAVIOUR CHANGE, stated because it is deliberate: a camelCase spelling used
+to be a NOTE here and the check carried on. goosecfg.prove_allowlist raises, so
+it is a FAIL. An allowlist goose did not store under the name goose reads is
+not a curiosity about spelling, it is every tool allowed.
 
-Never prints a secret. GOOSE_SERVER__SECRET_KEY is sent as a header and never
-echoed; manifests carry credential NAMES only and this mode neither reads nor
-writes any credential.
+Never prints a secret. GOOSE_SERVER__SECRET_KEY is read by goosecfg, sent as a
+header and never echoed; manifests carry credential NAMES only and this mode
+neither reads nor writes any credential.
 """
-import json
+import contextlib
 import os
-import queue
 import re
-import ssl
 import sys
-import threading
-import time
-import urllib.error
-import urllib.request
 
 import yaml
+
+import goosecfg
 
 MANIFEST, URL = sys.argv[1:3]
 DEADLINE_S = float(sys.argv[3]) if len(sys.argv) > 3 else 30.0
 SECRET = os.environ.get("GOOSE_SERVER__SECRET_KEY", "")
-PROTOCOL_VERSION = 1
 
 doc = yaml.safe_load(open(MANIFEST, encoding="utf-8"))
 STEM = str(doc.get("id") or os.path.basename(MANIFEST))
@@ -1851,166 +1887,50 @@ def info(line):
     print("      | %s" % line)
 
 
-VERIFIED_CTX = ssl.create_default_context()
-UNVERIFIED_CTX = ssl._create_unverified_context()      # noqa: S323
-STATE = {"ctx": VERIFIED_CTX, "downgraded": False, "conn": ""}
-
-
-def headers(extra=None):
-    h = {"Content-Type": "application/json"}
-    if SECRET:
-        h["X-Secret-Key"] = SECRET
-    if STATE["conn"]:
-        h["Acp-Connection-Id"] = STATE["conn"]
-    h.update(extra or {})
-    return h
-
-
-def open_url(req):
-    """urlopen, downgrading TLS verification once. goose serve's certificate is
-    self-signed by design — real clients pin its fingerprint instead — so a
-    verified handshake fails on a correctly configured brain. The downgrade is
-    announced, and this probe is loopback/tailnet only."""
-    try:
-        return urllib.request.urlopen(req, timeout=DEADLINE_S, context=STATE["ctx"])
-    except urllib.error.URLError as exc:
-        if isinstance(getattr(exc, "reason", None), ssl.SSLError) and STATE["ctx"] is VERIFIED_CTX:
-            STATE["ctx"] = UNVERIFIED_CTX
-            STATE["downgraded"] = True
-            return urllib.request.urlopen(req, timeout=DEADLINE_S, context=UNVERIFIED_CTX)
-        raise
-
-
-def rpc(rid, method, params=None):
-    frame = {"jsonrpc": "2.0", "method": method, "params": params or {}}
-    if rid is not None:
-        frame["id"] = rid
-    return json.dumps(frame).encode()
-
-
-def post(rid, method, params=None, extra=None):
-    """-> (status, parsed body or None, response headers). Raises on transport."""
-    req = urllib.request.Request(URL, data=rpc(rid, method, params),
-                                 headers=headers(extra), method="POST")
-    try:
-        with open_url(req) as resp:
-            return resp.status, parse_body(resp.read().decode("utf-8", "replace")), dict(resp.headers)
-    except urllib.error.HTTPError as exc:
-        return exc.code, None, dict(exc.headers or {})
-
-
-def parse_body(text):
-    text = (text or "").strip()
-    if not text:
-        return None
-    if text.startswith("{"):
-        try:
-            return json.loads(text)
-        except ValueError:
-            return None
-    for line in text.splitlines():
-        line = line.strip()
-        if line.startswith("data:"):
-            try:
-                return json.loads(line[5:].strip())
-            except ValueError:
-                continue
-    return None
-
-
-REPLIES = queue.Queue()
-
-
-def sse_pump():
-    req = urllib.request.Request(
-        URL, headers=headers({"Accept": "text/event-stream"}), method="GET")
-    try:
-        with open_url(req) as resp:
-            for raw in resp:
-                line = raw.decode("utf-8", "replace").strip()
-                if line.startswith("data:"):
-                    msg = parse_body(line)
-                    if isinstance(msg, dict):
-                        REPLIES.put(msg)
-    except Exception:                                       # noqa: BLE001
-        pass
-    finally:
-        REPLIES.put(None)
-
-
-RID = [1]
-
-
-def call(method, params=None):
-    """One JSON-RPC request. -> (result, error_text). Exactly one is None."""
-    RID[0] += 1
-    rid = RID[0]
-    try:
-        status, body, _ = post(rid, method, params)
-    except Exception as exc:                                # noqa: BLE001
-        return None, "transport error: %s" % type(exc).__name__
-    if status not in (200, 202):
-        return None, "HTTP %s" % status
-    if isinstance(body, dict) and body.get("id") == rid:
-        msg = body
-    else:
-        msg = None
-        deadline = time.monotonic() + DEADLINE_S
-        while msg is None:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return None, "timed out waiting for the reply to %s" % method
-            try:
-                candidate = REPLIES.get(timeout=remaining)
-            except queue.Empty:
-                return None, "timed out waiting for the reply to %s" % method
-            if candidate is None:
-                return None, "the SSE reply channel closed before %s answered" % method
-            if candidate.get("id") == rid:
-                msg = candidate
-    if "error" in msg:
-        err = msg["error"] or {}
-        return None, "JSON-RPC error %s: %s" % (err.get("code"), err.get("message"))
-    return msg.get("result") or {}, None
+# One paragraph per machine-readable reason. goosecfg deliberately carries no
+# prose — it is imported by `pai doctor --fix`, which has a different reader —
+# so the sentences live at the surface that has one, which is here.
+R = goosecfg.Reason
+ALLOWLIST_PROSE = {
+    R.ALLOWLIST_DROPPED: (
+        "the stored extension has NO allowlist field at all",
+        "This is the failure the whole feature exists to prevent: available_tools",
+        "absent becomes vec![], and an empty allowlist means EVERY TOOL IS ALLOWED.",
+        "Check the spelling in the manifest (snake_case `available_tools`), and",
+        "whether the running goose is the pinned version.",
+    ),
+    R.ALLOWLIST_MISSPELLED: (
+        "goose stored the allowlist under a name it does not read",
+        "goose returned the list under a different key, so the allowlist it enforces is",
+        "the EMPTY one — every tool allowed. Either the manifest is camelCase or the pin",
+        "has moved; re-verify config/connectors/README.md before trusting anything here.",
+    ),
+    R.ALLOWLIST_EMPTY: (
+        "the stored allowlist is EMPTY",
+        "Empty means every tool is allowed — the opposite of what it looks like.",
+        "Disable or remove this extension before using it: goose is configured to",
+        "let the agent call the server's entire surface.",
+    ),
+    R.ALLOWLIST_DIFFERS: (
+        "the stored allowlist is not what the manifest sent",
+        "Either goose dropped part of the payload, or the live config was narrowed",
+        "(or widened) by hand and the manifest is now fiction. Reconcile before use.",
+    ),
+}
 
 
 def norm(value):
     return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
 
 
-def allowlist_of(extension):
-    """The stored allowlist, and how it was spelled. goose writes
-    `available_tools` at 1.46.0; anything else coming back is itself the story."""
-    if not isinstance(extension, dict):
-        return None, None
-    for spelling in ("available_tools", "availableTools"):
-        if spelling in extension:
-            return extension.get(spelling), spelling
-    return None, None
-
-
 def find_entry(entries, want_name):
+    """goose derives configKey from the server name, but not always verbatim."""
     for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        ext = entry.get("extension") or {}
-        server = ext.get("server") or {}
-        candidates = [server.get("name"), entry.get("configKey"), ext.get("name")]
+        server = (entry.extension.get("server") or {})
+        candidates = [server.get("name"), entry.config_key, entry.extension.get("name")]
         if any(norm(c) == norm(want_name) for c in candidates if c):
             return entry
     return None
-
-
-def list_extensions():
-    result, err = call("_goose/unstable/config/extensions/list")
-    if err:
-        return None, err
-    entries = result.get("extensions")
-    if not isinstance(entries, list):
-        return None, "config/extensions/list returned no `extensions` array"
-    for warning in result.get("warnings") or []:
-        note("goose reports a config warning: %s" % warning)
-    return entries, None
 
 
 # ---- preflight --------------------------------------------------------------
@@ -2018,162 +1938,136 @@ if not EXTS:
     skipped("the manifest has no acp_extension to send")
     sys.exit(0)
 # NO PRE-EMPTIVE SECRET CHECK. There used to be one here, and it made the
-# local-check recipe this script itself prints impossible to follow: it names
-# `goose serve --dangerously-unauthenticated`, and then skipped against exactly
-# that server because it refused to ask. A skip on an explicitly requested mode
-# escalates to a failure below, so the printed recipe always failed.
+# local-check recipe this script itself prints impossible to follow: it skipped
+# against exactly the server it told you to start, because it refused to ask.
+# A skip on an explicitly requested mode escalates to a failure in the caller,
+# so the printed recipe always failed.
 #
 # An empty secret is not evidence of anything. Only the server can say whether
-# it wants authentication, so the taxonomy is emitted below from its ANSWER --
-# headers() already omits the header when SECRET is empty.
-
-try:
-    status, body, resp_headers = post(1, "initialize", {
-        "protocolVersion": PROTOCOL_VERSION,
-        "clientCapabilities": {"fs": {"readTextFile": False, "writeTextFile": False}},
-    })
-except Exception as exc:                                    # noqa: BLE001
-    skipped(
-        "no goose serve answering at %s (%s)" % (URL, type(exc).__name__),
-        "Start one, or point --acp-url at the brain: https://<tailscale-ip>:3284/acp.",
-        "This mode asserts nothing when there is no agent to assert against.",
-    )
-    sys.exit(0)
-
-if status in (401, 403):
-    # Two different problems, and the server has just told us which one. The
-    # second message is the one the deleted preflight was trying to give --
-    # now emitted only when it is actually true.
-    if SECRET:
-        skipped("goose serve answered HTTP %s at %s — the secret key is wrong for this server"
-                % (status, URL))
-    else:
+# it wants authentication, so the taxonomy below is emitted from its ANSWER —
+# goosecfg omits the header when the secret is empty.
+with contextlib.ExitStack() as stack:
+    try:
+        client = stack.enter_context(goosecfg.AcpClient(URL, SECRET, DEADLINE_S))
+    except goosecfg.AuthError:
+        # Two different problems, and the server has just told us which one.
+        if SECRET:
+            skipped("goose serve at %s refused the secret key in this shell" % URL)
+        else:
+            skipped(
+                "goose serve at %s requires auth and GOOSE_SERVER__SECRET_KEY is not in "
+                "this shell" % URL,
+                "Name only, never the value. Mac: scripts/mac/keychain-secrets.sh, then a NEW",
+                "terminal. Brain: set -a; . /data/secrets.env; set +a",
+            )
+        sys.exit(0)
+    except goosecfg.GooseCfgError as exc:
         skipped(
-            "goose serve at %s requires auth and GOOSE_SERVER__SECRET_KEY is not in this shell"
-            % URL,
-            "Name only, never the value. Mac: scripts/mac/keychain-secrets.sh, then a NEW",
-            "terminal. Brain: set -a; . /data/secrets.env; set +a",
-            "(`goose serve --dangerously-unauthenticated` needs no secret at all.)",
+            "no usable ACP session at %s (%s)" % (URL, exc.reason),
+            "Start a goose serve, or point --acp-url at the brain:",
+            "https://<tailscale-ip>:3284/acp. A bare host with no /acp path 404s here.",
+            "This mode asserts nothing when there is no agent to assert against.",
         )
-    sys.exit(0)
-if status not in (200, 202) or not isinstance(body, dict) or "error" in (body or {}):
-    skipped("initialize -> HTTP %s at %s, no usable ACP session" % (status, URL))
-    sys.exit(0)
+        sys.exit(0)
 
-STATE["conn"] = resp_headers.get("acp-connection-id") or resp_headers.get("Acp-Connection-Id") or ""
-if STATE["downgraded"]:
-    note("TLS verification was skipped for this probe: goose serve's certificate is "
-         "self-signed by design and real clients pin its fingerprint instead")
-if STATE["conn"]:
-    threading.Thread(target=sse_pump, daemon=True).start()
-    ok("initialize OK at %s (connection established, ACP protocol %s)"
-       % (URL, (body.get("result") or {}).get("protocolVersion", "?")))
-else:
-    note("no acp-connection-id header on initialize — replies are being read from the "
-         "POST bodies only; if calls below time out, that header is the reason")
+    if client.downgraded:
+        note("TLS verification was skipped for this probe: goose serve's certificate is "
+             "self-signed by design and real clients pin its fingerprint instead")
+    ok("initialize OK at %s (ACP session established)" % URL)
 
-baseline, err = list_extensions()
-if baseline is None:
-    bad("config/extensions/list failed before anything was changed: %s" % err,
-        "Nothing was added, so nothing needs cleaning up.")
-    sys.exit(0)
+    try:
+        baseline = client.list_extensions()
+    except goosecfg.GooseCfgError as exc:
+        bad("config/extensions/list failed before anything was changed: %s" % exc,
+            "Nothing was added, so nothing needs cleaning up.")
+        sys.exit(0)
 
-# ---- the round trip ---------------------------------------------------------
-added = []
-failures = 0
-try:
-    for idx, ext in enumerate(EXTS):
-        server = ext.get("server") or {}
-        name = str(server.get("name") or "extension[%d]" % idx)
-        sent = ext.get("available_tools")
-        if not isinstance(sent, list) or not sent:
-            bad("%s: the manifest itself has no non-empty available_tools — fix that first" % name)
-            failures += 1
-            continue
-
-        existing = find_entry(baseline, name)
-        if existing is not None:
-            stored, spelling = allowlist_of(existing.get("extension") or {})
-            source = "already configured on this goose (not re-added, so nothing was clobbered)"
-        else:
-            _, err = call("_goose/unstable/config/extensions/add",
-                          {"extension": ext, "enabled": False})
-            if err:
-                bad("%s: config/extensions/add failed: %s" % (name, err),
-                    "A rejected payload is the loud failure mode. The silent one — a key",
-                    "goose accepts and discards — is what the read-back below exists for.")
+    # ---- the round trip -----------------------------------------------------
+    added = []
+    failures = 0
+    try:
+        for idx, ext in enumerate(EXTS):
+            server = ext.get("server") or {}
+            name = str(server.get("name") or "extension[%d]" % idx)
+            sent = ext.get("available_tools")
+            if not isinstance(sent, list) or not sent:
+                bad("%s: the manifest itself has no non-empty available_tools — fix that "
+                    "first" % name)
                 failures += 1
                 continue
-            added.append(name)
-            entries, err = list_extensions()
-            if entries is None:
-                bad("%s: config/extensions/list failed right after add: %s" % (name, err))
+
+            entry = find_entry(baseline, name)
+            if entry is not None:
+                source = "already configured on this goose (not re-added, so nothing was " \
+                         "clobbered)"
+            else:
+                try:
+                    client.add(ext, enabled=False)
+                except goosecfg.GooseCfgError as exc:
+                    bad("%s: config/extensions/add failed: %s" % (name, exc),
+                        "A rejected payload is the loud failure mode. The silent one — a key",
+                        "goose accepts and discards — is what the read-back below exists for.")
+                    failures += 1
+                    continue
+                added.append(name)
+                try:
+                    entry = find_entry(client.list_extensions(), name)
+                except goosecfg.GooseCfgError as exc:
+                    bad("%s: config/extensions/list failed right after add: %s" % (name, exc))
+                    failures += 1
+                    continue
+                if entry is None:
+                    bad("%s: added, but config/extensions/list does not carry it back" % name,
+                        "goose accepted the payload and persisted something this script cannot",
+                        "find by server name or configKey. Read config.yaml before trusting it.")
+                    failures += 1
+                    continue
+                source = "sent with config/extensions/add, read back with config/extensions/list"
+
+            # THE ASSERTION, and it is goosecfg's, not a second copy of it.
+            try:
+                goosecfg.prove_allowlist(entry, sent)
+            except goosecfg.AllowlistError as exc:
+                headline, cont = ALLOWLIST_PROSE[exc.reason][0], ALLOWLIST_PROSE[exc.reason][1:]
+                lines = list(cont)
+                if exc.reason == R.ALLOWLIST_MISSPELLED:
+                    lines.insert(0, "goose returned it as `%s`" % exc.spelling)
+                if exc.reason == R.ALLOWLIST_DIFFERS:
+                    stored, _ = entry.allowlist()
+                    lines.insert(0, "sent but not stored: %s"
+                                 % (", ".join(sorted(set(sent) - set(stored or ()))) or "none"))
+                    lines.insert(1, "stored but not sent: %s"
+                                 % (", ".join(sorted(set(stored or ()) - set(sent))) or "none"))
+                bad("%s: %s (%s)" % (name, headline, source), *lines)
                 failures += 1
                 continue
-            entry = find_entry(entries, name)
+            stored, _ = entry.allowlist()
+            ok("%s: allowlist survived the round trip — %d tool(s), set-equal to the manifest "
+               "(%s)" % (name, len(stored), source))
+    finally:
+        for name in added:
+            try:
+                entry = find_entry(client.list_extensions(), name)
+            except goosecfg.GooseCfgError:
+                entry = None
             if entry is None:
-                bad("%s: added, but config/extensions/list does not carry it back" % name,
-                    "goose accepted the payload and persisted something this script cannot",
-                    "find by server name or configKey. Read config.yaml before trusting it.")
-                failures += 1
+                note("could not find a configKey to remove the extension this check added (%s) "
+                     "— remove it by hand from goose's config.yaml" % name)
                 continue
-            stored, spelling = allowlist_of(entry.get("extension") or {})
-            source = "sent with config/extensions/add, read back with config/extensions/list"
+            try:
+                # remove_extension, not remove: goose answers SUCCESS for a key
+                # that never existed, so only the read-back can say it is gone.
+                goosecfg.remove_extension(client, entry.config_key)
+            except goosecfg.GooseCfgError as exc:
+                note("cleanup: removing %s failed (%s) — remove it by hand"
+                     % (entry.config_key, exc.reason))
+            else:
+                info("cleanup: removed the extension this check added (%s)" % entry.config_key)
 
-        if stored is None:
-            bad(
-                "%s: the stored extension has NO allowlist field at all (%s)" % (name, source),
-                "This is the failure the whole feature exists to prevent: available_tools",
-                "absent becomes vec![], and an empty allowlist means EVERY TOOL IS ALLOWED.",
-                "Check the spelling in the manifest (snake_case `available_tools`), and",
-                "whether the running goose is the pinned version.",
-            )
-            failures += 1
-            continue
-        if spelling != "available_tools":
-            note("%s: goose returned the allowlist as `%s` — the pin may have moved; "
-                 "re-verify config/connectors/README.md before trusting anything here"
-                 % (name, spelling))
-        if not isinstance(stored, list) or not stored:
-            bad(
-                "%s: the stored allowlist is EMPTY (%s)" % (name, source),
-                "Empty means every tool is allowed — the opposite of what it looks like.",
-                "Disable or remove this extension before using it: goose is configured to",
-                "let the agent call the server's entire surface.",
-            )
-            failures += 1
-            continue
-        if set(stored) != set(sent):
-            bad(
-                "%s: the stored allowlist is not what the manifest sent (%s)" % (name, source),
-                "sent but not stored: %s" % (", ".join(sorted(set(sent) - set(stored))) or "none"),
-                "stored but not sent: %s" % (", ".join(sorted(set(stored) - set(sent))) or "none"),
-                "Either goose dropped part of the payload, or the live config was narrowed",
-                "(or widened) by hand and the manifest is now fiction. Reconcile before use.",
-            )
-            failures += 1
-            continue
-        ok("%s: allowlist survived the round trip — %d tool(s), set-equal to the manifest (%s)"
-           % (name, len(stored), source))
-finally:
-    for name in added:
-        entries, _ = list_extensions()
-        entry = find_entry(entries or [], name)
-        key = (entry or {}).get("configKey")
-        if not key:
-            note("could not find a configKey to remove the extension this check added (%s) "
-                 "— remove it by hand from goose's config.yaml" % name)
-            continue
-        _, err = call("_goose/unstable/config/extensions/remove", {"configKey": key})
-        if err:
-            note("cleanup: config/extensions/remove(%s) failed: %s — remove it by hand" % (key, err))
-        else:
-            info("cleanup: removed the extension this check added (%s)" % key)
-
-if failures == 0:
-    ok("config/extensions/add + config/extensions/list agree for all %d extension(s) — "
-       "the mitigation config/connectors/README.md calls mandatory is enforced here, "
-       "not just described" % len(EXTS))
+    if failures == 0:
+        ok("config/extensions/add + config/extensions/list agree for all %d extension(s) — "
+           "the mitigation config/connectors/README.md calls mandatory is enforced here, "
+           "not just described" % len(EXTS))
 PYEOF
 
 # ---------------------------------------------------------------------------
@@ -2215,7 +2109,7 @@ if [ "$REFRESH" = "yes" ]; then
       "  https://github.com/aaif-goose/goose/releases/tag/$GOOSE_TAG" \
       "  A tag that does not exist is the usual cause right after a pin bump."
   fi
-  "${PY[@]}" "$ACP_CHECK" --refresh \
+  "${PYPATH[@]}" "${PY[@]}" "$ACP_CHECK" --refresh \
     "$META_JSON" "$SCHEMA_JSON" "$GOOSE_TAG" "$CONTRACT_FILE" "$PINS_FILE"
   exit 0
 fi
@@ -2270,7 +2164,7 @@ if [ "$OFFLINE" = "yes" ]; then
     summary_row "FAIL  ACP contract @ $GOOSE_TAG (no capture on disk)"
   else
     run_check "ACP contract @ $GOOSE_TAG (vendored)" \
-      "${PY[@]}" "$ACP_CHECK" --vendored "$CONTRACT_FILE" "$PINS_FILE" "$GOOSE_TAG"
+      "${PYPATH[@]}" "${PY[@]}" "$ACP_CHECK" --vendored "$CONTRACT_FILE" "$PINS_FILE" "$GOOSE_TAG"
   fi
 elif ! fetch_at_tag "crates/goose/acp-meta.json" "$META_JSON" ||
      ! fetch_at_tag "crates/goose/acp-schema.json" "$SCHEMA_JSON"; then
@@ -2279,7 +2173,7 @@ elif ! fetch_at_tag "crates/goose/acp-meta.json" "$META_JSON" ||
   echo "      this script. Re-run with network before trusting a version bump."
 else
   run_check "ACP contract @ $GOOSE_TAG" \
-    "${PY[@]}" "$ACP_CHECK" --live "$META_JSON" "$SCHEMA_JSON" "$SCHEMA_KEYS" "$GOOSE_TAG"
+    "${PYPATH[@]}" "${PY[@]}" "$ACP_CHECK" --live "$META_JSON" "$SCHEMA_JSON" "$SCHEMA_KEYS" "$GOOSE_TAG"
 fi
 
 # ---- 2. every manifest -------------------------------------------------------
@@ -2346,7 +2240,7 @@ if [ -n "$ROUNDTRIP_ID" ]; then
     echo "  config only, and removes whatever it added. It is the one check that can see"
     echo "  an allowlist goose silently dropped."
     RT_PASS_BEFORE="$PASS_COUNT"
-    run_check "acp roundtrip $ROUNDTRIP_ID" "${PY[@]}" "$ROUNDTRIP_PY" "$RT_FILE" "$ACP_URL" 30
+    run_check "acp roundtrip $ROUNDTRIP_ID" "${PYPATH[@]}" "${PY[@]}" "$ROUNDTRIP_PY" "$RT_FILE" "$ACP_URL" 30
     # Same rule as --smoke: this was asked for explicitly, so "could not run" and
     # "passed" must not share an exit code. This is the ONLY check that observes
     # what goose actually stored, so a silent skip is the most expensive kind —
@@ -2355,7 +2249,20 @@ if [ -n "$ROUNDTRIP_ID" ]; then
       fail "acp roundtrip $ROUNDTRIP_ID asserted nothing — it was requested explicitly, so a skip is a failure"
       echo "      Common causes: no reachable \`goose serve\`, a missing GOOSE_SERVER__SECRET_KEY,"
       echo "      or an --acp-url without the /acp path (a bare host 404s on initialize)."
-      echo "      Local check:  goose serve --host 127.0.0.1 --port 3288 --dangerously-unauthenticated"
+      # NOT --dangerously-unauthenticated. Measured against 1.46.0: the env
+      # secret plus --host/--port is enough (no header 401, wrong key 401,
+      # right key 200), so the recipe that turns authentication off is one
+      # nobody needs and someone will paste onto a machine that is not loopback.
+      # EXPORT, and BACKGROUND the server. A per-command assignment
+      # (`GOOSE_SERVER__SECRET_KEY=... goose serve`) reaches goose and nothing
+      # else, so the check on the third line would run with no secret, take the
+      # 401, skip — and a skip here is the failure printing this very message.
+      # `goose serve` also blocks, so "then" needs the `&`. This is the same
+      # shape as the broken recipe deleted from the preflight above; the lesson
+      # is that a printed remedy is only worth printing if it has been pasted.
+      # Nothing echoes the value: it goes from openssl into the environment.
+      echo "      Local check:  export GOOSE_SERVER__SECRET_KEY=\"\$(openssl rand -hex 32)\""
+      echo "                    goose serve --host 127.0.0.1 --port 3288 &"
       echo "                    $0 --acp-roundtrip $ROUNDTRIP_ID --acp-url http://127.0.0.1:3288/acp"
     fi
   fi
