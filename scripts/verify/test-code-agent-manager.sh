@@ -453,6 +453,225 @@ else
   bad "probe-failure arms (see the assertion above)"
 fi
 
+# ---- 0d. arms with no HTTP surface (in-process units) -----------------------
+# Three clusters that the running manager cannot be driven into from outside:
+# container argv (the process never starts under the stub engine's eye with a
+# PAT set), GitHub responses of the wrong SHAPE (fake-github.py always answers
+# well-formed), and a truncated index.json (every write here is atomic, so no
+# torn read can ever be observed).
+#
+# $WORK is outside scripts/, so these fixtures are themselves unmeasured, which
+# is correct — they are test code. They MUST run under $MANAGER_PY: a plain
+# python3 asserts identically and contributes zero coverage.
+
+cat >"$WORK/preflight-argv.py" <<'PY'
+import importlib.util, sys
+
+spec = importlib.util.spec_from_file_location("cam", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+sys.modules["cam"] = mod
+spec.loader.exec_module(mod)
+
+# Set BOTH explicitly. This fixture does NOT run under `env -i`, so leaving
+# them inherited would let the developer's real environment decide the outcome
+# instead of the guard under test.
+mod.GH_PAT = "pat-fixture"
+mod.TOGETHER_KEY = "together-fixture"
+
+recorded = []
+mod.engine = lambda *a, **k: recorded.append(list(a))
+
+
+def argv_for(probe):
+    recorded.clear()
+    mod.run_container(mod.Chat(
+        id="argvprobe", repo="_probe" if probe else "testrepo",
+        title="t", port=9001, branch="b", probe=probe))
+    assert len(recorded) == 1, len(recorded)
+    return recorded[0]
+
+
+# NEVER interpolate the captured argv into an assertion message: on a machine
+# with a real TOGETHER_API_KEY or GITHUB_CODE_AGENT_PAT exported, a failure
+# would print a live secret into the harness log. Booleans and counts only.
+probe_argv = argv_for(True)
+assert any(a.startswith("TOGETHER_API_KEY=") for a in probe_argv)
+assert not any(a.startswith("GH_TOKEN=") for a in probe_argv)
+
+# The PAIRED call is what proves the GUARD decided, not the environment. With
+# GH_PAT empty the "no GH_TOKEN" assertion above passes vacuously.
+assert any(a.startswith("GH_TOKEN=") for a in argv_for(False))
+
+# validate_base's two refusals that happen BEFORE anything is cloned.
+err = mod.validate_base("_probe", mod.PROBE_REPO, "main")
+assert err is not None and err.status == 400, err
+assert "no branch to base on" in err.message, err.message
+
+err = mod.validate_base("emptyurl", mod.RepoEntry(name="emptyurl", url=""), "main")
+assert err is not None and err.status == 409, err
+assert "no GitHub remote to read" in err.message, err.message
+
+# list_branches when the pager EXHAUSTS instead of breaking early. The live
+# fixture holds 119 branches, so page 2 is short and the break always fires.
+pages = []
+
+
+def fake_gh(method, path, body=None):
+    page = int(path.rsplit("page=", 1)[1])
+    pages.append(page)
+    # Unique names per page: dict.fromkeys dedupes, so repeated names would
+    # silently shrink the count and hide a short page.
+    return [{"name": f"b{page}-{i}"} for i in range(mod.BRANCH_PAGE_SIZE)]
+
+
+mod.gh = fake_gh
+mod.default_branch = lambda slug: "main"
+out = mod.list_branches("r", mod.RepoEntry(name="r", url="https://github.com/o/r"))
+# Against the CONSTANTS, never the literals 5/100.
+assert pages == list(range(1, mod.BRANCH_MAX_PAGES + 1)), pages
+assert out["truncated"] is True, out["truncated"]
+assert len(out["branches"]) == mod.BRANCH_MAX_PAGES * mod.BRANCH_PAGE_SIZE, len(out["branches"])
+PY
+if "${MANAGER_PY[@]}" "$WORK/preflight-argv.py" "$REPO_ROOT/scripts/vps/code-agent-manager.py"
+then
+  ok "a probe chat gets TOGETHER_API_KEY but never GH_TOKEN (paired against a real chat)"
+  ok "validate_base refuses _probe and a remote-less repo before any clone"
+  ok "list_branches reports truncated when the pager exhausts"
+else
+  bad "container argv / validate_base / branch pager (see the assertion above)"
+fi
+
+cat >"$WORK/preflight-gh.py" <<'PY'
+import http.server, importlib.util, json, sys, threading
+
+spec = importlib.util.spec_from_file_location("cam", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+sys.modules["cam"] = mod
+spec.loader.exec_module(mod)
+
+
+class Recorder(http.server.BaseHTTPRequestHandler):
+    calls = []
+    routes = []  # (needle, status, body-bytes) -- FIRST match wins
+
+    def do_GET(self):
+        Recorder.calls.append(self.headers.get("Authorization"))
+        status, body = 200, b"null"
+        for needle, st, bd in Recorder.routes:
+            if needle in self.path:
+                status, body = st, bd
+                break
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+
+srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Recorder)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+mod.GH_API = "http://127.0.0.1:%d" % srv.server_address[1]
+
+
+def j(obj):
+    return json.dumps(obj).encode()
+
+
+# A. no PAT: the Authorization header must be absent entirely.
+mod.GH_PAT = ""
+Recorder.calls.clear(); Recorder.routes = []
+mod.gh("GET", "/x")
+assert len(Recorder.calls) == 1, len(Recorder.calls)
+assert Recorder.calls[0] is None, "an Authorization header was sent without a PAT"
+
+# B. a 4xx whose body is valid JSON but NOT an object. The recorder count is
+#    mandatory, not decorative: this exact status+message pair is ALSO what a
+#    dict-with-no-message produces, so without it the assertion cannot tell the
+#    two arms apart.
+Recorder.calls.clear(); Recorder.routes = [("/x", 422, j(["not", "an", "object"]))]
+try:
+    mod.gh("GET", "/x")
+except mod.GitHubError as e:
+    assert e.status == 422, e.status
+    assert e.message == "GitHub answered 422", e.message
+else:
+    raise AssertionError("a 422 did not raise")
+assert len(Recorder.calls) == 1, len(Recorder.calls)
+
+# C. combined status of the wrong TYPE -- the check-runs verdict still stands.
+Recorder.calls.clear()
+Recorder.routes = [("/check-runs", 200, j({"check_runs": [{"conclusion": "success"}]})),
+                   ("/status", 200, j([]))]
+assert mod.summarise_checks("o/r", "sha1") == "passing"
+assert len(Recorder.calls) == 2, len(Recorder.calls)
+
+# D. a conclusion in none of the three sets. "unknown" is not reachable by any
+#    other exit -- none/failing/pending/passing are all distinct returns.
+Recorder.calls.clear()
+Recorder.routes = [("/check-runs", 200, j({"check_runs": [{"conclusion": "weird-new-thing"}]})),
+                   ("/status", 200, j({}))]
+assert mod.summarise_checks("o/r", "sha1") == "unknown"
+assert len(Recorder.calls) == 2, len(Recorder.calls)
+
+# E. with_checks=False. The ZERO-REQUEST assertion is the only thing that
+#    distinguishes this from with_checks=True; asserting checks=="unknown"
+#    alone would pass either way.
+Recorder.calls.clear()
+wire = mod.pull_to_wire("o/r", {"number": 1, "head": {"sha": "abc"}}, with_checks=False)
+assert wire["checks"] == "unknown", wire["checks"]
+assert Recorder.calls == [], Recorder.calls
+PY
+if "${MANAGER_PY[@]}" "$WORK/preflight-gh.py" "$REPO_ROOT/scripts/vps/code-agent-manager.py"
+then
+  ok "gh() sends no Authorization header when there is no PAT"
+  ok "a 4xx body that is not an object falls back to GitHub's status line"
+  ok "summarise_checks survives a wrong-typed combined status, and an unknown conclusion"
+  ok "pull_to_wire(with_checks=False) makes no GitHub call at all"
+else
+  bad "gh/summarise_checks/pull_to_wire shapes (see the assertion above)"
+fi
+
+cat >"$WORK/preflight-corrupt.py" <<'PY'
+import importlib.util, sys, tempfile
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("cam", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+sys.modules["cam"] = mod
+spec.loader.exec_module(mod)
+
+# Index.save() writes to a temp file and replaces, so a TRUNCATED index.json is
+# unobservable through the running manager -- every corrupt fixture elsewhere in
+# this harness writes valid json of the wrong SHAPE, which takes a different arm.
+tmp = Path(tempfile.mkdtemp())
+mod.INDEX_PATH = tmp / "index.json"
+mod.INDEX_PATH.write_text('{"chats": {')
+
+logged = []
+mod.log = lambda msg: logged.append(msg)
+
+idx = mod.Index.load()
+assert idx.chats == {}, idx.chats
+assert any("index.json is unreadable" in m for m in logged), logged
+assert any("JSONDecodeError" in m for m in logged), logged
+
+# ChatLaunchError's only construction site sits behind a real 90s wait, so its
+# message body is unreachable in an end-to-end run. Assert that it HAS one
+# rather than re-deriving the f-string, which would only restate the class.
+err = mod.ChatLaunchError(mod.WAIT_FOR_CHAT_SECONDS)
+assert isinstance(err, RuntimeError)
+assert str(err)
+PY
+if "${MANAGER_PY[@]}" "$WORK/preflight-corrupt.py" "$REPO_ROOT/scripts/vps/code-agent-manager.py"
+then
+  ok "a truncated index.json degrades to empty and says so, instead of killing every request"
+else
+  bad "corrupt-index / ChatLaunchError arms (see the assertion above)"
+fi
+
 # ---- 1. auth ----------------------------------------------------------------
 # shellcheck disable=SC2086
 CODE="$($CURL -o /dev/null -w '%{http_code}' "$BASE/api/health" || echo 000)"
