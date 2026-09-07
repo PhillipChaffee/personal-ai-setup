@@ -9,6 +9,13 @@
 # and is the file deploy-vps.sh copies onto the brain, so a duplicated key with
 # a wider allowlist would validate clean and ship the wrong tool surface.
 # Verified: safe_load raises nothing on such a file; yamllint reports it.
+#
+# The `connectors` job runs check-connectors.sh --offline, which validates every
+# config/connectors/*.yaml against the contract in that directory's README --
+# 61 checks in about a second. It was written to run on a machine that has never
+# installed goose, yet nothing invoked it: the only reference to it anywhere in
+# .github/ was the comment above. A manifest could contradict its own README and
+# ship green.
 name: data-lint
 
 on:
@@ -54,3 +61,44 @@ jobs:
             exit 1
           fi
           echo "yamllint correctly rejected a duplicated key."
+
+  connectors:
+    name: connector manifests (offline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+      # The script falls back to `uv run --with pyyaml` when python3 cannot
+      # import yaml; installing it directly keeps the job from depending on uv
+      # being present on the runner. Pinned like every other tool here.
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml==6.0.2
+
+      # --offline is the mode that needs no credentials and speaks to nothing:
+      # manifest structure, the available_tools allowlist, and the privacy-doc
+      # and cloud-init cross-references. Smoke tests and the ACP round trip need
+      # a live server and stay out of CI.
+      - name: check-connectors.sh --offline
+        run: scripts/verify/check-connectors.sh --offline
+
+      # Proves the gate can actually fail. check-connectors.sh derives its
+      # CONNECTOR_DIR from BASH_SOURCE, so running a COPY of the tree in
+      # $RUNNER_TEMP validates that copy's manifests and leaves the checkout
+      # untouched -- same rule as the yamllint negative test above.
+      - name: Negative test — a malformed manifest must fail
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/connector-negative"
+          mkdir -p "$work"
+          git archive HEAD | tar -x -C "$work"
+          printf 'id: broken\nnot_a_valid: manifest\n' \
+            > "$work/config/connectors/zz-negative-test.yaml"
+          if "$work/scripts/verify/check-connectors.sh" --offline >/dev/null 2>&1; then
+            echo "::error::check-connectors.sh accepted a malformed manifest — the gate is inert"
+            exit 1
+          fi
+          echo "check-connectors.sh correctly rejected a malformed manifest."
