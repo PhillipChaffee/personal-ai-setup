@@ -63,6 +63,34 @@ point of PAYG. What keeps it near the bottom of the range:
   ([10-accounts.md](10-accounts.md)) — the two settings that stop a runaway
   loop from becoming a runaway bill.
 
+## Supported platforms
+
+Stated once here rather than left to be inferred from the runbooks.
+
+**The brain is Linux and always has been** — Ubuntu 24.04, provisioned by
+`infra/terraform` and `cloud-init`, which installs the pinned goose CLI there
+today. goose is not the Mac-only part of this stack.
+
+**The laptop surface is macOS.** Not because goose needs it, but because three
+specific pieces do:
+
+| Base component | macOS | Linux laptop |
+|---|---|---|
+| goose CLI | supported | **supported** — cloud-init already installs it on Ubuntu from the same pin |
+| OpenCode CLI | supported | **supported** — same installer, no Mac assumption |
+| uv / node / jq | supported | **supported** — `bootstrap-mac.sh` gets them from Homebrew, apt has all three |
+| Package manager | Homebrew | **backend needed** — nothing reads `brew` except `bootstrap-mac.sh`'s own install loop |
+| Secret store | macOS Keychain (`security`) | **backend needed, and this is the real blocker** — `scripts/mac/keychain-secrets.sh` has no Linux counterpart, and `GOOSE_DISABLE_KEYRING` is explicitly not the answer |
+| Shell profile block | `~/.zshrc` exports | **portable** — bash/zsh both, only the file path differs |
+| Goose Desktop | supported (cask) | Mac-only by design here; the Linux build exists but is unverified against this setup |
+
+So a Linux laptop is **not supported and not blocked**: the gap is a secret-store
+backend, not the agent stack. Nobody has run it, so nothing here claims it works.
+
+The version pin both surfaces read is `config/pins.yaml`. The brain installs
+exactly it; the Mac keeps Homebrew and *asserts* against it, because `brew pin`
+freezes whatever was installed rather than choosing a version.
+
 ## Conventions
 
 These hold everywhere in the repo — docs, configs, scripts. If something you

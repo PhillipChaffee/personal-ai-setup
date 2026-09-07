@@ -20,7 +20,7 @@ This repo is the complete, reproducible blueprint: Terraform for the server, con
 
 | You need | Notes |
 |---|---|
-| A Mac + an iPhone | The runbooks are written for this pair. Linux laptop or Android phone work in principle (Goose and OpenCode are cross-platform) but you'll be substituting steps yourself. |
+| A Mac + an iPhone | The runbooks are written for this pair. **The brain itself is Linux** (Ubuntu 24.04) — goose is not the Mac-only part. What *is* Mac-only is the laptop's secret store (macOS Keychain) and Homebrew; a Linux laptop needs a keyring backend that does not exist here yet. Android likewise substitutes steps. Component-by-component table: [`docs/setup/00-overview.md`](docs/setup/00-overview.md#supported-platforms). |
 | Comfort with a terminal | You'll run scripts, `terraform apply`, and paste commands over SSH. Every step is written out; no improvisation required. |
 | ~$15–35/month | Breakdown in [Budget](#budget). The two inference accounts are pay-as-you-go with hard caps. |
 | A free weekend, roughly | Phase 1 gets you working AI in 1–2 hours; the full build is ~8–10 hours spread over the five phases. |

@@ -49,7 +49,8 @@ runcmd:
   - curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
   - apt-get install -y nodejs
   # 4) Goose CLI for the agent user, pinned to a 1.x release (goose 2.0 churn
-  #    risk — bump GOOSE_VERSION deliberately; v1.46.0 verified 2026-08-20).
+  #    risk). The version comes from config/pins.yaml, which the Mac surface
+  #    reads too — bump it THERE, not here, or the two drift again.
   #    CONFIGURE=false skips the interactive wizard; binary lands in
   #    /home/agent/.local/bin. Config comes later from the repo templates.
-  - su - agent -c 'curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh | GOOSE_VERSION=v1.46.0 CONFIGURE=false bash'
+  - su - agent -c 'curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh | GOOSE_VERSION=v${goose_version} CONFIGURE=false bash'

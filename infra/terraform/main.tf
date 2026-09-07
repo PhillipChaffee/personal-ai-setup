@@ -31,6 +31,12 @@ provider "hcloud" {
   token = var.hcloud_token
 }
 
+# The version pins the Mac surface and this cloud-init both read, so the two
+# cannot drift. See config/pins.yaml for why each side consumes it differently.
+locals {
+  pins = yamldecode(file("${path.module}/../../config/pins.yaml"))
+}
+
 resource "hcloud_ssh_key" "brain" {
   name       = "ai-brain"
   public_key = var.ssh_public_key
@@ -59,6 +65,7 @@ resource "hcloud_server" "brain" {
     tailscale_authkey    = var.tailscale_authkey
     timezone             = var.timezone
     agent_ssh_public_key = var.ssh_public_key
+    goose_version        = local.pins.goose.version
   })
 
   # The brain is a pet, not cattle. `user_data` forces REPLACEMENT on
