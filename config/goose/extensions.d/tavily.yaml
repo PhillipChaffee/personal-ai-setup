@@ -1,0 +1,21 @@
+extensions:
+  # Web search via Tavily (1,000 free credits/mo as of 2026-08-20).
+  # Disabled by default — enable after putting TAVILY_API_KEY in your secret
+  # store (Keychain on Mac, /data/secrets.env on the brain).
+  #
+  # Same two conditions as playwright: pin the version, and add a non-empty
+  # snake_case `available_tools` before enabling. 0.2.22 was current 2026-08-23.
+  tavily:
+    name: tavily
+    display_name: Tavily Search
+    type: stdio
+    enabled: false
+    cmd: npx
+    args:
+      - -y
+      - tavily-mcp@0.2.22
+    envs: {}
+    env_keys:
+      - TAVILY_API_KEY
+    # available_tools: [...]   # REQUIRED before enabling — see the note above
+    timeout: 300

@@ -3,11 +3,23 @@
 # the commit that added this file, so it lands as a gate with no cleanup.
 #
 # The rule that earns its place is key-duplicates. PyYAML's safe_load -- the
-# idiom scripts/verify/check-connectors.sh:427 uses -- accepts a duplicated
-# mapping key SILENTLY and keeps the last one. config/goose/config.yaml carries
-# two live `available_tools` allowlists and is the file deploy-vps.sh copies
-# onto the brain, so a duplicated key with a wider allowlist would validate
-# clean and ship the wrong tool surface. Nothing else in the repo can see that.
+# idiom scripts/verify/check-connectors.sh uses -- accepts a duplicated
+# mapping key SILENTLY and keeps the last one, so a duplicated key with a wider
+# allowlist would validate clean and ship the wrong tool surface. The file that
+# makes that concrete is config/goose/config.yaml: it is what deploy-vps.sh
+# copies onto the brain, and it is the one place in the repo where every
+# extension's `available_tools` allowlist sits in a single document.
+#
+# It is now a GENERATED artifact -- config/goose/config.base.yaml plus one
+# fragment per extension in config/goose/extensions.d/ -- which moves half of
+# this rule's job out of yamllint's reach. Within one file it still holds, on
+# the generated artifact and on every fragment. ACROSS files it cannot: two
+# fragments both declaring `todoist` are two clean documents that compose into
+# a duplicated key. scripts/verify/check-goose-template.sh is the guard for
+# that half (one key per fragment, named after the file, declared nowhere
+# else), and it also proves the committed artifact is exactly what the sources
+# compose to -- otherwise linting the sources would say nothing about the file
+# that actually ships.
 extends: default
 
 ignore: |
@@ -18,7 +30,9 @@ ignore: |
 
 rules:
   # 383 lines exceed 80, and config/goose/config.yaml is 195 comment lines of
-  # 318. A column limit here buys terser warnings, not shorter files.
+  # 318 (now assembled from config.base.yaml + extensions.d/, which redivides
+  # those lines across five files without shortening one of them). A column
+  # limit here buys terser warnings, not shorter files.
   line-length: disable
   # Nothing in this repo is a multi-document stream.
   document-start: disable

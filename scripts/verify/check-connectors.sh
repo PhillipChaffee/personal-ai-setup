@@ -3,11 +3,20 @@
 #
 # Four jobs, in order:
 #
-#   1. ACP contract. Fetches crates/goose/acp-meta.json and acp-schema.json
-#      from aaif-goose/goose AT THE PINNED VERSION TAG and asserts that every
-#      ACP method this feature calls still exists, that `available_tools` is
-#      still snake_case in the schema, and that clientId/clientSecretKey/scopes
-#      are still absent (they are v1.47.0+ only). No network, no gh → SKIP.
+#   1. ACP contract. Asserts that every ACP method this feature calls still
+#      exists AT THE PINNED VERSION TAG, that `available_tools` is still
+#      snake_case, and that clientId/clientSecretKey/scopes are still absent
+#      (they are v1.47.0+ only). Two sources, same assertions:
+#        with network  — crates/goose/{acp-meta,acp-schema}.json fetched from
+#                        aaif-goose/goose at the tag. No network, no gh → SKIP.
+#        --offline     — config/goose/acp-contract.json, a committed capture of
+#                        those two files taken at the pin, whose tag must equal
+#                        config/pins.yaml's goose.version and whose sha256 must
+#                        equal the one recorded there. This is the form that
+#                        runs in CI, and it is why bumping the pin without
+#                        `--refresh-contract` goes red naming what it can no
+#                        longer prove. Before it existed the whole check SKIPped
+#                        in every workflow: nothing ever asserted the contract.
 #
 #   2. Manifests. Every config/connectors/*.yaml against the contract in
 #      config/connectors/README.md. The headline check is `available_tools`:
@@ -43,7 +52,8 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage: check-connectors.sh [--smoke <id>] [--acp-roundtrip <id>] [--acp-url <url>]
-                           [--goose-version <vX.Y.Z>] [--offline] [--help]
+                           [--goose-version <vX.Y.Z>] [--offline]
+                           [--refresh-contract] [--help]
 
   --smoke <id>            After validating, run <id>'s smoke test: speak MCP to
                           the real server(s) over stdio or streamable HTTP and
@@ -65,7 +75,17 @@ Usage: check-connectors.sh [--smoke <id>] [--acp-roundtrip <id>] [--acp-url <url
   --goose-version <tag>   Pin the ACP contract check to this tag. Default is
                           read from config/pins.yaml (goose.version), which is
                           the single source both installers read.
-  --offline               Skip the two network checks outright.
+  --offline               Speak to nothing. The smoke test and the round trip
+                          are skipped outright; the ACP contract is asserted
+                          against the committed capture in
+                          config/goose/acp-contract.json instead of a fetch.
+                          This is the mode CI runs.
+  --refresh-contract      Re-take that capture from aaif-goose/goose at the
+                          pinned tag and record its sha256 in config/pins.yaml,
+                          then exit. Needs network. Run it by hand, in the same
+                          sitting as a goose.version bump — the offline check
+                          stays red until you do, on purpose. Checks nothing:
+                          re-run --offline afterwards.
 
 Validates every config/connectors/*.yaml. Exits non-zero if anything FAILs.
 SKIPs (no network, no credentials, no goose installed) never fail the run, and
@@ -84,10 +104,12 @@ ROUNDTRIP_ID=""
 ACP_URL="${GOOSE_ACP_URL:-https://127.0.0.1:3284/acp}"
 GOOSE_TAG_FLAG=""
 OFFLINE="no"
+REFRESH="no"
 while [ $# -gt 0 ]; do
   case "$1" in
     -h|--help)          usage; exit 0 ;;
     --offline)          OFFLINE="yes" ;;
+    --refresh-contract) REFRESH="yes" ;;
     --smoke)            shift; [ $# -gt 0 ] || die 2 "--smoke needs an <id>"; SMOKE_ID="$1" ;;
     --smoke=*)          SMOKE_ID="${1#*=}" ;;
     --acp-roundtrip)    shift; [ $# -gt 0 ] || die 2 "--acp-roundtrip needs an <id>"; ROUNDTRIP_ID="$1" ;;
@@ -101,10 +123,24 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+# --refresh-contract REWRITES two tracked files, so it must not be mixed with a
+# mode that reads them: --offline would assert the capture this run is about to
+# replace, and --goose-version would capture a tag config/pins.yaml does not
+# name, leaving the offline check red with a mismatch the operator created.
+# Bump the pin first; the capture only ever means anything AT the pin.
+if [ "$REFRESH" = "yes" ]; then
+  [ "$OFFLINE" = "no" ] || die_usage "--refresh-contract needs network; it cannot be combined with --offline"
+  [ -z "$GOOSE_TAG_FLAG" ] || die_usage \
+    "--refresh-contract does not take --goose-version" \
+    "  The capture is only meaningful at the pin. Edit config/pins.yaml's" \
+    "  goose.version first, then re-run --refresh-contract with no flag."
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONNECTOR_DIR="$REPO_ROOT/config/connectors"
 PRIVACY_DOC="$REPO_ROOT/docs/privacy.md"
+CONTRACT_FILE="$REPO_ROOT/config/goose/acp-contract.json"
 
 # A non-interactive SSH shell on the brain does not source the profile that
 # puts ~/.local/bin on PATH, so fall back to the known install location the way
@@ -185,6 +221,8 @@ ACP_CHECK="$WORK/acp_contract.py"
 SMOKE_PY="$WORK/smoke.py"
 ROUNDTRIP_PY="$WORK/roundtrip.py"
 SCHEMA_KEYS="$WORK/schema-keys.json"
+META_JSON="$WORK/acp-meta.json"
+SCHEMA_JSON="$WORK/acp-schema.json"
 
 # run_check <summary-label> <command...> — runs a python checker that emits
 # "PASS  ", "FAIL  ", "SKIP  ", "NOTE  " and "      | " lines, counts them here
@@ -233,11 +271,37 @@ acp-schema.json is the JSON Schema for the payloads. Both are read at the TAG,
 never at main, because the `_goose/unstable/` prefix means what it says:
 `config/extensions/toggle` became `set-enabled` between v1.37 and v1.38, and an
 entire `_goose/config/*` family was deleted.
+
+THREE MODES, one file, because the method list must exist exactly once:
+
+  --live     <meta> <schema> <keys-out> <tag>
+             What this always did: assert against the two documents just
+             fetched from GitHub at <tag>. Needs network, so no CI job runs it.
+  --vendored <contract> <pins> <tag>
+             The offline gate. Asserts against config/goose/acp-contract.json —
+             a capture of those same two documents, taken at the pin by
+             --refresh — plus the two things only the PAIR can prove: that the
+             capture's tag still equals config/pins.yaml's goose.version, and
+             that the file still hashes to what pins.yaml records.
+  --refresh  <meta> <schema> <tag> <contract-out> <pins>
+             Rewrite the capture and the hash. Network; a human runs it on a
+             pin bump, via check-connectors.sh --refresh-contract.
+
+WHY A CAPTURE AND NOT A FETCH. The gate has to run in data-lint.yml's
+`connectors` job, which is --offline, and a raw.githubusercontent.com fetch on
+every PR is a flake factory. What an offline gate can see is not an upstream
+rename — nothing offline can — it is that THE PIN MOVED AND THE CAPTURE DID
+NOT. That is the trigger, and it is the one that matters here, because the pin
+is what this repo installs: a version nobody pins is a version nobody runs.
+Bump goose.version, and until someone re-runs --refresh-contract against the
+new tag this check is red; when they do, any method that vanished is named.
 """
+import datetime
+import hashlib
 import json
 import sys
 
-meta_path, schema_path, keys_out, tag = sys.argv[1:5]
+import yaml
 
 # The eleven methods this feature calls. All verified present at v1.46.0.
 METHODS = [
@@ -254,102 +318,344 @@ METHODS = [
     "_goose/unstable/config/remove",
 ]
 
+MODE = sys.argv[1]
+TAG = ""
+
 
 def ok(msg):
-    print("PASS  acp@%s: %s" % (tag, msg))
+    print("PASS  acp@%s: %s" % (TAG, msg))
 
 
 def bad(msg, *cont):
-    print("FAIL  acp@%s: %s" % (tag, msg))
+    print("FAIL  acp@%s: %s" % (TAG, msg))
     for line in cont:
         print("      | %s" % line)
 
 
-# ---- 1. the method names ----------------------------------------------------
-try:
-    meta = json.load(open(meta_path))
-    names = {m["method"] for m in meta.get("methods", []) if isinstance(m, dict)}
-except Exception as exc:                                    # noqa: BLE001
-    bad("acp-meta.json did not parse: %s" % type(exc).__name__)
-    names = set()
+def load_json(path):
+    with open(path) as fh:
+        return json.load(fh)
 
-if names:
+
+# ---- extraction: the two shapes the rest of this file reasons about ---------
+# Shared by all three modes on purpose. --refresh writes exactly what --live
+# reads, so the vendored capture cannot describe a shape --live would judge by
+# a different rule.
+
+def method_names(meta):
+    return sorted({m["method"] for m in meta.get("methods", []) if isinstance(m, dict)})
+
+
+def extension_fields(schema):
+    """(mcp variant properties, McpServerHttp properties) — both by name only."""
+    defs = schema.get("$defs") or schema.get("definitions") or {}
+    mcp = {}
+    for branch in defs.get("GooseExtension", {}).get("oneOf", []):
+        props = branch.get("properties", {})
+        if props.get("type", {}).get("const") == "mcp":
+            mcp = props
+            break
+    return defs, mcp, defs.get("McpServerHttp", {}).get("properties", {})
+
+
+# ---- the assertions ---------------------------------------------------------
+# Every audit_* returns (passes, failures) rather than printing, because the two
+# callers need different verbosity: --live narrates each assertion, --vendored
+# must emit exactly ONE PASS (it is one check in data-lint's count) and only
+# speaks up to fail. Failures are (headline, *continuation) tuples for bad().
+
+def audit_methods(names):
+    passes, failures = [], []
     missing = [m for m in METHODS if m not in names]
     if missing:
-        bad(
+        failures.append((
             "%d of %d required ACP methods are GONE at this tag" % (len(missing), len(METHODS)),
-            *(missing + [
-                "The connect workflow's adapter is keyed to the pinned version and there",
-                "is no capability negotiation for these — a client must know from the pin.",
-                "Re-verify docs/connecting.md before moving it.",
-            ])
-        )
+        ) + tuple(missing) + (
+            "The connect workflow's adapter is keyed to the pinned version and there",
+            "is no capability negotiation for these — a client must know from the pin.",
+            "Re-verify docs/connecting.md before moving it.",
+        ))
     else:
-        ok("all %d ACP methods this feature calls are present (of %d published)" % (len(METHODS), len(names)))
+        passes.append((
+            "all %d ACP methods this feature calls are present (of %d published)"
+            % (len(METHODS), len(names)),
+        ))
+    return passes, failures
 
-# ---- 2. the schema fields that fail open ------------------------------------
-try:
-    schema = json.load(open(schema_path))
-    defs = schema.get("$defs") or schema.get("definitions") or {}
-except Exception as exc:                                    # noqa: BLE001
-    bad("acp-schema.json did not parse: %s" % type(exc).__name__)
-    defs = {}
 
-mcp = {}
-for branch in defs.get("GooseExtension", {}).get("oneOf", []):
-    props = branch.get("properties", {})
-    if props.get("type", {}).get("const") == "mcp":
-        mcp = props
-        break
+def audit_fields(mcp, http, schema_seen):
+    """The field names that fail OPEN when they are renamed.
 
-if not mcp:
-    if defs:
-        bad("GooseExtension has no `mcp` variant at this tag — the manifest shape is obsolete")
-else:
+    `mcp` and `http` are containers of property NAMES, so the vendored capture
+    (two JSON arrays) and the live schema (two property objects) are judged by
+    the same code. `schema_seen` says whether we actually read a shape at all —
+    a schema that did not parse has already reported itself and must not also
+    report every field in it as missing.
+    """
+    passes, failures = [], []
+    if not mcp:
+        if schema_seen:
+            failures.append((
+                "GooseExtension has no `mcp` variant at this tag — the manifest shape is obsolete",
+            ))
+        return passes, failures
+
     if "available_tools" in mcp and "availableTools" not in mcp:
-        ok("available_tools is still snake_case (and availableTools is still not a field)")
+        passes.append(("available_tools is still snake_case (and availableTools is still not a field)",))
     elif "availableTools" in mcp:
-        bad(
+        failures.append((
             "upstream renamed the allowlist to availableTools",
             "Every shipped manifest now sends a field goose ignores, which means EVERY",
             "TOOL IS ALLOWED on every connector. Fix the manifests and this script in",
             "the same commit as the version bump.",
-        )
+        ))
     else:
-        bad("GooseExtension.mcp has no tool allowlist field at all — re-read the schema before bumping the pin")
+        failures.append((
+            "GooseExtension.mcp has no tool allowlist field at all — re-read the schema before bumping the pin",
+        ))
 
     if "envKeys" in mcp:
-        ok("envKeys is still camelCase")
+        passes.append(("envKeys is still camelCase",))
     else:
-        bad("GooseExtension.mcp lost `envKeys` — per-connector secrets no longer work as documented")
+        failures.append((
+            "GooseExtension.mcp lost `envKeys` — per-connector secrets no longer work as documented",
+        ))
 
     oauth = [k for k in ("clientId", "clientSecretKey", "scopes") if k in mcp]
     if oauth:
-        bad(
+        failures.append((
             "OAuth fields now exist on the mcp variant: %s" % ", ".join(sorted(oauth)),
             "Those are v1.47.0+. Manifests are validated as if they cannot exist, so if",
             "the pin has moved, docs/connecting.md's OAuth section needs re-verifying —",
             "and OAuth still cannot be completed from a phone.",
-        )
+        ))
     else:
-        ok("clientId/clientSecretKey/scopes absent, as expected at a 1.46.x pin")
+        passes.append(("clientId/clientSecretKey/scopes absent, as expected at a 1.46.x pin",))
 
-http = defs.get("McpServerHttp", {}).get("properties", {})
-if http:
-    if "url" in http and "uri" not in http:
-        ok("remote transport still spells it `url` on the wire (config.yaml says `uri`)")
+    if http:
+        if "url" in http and "uri" not in http:
+            passes.append(("remote transport still spells it `url` on the wire (config.yaml says `uri`)",))
+        else:
+            failures.append((
+                "McpServerHttp field names changed — recheck the two-layer table in config/connectors/README.md",
+            ))
+    return passes, failures
+
+
+def report(passes, failures):
+    """--live narrates; see run_vendored for the mode that does not."""
+    for line in passes:
+        ok(line[0])
+    for line in failures:
+        bad(*line)
+
+
+# ---- mode: --live -----------------------------------------------------------
+
+def run_live(meta_path, schema_path, keys_out):
+    names = []
+    try:
+        meta = load_json(meta_path)
+        names = method_names(meta)
+    except Exception as exc:                                # noqa: BLE001
+        bad("acp-meta.json did not parse: %s" % type(exc).__name__)
+
+    if names:
+        report(*audit_methods(names))
+
+    defs, mcp, http = {}, {}, {}
+    try:
+        defs, mcp, http = extension_fields(load_json(schema_path))
+    except Exception as exc:                                # noqa: BLE001
+        bad("acp-schema.json did not parse: %s" % type(exc).__name__)
+
+    report(*audit_fields(set(mcp), set(http), bool(defs)))
+
+    # Export the schema's own property names so manifest validation can reject
+    # unknown keys client-side. goose will not: there is no deny_unknown_fields.
+    keys = {
+        "mcp": sorted(mcp.keys()),
+        "stdio": sorted(defs.get("McpServerStdio", {}).get("properties", {}).keys()),
+        "http": sorted(http.keys()),
+    }
+    if keys["mcp"] and keys["stdio"]:
+        with open(keys_out, "w") as fh:
+            json.dump(keys, fh)
+
+
+# ---- the vendored capture ---------------------------------------------------
+
+def pins_goose(pins_path):
+    doc = yaml.safe_load(open(pins_path).read()) or {}
+    goose = doc.get("goose") or {}
+    return goose if isinstance(goose, dict) else {}
+
+
+def sha256_of(path):
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
+def render_contract(tag, meta, schema, previous):
+    _defs, mcp, http = extension_fields(schema)
+    doc = {
+        "_comment": (
+            "Captured from crates/goose/{acp-meta,acp-schema}.json at the tag below by "
+            "scripts/verify/check-connectors.sh --refresh-contract. Do not hand-edit: "
+            "config/pins.yaml records this file's sha256."
+        ),
+        "tag": tag,
+        "captured_on": datetime.date.today().isoformat(),
+        "methods": method_names(meta),
+        "goose_extension_mcp_fields": sorted(mcp.keys()),
+        "mcp_server_http_fields": sorted(http.keys()),
+    }
+    # KEEP THE OLD DATE when nothing else moved. captured_on is the only field
+    # that changes by itself, and the sha256 in pins.yaml is taken over the
+    # whole file: without this, running --refresh-contract on a Tuesday to
+    # confirm nothing changed upstream would rewrite two tracked files, and a
+    # diff that appears for no reason is a diff people stop reading.
+    if previous:
+        older = dict(previous)
+        older["captured_on"] = doc["captured_on"]
+        if older == doc:
+            doc["captured_on"] = previous.get("captured_on", doc["captured_on"])
+    return json.dumps(doc, indent=2, sort_keys=False) + "\n"
+
+
+# ---- mode: --vendored (the offline gate) ------------------------------------
+
+def run_vendored(contract_path, pins_path):
+    failures = []
+    try:
+        contract = load_json(contract_path)
+    except Exception as exc:                                # noqa: BLE001
+        bad("config/goose/acp-contract.json did not parse: %s" % type(exc).__name__,
+            "Regenerate it:  scripts/verify/check-connectors.sh --refresh-contract")
+        return
+
+    goose = pins_goose(pins_path)
+    pinned = "v%s" % goose.get("version", "")
+    captured = contract.get("tag", "")
+    recorded = goose.get("acp_contract_sha256", "")
+    actual = sha256_of(contract_path)
+
+    # --goose-version names a tag; offline there is exactly ONE capture and it
+    # was taken at the pin. Checking it anyway and printing
+    # "PASS acp@<that tag>: ... matches the pin" is a green verdict for a
+    # version nothing verified -- the same lie as the built-in-default fallback
+    # this script deleted a few dozen lines up.
+    if TAG != pinned:
+        failures.append((
+            "the tag being checked (%s) is not the one config/pins.yaml pins (%s)"
+            % (TAG, pinned),
+            "There is exactly one capture on disk, config/goose/acp-contract.json, and it",
+            "was taken at %s. Offline it can only ever speak for the pin." % (captured or "(no tag)"),
+            "Drop --offline to fetch %s from upstream, or bump the pin and re-take it:" % TAG,
+            "    scripts/verify/check-connectors.sh --refresh-contract",
+        ))
+    # THE TRIGGER. Everything else in this mode is read off a file the pin bump
+    # did not touch, so this is the assertion that makes a bump loud.
+    elif captured != pinned:
+        failures.append((
+            "the vendored ACP contract is stale: it was captured at %s, config/pins.yaml "
+            "now pins %s" % (captured or "(no tag)", pinned),
+            "Nothing offline can see what upstream renamed at %s. This repo's proof that" % pinned,
+            "the methods it calls still exist is a capture, and the capture is older than the pin.",
+            "Refresh it (needs network), then commit both files:",
+            "    scripts/verify/check-connectors.sh --refresh-contract",
+        ))
+    if not recorded:
+        failures.append((
+            "config/pins.yaml has no goose.acp_contract_sha256 — the capture is unpinned",
+            "Add the key and let --refresh-contract fill it:",
+            '    acp_contract_sha256: "%s"' % actual,
+        ))
+    elif recorded != actual:
+        failures.append((
+            "config/goose/acp-contract.json was edited by hand: its sha256 is not the one "
+            "config/pins.yaml records",
+            "recorded: %s" % recorded,
+            "actual:   %s" % actual,
+            "A capture is evidence, not a config file. Re-take it:",
+            "    scripts/verify/check-connectors.sh --refresh-contract",
+        ))
+
+    names = contract.get("methods") or []
+    _p, f = audit_methods(names)
+    failures.extend(f)
+    _p, f = audit_fields(
+        set(contract.get("goose_extension_mcp_fields") or []),
+        set(contract.get("mcp_server_http_fields") or []),
+        True,
+    )
+    failures.extend(f)
+
+    for line in failures:
+        bad(*line)
+    if not failures:
+        # ONE pass line, deliberately: this is one check in data-lint's count,
+        # and its meaning is indivisible — a capture that agrees with the pin
+        # and still carries every method and field this repo calls by name.
+        ok("vendored contract (captured %s) matches the pin, sha256 as recorded, "
+           "all %d methods and the snake_case allowlist present"
+           % (contract.get("captured_on", "?"), len(METHODS)))
+
+
+# ---- mode: --refresh --------------------------------------------------------
+
+def run_refresh(meta_path, schema_path, tag, contract_out, pins_path):
+    try:
+        previous = load_json(contract_out)
+    except Exception:                                       # noqa: BLE001
+        previous = None                                     # first capture, or an unreadable one
+    text = render_contract(tag, load_json(meta_path), load_json(schema_path), previous)
+    with open(contract_out, "w") as fh:
+        fh.write(text)
+    digest = hashlib.sha256(text.encode()).hexdigest()
+
+    # Rewrite pins.yaml one LINE at a time. yaml.dump would round-trip the file
+    # into a comment-free skeleton, and that file is 30 lines of comments over
+    # 3 lines of data — the comments are the point.
+    lines = open(pins_path).read().splitlines(True)
+    hit = None
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("acp_contract_sha256:"):
+            hit = i
+            break
+    if hit is None:
+        print("FAIL  acp@%s: config/pins.yaml has no acp_contract_sha256 key to update" % tag)
+        print('      | Add it under `goose:` as:  acp_contract_sha256: "%s"' % digest)
+        sys.exit(1)
+    indent = lines[hit][:len(lines[hit]) - len(lines[hit].lstrip())]
+    before = lines[hit]
+    lines[hit] = '%sacp_contract_sha256: "%s"\n' % (indent, digest)
+    with open(pins_path, "w") as fh:
+        fh.write("".join(lines))
+
+    doc = json.loads(text)
+    print("wrote   %s" % contract_out)
+    print("        tag %s, captured %s, %d published methods, mcp fields: %s"
+          % (tag, doc["captured_on"], len(doc["methods"]), ", ".join(doc["goose_extension_mcp_fields"])))
+    if before.strip() == lines[hit].strip():
+        print("pins    %s already recorded this sha256 — upstream has not moved" % pins_path)
     else:
-        bad("McpServerHttp field names changed — recheck the two-layer table in config/connectors/README.md")
+        print("updated %s goose.acp_contract_sha256 -> %s" % (pins_path, digest))
+    print()
+    print("Commit BOTH files. Re-run `check-connectors.sh --offline` to confirm the gate is green.")
 
-# Export the schema's own property names so manifest validation can reject
-# unknown keys client-side. goose will not: there is no deny_unknown_fields.
-keys = {
-    "mcp": sorted(mcp.keys()),
-    "stdio": sorted(defs.get("McpServerStdio", {}).get("properties", {}).keys()),
-    "http": sorted(http.keys()),
-}
-if keys["mcp"] and keys["stdio"]:
-    json.dump(keys, open(keys_out, "w"))
+
+if MODE == "--live":
+    meta_path, schema_path, keys_out, TAG = sys.argv[2:6]
+    run_live(meta_path, schema_path, keys_out)
+elif MODE == "--vendored":
+    contract_path, pins_path, TAG = sys.argv[2:5]
+    run_vendored(contract_path, pins_path)
+elif MODE == "--refresh":
+    meta_path, schema_path, TAG, contract_out, pins_path = sys.argv[2:7]
+    run_refresh(meta_path, schema_path, TAG, contract_out, pins_path)
+else:
+    raise SystemExit("acp_contract.py: unknown mode %r" % MODE)
 PYEOF
 
 cat >"$VALIDATOR" <<'PYEOF'
@@ -1871,6 +2177,50 @@ if failures == 0:
 PYEOF
 
 # ---------------------------------------------------------------------------
+# Fetching goose's published contract. Used by --refresh-contract immediately
+# below and by the network form of check 1; defined here, above both, because
+# a function that two callers share should not live inside one of them.
+# ---------------------------------------------------------------------------
+fetch_at_tag() {
+  # $1 = path inside the goose repo, $2 = destination
+  if command -v curl >/dev/null 2>&1 &&
+     curl -fsSL --max-time 30 \
+       "https://raw.githubusercontent.com/aaif-goose/goose/$GOOSE_TAG/$1" -o "$2" 2>/dev/null &&
+     [ -s "$2" ]; then
+    return 0
+  fi
+  if command -v gh >/dev/null 2>&1 &&
+     gh api "repos/aaif-goose/goose/contents/$1?ref=$GOOSE_TAG" \
+       -H "Accept: application/vnd.github.raw" >"$2" 2>/dev/null &&
+     [ -s "$2" ]; then
+    return 0
+  fi
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# --refresh-contract: re-take the capture, then stop.
+#
+# It asserts nothing and prints no verdicts, so it exits before the counters
+# below are ever touched. Refreshing and checking in one run would report a
+# green contract that this very run had just written — the capture would attest
+# to itself.
+# ---------------------------------------------------------------------------
+if [ "$REFRESH" = "yes" ]; then
+  echo "== refreshing config/goose/acp-contract.json at $GOOSE_TAG (source: $TAG_SOURCE) =="
+  if ! fetch_at_tag "crates/goose/acp-meta.json" "$META_JSON" ||
+     ! fetch_at_tag "crates/goose/acp-schema.json" "$SCHEMA_JSON"; then
+    die 2 "could not fetch acp-meta.json / acp-schema.json at $GOOSE_TAG" \
+      "  Needs network (curl or gh). Also check the tag exists upstream:" \
+      "  https://github.com/aaif-goose/goose/releases/tag/$GOOSE_TAG" \
+      "  A tag that does not exist is the usual cause right after a pin bump."
+  fi
+  "${PY[@]}" "$ACP_CHECK" --refresh \
+    "$META_JSON" "$SCHEMA_JSON" "$GOOSE_TAG" "$CONTRACT_FILE" "$PINS_FILE"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 echo "== check-connectors: manifests in config/connectors/ =="
@@ -1897,29 +2247,31 @@ fi
 
 # ---- 1. the ACP contract at the pinned tag ----------------------------------
 echo
-echo "--> ACP contract @ $GOOSE_TAG (aaif-goose/goose)"
-META_JSON="$WORK/acp-meta.json"
-SCHEMA_JSON="$WORK/acp-schema.json"
-
-fetch_at_tag() {
-  # $1 = path inside the goose repo, $2 = destination
-  if command -v curl >/dev/null 2>&1 &&
-     curl -fsSL --max-time 30 \
-       "https://raw.githubusercontent.com/aaif-goose/goose/$GOOSE_TAG/$1" -o "$2" 2>/dev/null &&
-     [ -s "$2" ]; then
-    return 0
-  fi
-  if command -v gh >/dev/null 2>&1 &&
-     gh api "repos/aaif-goose/goose/contents/$1?ref=$GOOSE_TAG" \
-       -H "Accept: application/vnd.github.raw" >"$2" 2>/dev/null &&
-     [ -s "$2" ]; then
-    return 0
-  fi
-  return 1
-}
+CONTRACT_SOURCE="aaif-goose/goose"
+if [ "$OFFLINE" = "yes" ]; then
+  CONTRACT_SOURCE="config/goose/acp-contract.json"
+fi
+echo "--> ACP contract @ $GOOSE_TAG ($CONTRACT_SOURCE)"
 
 if [ "$OFFLINE" = "yes" ]; then
-  skip "ACP contract check (--offline)"
+  # The committed capture, and the pin it was taken at. This is the only form
+  # any workflow runs, so it is the only form that has ever asserted anything:
+  # the fetch below cannot run in CI without making every PR depend on
+  # raw.githubusercontent.com. It reports ONE verdict, because "the capture
+  # agrees with the pin and still carries every method and field this repo
+  # names" is one indivisible claim; each way of breaking it FAILs separately
+  # and says which.
+  if [ ! -r "$CONTRACT_FILE" ]; then
+    fail "config/goose/acp-contract.json is missing — the offline ACP contract check has nothing to assert against"
+    note "Take the capture (needs network):  $0 --refresh-contract"
+    # run_check adds the recap row for every other outcome; this branch bypasses
+    # it, and a FAIL that appears in the count but not in the table is the one
+    # an operator scrolls past.
+    summary_row "FAIL  ACP contract @ $GOOSE_TAG (no capture on disk)"
+  else
+    run_check "ACP contract @ $GOOSE_TAG (vendored)" \
+      "${PY[@]}" "$ACP_CHECK" --vendored "$CONTRACT_FILE" "$PINS_FILE" "$GOOSE_TAG"
+  fi
 elif ! fetch_at_tag "crates/goose/acp-meta.json" "$META_JSON" ||
      ! fetch_at_tag "crates/goose/acp-schema.json" "$SCHEMA_JSON"; then
   skip "could not fetch acp-meta.json / acp-schema.json at $GOOSE_TAG (no network, no gh, or the tag does not exist)"
@@ -1927,7 +2279,7 @@ elif ! fetch_at_tag "crates/goose/acp-meta.json" "$META_JSON" ||
   echo "      this script. Re-run with network before trusting a version bump."
 else
   run_check "ACP contract @ $GOOSE_TAG" \
-    "${PY[@]}" "$ACP_CHECK" "$META_JSON" "$SCHEMA_JSON" "$SCHEMA_KEYS" "$GOOSE_TAG"
+    "${PY[@]}" "$ACP_CHECK" --live "$META_JSON" "$SCHEMA_JSON" "$SCHEMA_KEYS" "$GOOSE_TAG"
 fi
 
 # ---- 2. every manifest -------------------------------------------------------

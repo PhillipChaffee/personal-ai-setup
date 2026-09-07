@@ -91,6 +91,15 @@ The version pin both surfaces read is `config/pins.yaml`. The brain installs
 exactly it; the Mac keeps Homebrew and *asserts* against it, because `brew pin`
 freezes whatever was installed rather than choosing a version.
 
+Bumping that pin is **a two-file edit**: change `goose.version`, then run
+`scripts/verify/check-connectors.sh --refresh-contract` (needs network).
+That re-takes `config/goose/acp-contract.json` — the committed record of
+goose's ACP method names at that tag — and the sha256 of it that
+`config/pins.yaml` carries. Until you do, `check-connectors.sh --offline`
+fails, on purpose: it is the only thing in this repo that can notice a bump
+that silently took away an ACP method the connect workflow calls, and when it
+does it names the method.
+
 ## Conventions
 
 These hold everywhere in the repo — docs, configs, scripts. If something you
