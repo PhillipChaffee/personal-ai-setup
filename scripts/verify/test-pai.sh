@@ -188,12 +188,28 @@ note_case "a personalised placeholder value" "personalised" mut_personalise
 note_case "goosehints simply not installed yet" "not installed" mut_no_hints
 
 # Provider-side failure shapes, which have distinct messages on purpose: a
-# missing file and an unparseable one are different problems for the reader.
+# missing file, an unparseable one, and one that parses to the wrong TYPE are
+# three different problems for the reader — and the third is a real shape, not a
+# hypothetical: `[]` is valid JSON that json.loads accepts happily, so the
+# unreadable-or-not-JSON arm never fires for it.
 mut_provider_gone() { rm -f "$1/.config/goose/custom_providers/together.json"; }
 mut_provider_junk() { printf 'not json at all' > "$1/.config/goose/custom_providers/together.json"; }
+mut_provider_list() { printf '[1, 2, 3]' > "$1/.config/goose/custom_providers/together.json"; }
 
 drift_case "a provider is not installed" "is not installed" mut_provider_gone
 drift_case "a provider file is unparseable" "unreadable or not JSON" mut_provider_junk
+drift_case "a provider file is JSON but not an object" "is not a JSON object" mut_provider_list
+
+# The PASS arm of check_providers, which no fixture has ever reached: make_clean
+# deliberately truncates every catalogue to models[:1], so `n_want != n_got` has
+# always held and the NOTE arm always won. A verbatim copy makes the two sides
+# byte-identical. The other three providers keep their truncated catalogues, so
+# this stays a NOTE-producing (rc 0) case overall.
+mut_provider_synced() {
+  cp "$REPO_ROOT/config/goose/custom_providers/together.json" \
+     "$1/.config/goose/custom_providers/together.json"
+}
+note_case "a provider whose catalogue is in sync" "provider together matches" mut_provider_synced
 
 # ---- 3. a mangled config degrades, it does not crash -------------------------
 MANGLED="$WORK/mangled"; make_clean "$MANGLED"
@@ -226,6 +242,96 @@ if [ "$BEFORE" = "$AFTER" ]; then
   pass "doctor/status/list wrote nothing: the fixture hashes identically"
 else
   fail "pai modified the machine it was inspecting"
+fi
+
+# ---- 6. the arms the CLI cannot reach ----------------------------------------
+# Three of doctor's branches are unreachable through `pai doctor` BY
+# CONSTRUCTION, not by omission:
+#
+#   is_placeholder    every value the shipped template declares is a bool or a
+#                     list, so the `isinstance(value, str)` guard has never once
+#                     fallen through in a real run.
+#   run()             its OSError arm needs a binary that does not exist.
+#   check_opencode_shadowing
+#                     gated on `home == Path.home()`, which is false for every
+#                     fixture — that gate exists precisely so a fixture never
+#                     reports THIS Mac's PATH as if it were the fixture's.
+#
+# Driving them means calling the functions, so this is an in-process unit probe.
+#
+# It is a FILE, not a heredoc on stdin: `coverage run -` refuses stdin ("No file
+# to run: -"), the same trap documented at the top of this file. And it runs
+# under $PAI_PY, not $FIX_PY — a plain python3 would assert correctly and
+# contribute exactly zero coverage.
+cat > "$WORK/probe.py" <<'PY'
+import importlib.util
+import os
+import sys
+from pathlib import Path
+
+doctor_path, clean_home, work, repo_root = sys.argv[1:5]
+spec = importlib.util.spec_from_file_location("doctor_probe", doctor_path)
+assert spec and spec.loader
+mod = importlib.util.module_from_spec(spec)
+# Register BEFORE exec_module, matching test-code-agent-manager.sh:244. Without
+# it @dataclass fails resolving its own annotations: it looks the class's module
+# up via sys.modules[cls.__module__], finds None, and dies in _is_type.
+sys.modules["doctor_probe"] = mod
+spec.loader.exec_module(mod)
+
+# 1. is_placeholder with actual STRINGS -- both literal and <bracketed>.
+assert mod.is_placeholder("you@example.com") is True
+assert mod.is_placeholder("<your name>") is True
+assert mod.is_placeholder("uvx") is False
+assert mod.is_placeholder(7) is False
+
+# 2. a placeholder-valued field is a NOTE, never a FAIL. Asserting the LEVEL is
+#    the point: if the placeholder arm is skipped this is a FAIL with different
+#    text, so the equality fails rather than quietly matching.
+got = [(f.level, f.text) for f in mod.compare_extension("x", {"cmd": "<your cmd>"}, {"cmd": "uvx"})]
+assert got == [("NOTE", "x.cmd is personalised (template ships a placeholder)")], got
+
+# 3. a repo that ships no skills at all (glob on a missing dir yields nothing,
+#    it does not raise). Without this arm check_skills returns the "all N
+#    shipped skills are installed" PASS, so the level flips.
+r = mod.check_skills(Path(work) / "emptyrepo", Path(clean_home))
+assert [f.level for f in r] == ["NOTE"], r
+assert "ships no skills" in r[0].text, r
+
+# 4. the REAL run(), BEFORE step 5 rebinds it. FileNotFoundError is an OSError.
+assert mod.run(["/nonexistent/binary/pai-probe"]) == ""
+
+# 5. both arms of the shadowing check, with run() stubbed at module scope
+#    (check_opencode_shadowing resolves `run` at call time).
+calls = []
+
+
+def fake_run(cmd):
+    calls.append(cmd)
+    return fake_run.out
+
+
+mod.run = fake_run
+
+fake_run.out = "/opt/homebrew/bin/opencode\n"
+assert mod.check_opencode_shadowing() == []
+assert ["/usr/bin/which", "-a", "opencode"] in calls, len(calls)
+
+fake_run.out = "/opt/homebrew/bin/opencode\n/Users/someone/.opencode/bin/opencode\n"
+shadow = mod.check_opencode_shadowing()
+assert [f.level for f in shadow] == ["FAIL"], shadow
+assert "resolves 2 ways" in shadow[0].text, shadow
+
+# 6. collect() runs the shadowing check ONLY when the inspected home is this
+#    machine's. Point HOME at the fixture so the two sides are the same string.
+os.environ["HOME"] = clean_home
+findings = mod.collect(Path(repo_root), Path(clean_home))
+assert any("resolves 2 ways" in f.text for f in findings), [f.text for f in findings]
+PY
+if OUT="$("${PAI_PY[@]}" "$WORK/probe.py" "$DOCTOR" "$CLEAN" "$WORK" "$REPO_ROOT" 2>&1)"; then
+  pass "unit probe: is_placeholder, run()'s OSError arm, and both shadowing arms"
+else
+  fail "unit probe failed:"$'\n'"$OUT"
 fi
 
 finish
