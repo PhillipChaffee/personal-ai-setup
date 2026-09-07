@@ -74,7 +74,7 @@ read contradicts them, the thing you read is wrong.
 |---|---|---|
 | Mac | macOS Keychain | `scripts/mac/keychain-secrets.sh` (never set `GOOSE_DISABLE_KEYRING`) |
 | VPS brain | `/data/secrets.env` — chmod 600, on the LUKS volume | copied from `config/env/secrets.env.example`; loaded by systemd `EnvironmentFile` |
-| Terraform | `infra/terraform/terraform.tfvars` — gitignored | copied from `terraform.tfvars.example` |
+| Terraform | nowhere — `hcloud_token` and `tailscale_authkey` are typed at the interactive prompt on each `plan`/`apply` | `infra/terraform/variables.tf` (no defaults, so Terraform asks) |
 | LUKS passphrase | your password manager only | nowhere on any machine |
 
 Canonical secret variable names, used identically on every platform:

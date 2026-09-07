@@ -85,9 +85,9 @@ The only network path to the brain. Free personal plan.
    `<hostname>.<your-tailnet>.ts.net` name, and the cert support backs TLS to
    `goose serve`.
 4. No credential to collect today. In Phase 3 you'll generate a **Tailscale
-   auth key** for the VPS (admin console → Settings → Keys) — that goes only
-   into `infra/terraform/terraform.tfvars`, and
-   [50-vps-brain.md](50-vps-brain.md) tells you when.
+   auth key** for the VPS (admin console → Settings → Keys). It is never
+   stored in a file — Terraform prompts for it at `plan`/`apply` and you paste
+   it there. [50-vps-brain.md](50-vps-brain.md) tells you when.
 
 ## 4. Todoist (optional — skip unless you've adopted it)
 
@@ -133,9 +133,11 @@ narrow the *token*. Revoke it in Todoist's settings if it ever leaks.
 3. In the project: **Security → API tokens → Generate API token**, permissions
    **Read & Write**. This token can create and destroy servers — treat it like
    a root password.
-4. It goes in exactly one place: `infra/terraform/terraform.tfvars`
-   (gitignored). Never in the Keychain scripts, never in `secrets.env`, never
-   in the repo.
+4. It goes in exactly one place: the **Terraform prompt**. `hcloud_token` has
+   no default and is not in `terraform.tfvars`, so `terraform plan`/`apply`
+   asks for it and you paste it there. Never in the Keychain scripts, never in
+   `secrets.env`, never in `terraform.tfvars`, never in the repo — a token
+   that is never written to a file cannot be committed.
 
 ## 6. ntfy (failure-alert transport)
 
@@ -243,8 +245,8 @@ means stored via `scripts/mac/keychain-secrets.sh`; "secrets.env" means
 | Failure-alert email (recommended; not a secret) | `NTFY_EMAIL` | yes | yes | — | §6 (now) |
 | ntfy topic for code-agent buzzes (optional) | `NTFY_AGENT_TOPIC` | yes | yes | ntfy app on the phone (subscribed) | §6a (now) |
 | Tavily key (optional) | `TAVILY_API_KEY` | yes | yes | — | §7 |
-| Hetzner API token | `hcloud_token` in `terraform.tfvars` | no | no | `terraform.tfvars` only | §5 (Phase 3) |
-| Tailscale auth key | `tailscale_authkey` in `terraform.tfvars` | no | no | `terraform.tfvars` only | Phase 3 |
+| Hetzner API token | `hcloud_token`, typed at the Terraform prompt | no | no | nowhere — never stored on disk | §5 (Phase 3) |
+| Tailscale auth key | `tailscale_authkey`, typed at the Terraform prompt | no | no | nowhere — never stored on disk | Phase 3 |
 | goose serve shared secret | `GOOSE_SERVER__SECRET_KEY` | yes (Desktop connects with it) | yes | Goose iOS app (pairing) | Phase 3 |
 | Google OAuth client | `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` | yes | yes | — | Phase 2 ([30-google-oauth.md](30-google-oauth.md)) |
 | LUKS passphrase | (passphrase) | no | no | password manager **only** | Phase 3 |
