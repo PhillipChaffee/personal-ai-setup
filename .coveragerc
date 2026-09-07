@@ -1,13 +1,15 @@
 # SCOPE, stated once so the number cannot be misread: this measures every
 # tracked .py under scripts/ EXCEPT scripts/verify/, branch-aware. Today that
-# resolves to one file, scripts/vps/code-agent-manager.py. It is NOT a repo-wide
-# number — ~1,645 lines of shipped bash are gated by the check-*.sh verifiers
-# and by shellcheck, not by this percentage.
+# resolves to TWO files, scripts/vps/code-agent-manager.py and
+# scripts/pai/doctor.py. It is NOT a repo-wide number — ~1,645 lines of shipped
+# bash are gated by the check-*.sh verifiers and by shellcheck, not by this
+# percentage.
 #
-# Measured the only way the manager is ever exercised: as a live server driven
-# end to end by scripts/verify/test-code-agent-manager.sh, plus the in-process
-# checks it runs from $WORK/preflight.py under the same interpreter.
-# CI: .github/workflows/coverage.yml.
+# Measured the only way each is ever exercised: the manager as a live server
+# driven end to end by scripts/verify/test-code-agent-manager.sh, doctor.py
+# through bin/pai by scripts/verify/test-pai.sh, plus the in-process fixtures
+# both run from $WORK under the same interpreter.
+# CI: .github/workflows/coverage.yml runs both and combines them.
 [run]
 # A DIRECTORY, not a file list. `source = scripts/vps` was a promise about a
 # directory that happens to hold one file; when scripts/pai/ lands it must show
@@ -43,18 +45,26 @@ include_namespace_packages = True
 precision = 2
 # THE FLOOR. Deliberately below the measured number, not equal to it.
 #
-# Observed on effectively identical code: 91.04% and 91.84%. Eight lines flap
-# between runs -- pending_permissions' probe-failure arms (480-485),
-# container_state's "absent" (892) and session_state's error arm (1282-1283).
-# They are covered when a socket happens to time out under load, which is luck
-# rather than a test, so ~0.65pp of any single reading is noise.
+# The rule for raising it is "actual minus one, never actual": a floor set to
+# the current number turns the next unlucky run red for no reason, and that is
+# how a coverage gate earns the reputation that gets it deleted.
 #
-# 90 sits a point below the LOWEST observation. The rule for raising it is
-# "actual minus one, never actual": a floor set to the current number turns the
-# next unlucky run red for no reason, and that is how a coverage gate earns the
-# reputation that gets it deleted. Covering those eight deliberately is what
-# unlocks 95.
-fail_under = 90
+# Measured 96.70% twice on this code -- once locally, once in CI. The two runs
+# disagreed on the split (29 missing statements / 20 partial branches locally,
+# 30/19 in CI) while agreeing exactly on the total, which is the flap described
+# below moving one item from one column to the other.
+#
+# WHAT STILL FLAPS, and it is much less than it was: container_state's "absent"
+# arm, the `return "absent"` taken when `container inspect` exits non-zero. It
+# is covered when the engine happens to be asked about a container mid-teardown,
+# which is luck rather than a test. Roughly one item, ~0.07pp. (The older note
+# here named eight flapping lines at 480-485/892/1282-1283; those line numbers
+# are stale and most of that set is now covered deliberately.)
+#
+# 95 sits 1.70pp -- about 25 items -- below the measured number. Three whole
+# test recipes could regress and this would still pass, which is the margin a
+# floor needs to be trusted rather than worked around.
+fail_under = 95
 show_missing = True
 skip_covered = False
 exclude_also =
