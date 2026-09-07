@@ -1687,15 +1687,15 @@ def list_extensions():
 if not EXTS:
     skipped("the manifest has no acp_extension to send")
     sys.exit(0)
-if not SECRET:
-    skipped(
-        "GOOSE_SERVER__SECRET_KEY is not in this shell — nothing to authenticate with",
-        "Name only, never the value. Mac: scripts/mac/keychain-secrets.sh, then a NEW",
-        "terminal. Brain: set -a; . /data/secrets.env; set +a",
-        "(`goose serve --dangerously-unauthenticated` also works, and is why this is a",
-        "SKIP rather than a FAIL.)",
-    )
-    sys.exit(0)
+# NO PRE-EMPTIVE SECRET CHECK. There used to be one here, and it made the
+# local-check recipe this script itself prints impossible to follow: it names
+# `goose serve --dangerously-unauthenticated`, and then skipped against exactly
+# that server because it refused to ask. A skip on an explicitly requested mode
+# escalates to a failure below, so the printed recipe always failed.
+#
+# An empty secret is not evidence of anything. Only the server can say whether
+# it wants authentication, so the taxonomy is emitted below from its ANSWER --
+# headers() already omits the header when SECRET is empty.
 
 try:
     status, body, resp_headers = post(1, "initialize", {
@@ -1711,7 +1711,20 @@ except Exception as exc:                                    # noqa: BLE001
     sys.exit(0)
 
 if status in (401, 403):
-    skipped("goose serve answered HTTP %s at %s — the secret key is wrong for this server" % (status, URL))
+    # Two different problems, and the server has just told us which one. The
+    # second message is the one the deleted preflight was trying to give --
+    # now emitted only when it is actually true.
+    if SECRET:
+        skipped("goose serve answered HTTP %s at %s — the secret key is wrong for this server"
+                % (status, URL))
+    else:
+        skipped(
+            "goose serve at %s requires auth and GOOSE_SERVER__SECRET_KEY is not in this shell"
+            % URL,
+            "Name only, never the value. Mac: scripts/mac/keychain-secrets.sh, then a NEW",
+            "terminal. Brain: set -a; . /data/secrets.env; set +a",
+            "(`goose serve --dangerously-unauthenticated` needs no secret at all.)",
+        )
     sys.exit(0)
 if status not in (200, 202) or not isinstance(body, dict) or "error" in (body or {}):
     skipped("initialize -> HTTP %s at %s, no usable ACP session" % (status, URL))
