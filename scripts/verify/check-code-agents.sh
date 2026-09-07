@@ -190,7 +190,7 @@ fi
 # health/chats/wake/stop/delete all kept passing. A 404 from a stale process
 # looks exactly like a route that was never written.
 #
-# These four are the ones the app calls and older managers do not serve. They
+# These five are the ones the app calls and older managers do not serve. They
 # are probed for "not 404" rather than for a body: the point is which PROCESS
 # is answering, and a 502 from GitHub or a 404 for an unknown chat id both
 # prove the route exists.
@@ -207,6 +207,11 @@ if [ -n "$AUTH" ]; then
     esac
   }
   probe_route "/api/permissions"
+  # The cached pull-request aggregate. It always answers 200 — a chat with no
+  # answer is named in `unreachable`/`no_remote` rather than erroring — so a 404
+  # here means the manager predates the route, which is exactly what this
+  # section is for.
+  probe_route "/api/pulls"
   # A repo from the allowlist, so the 403 "not allowlisted" arm is not what we
   # measure. Falls back to a name that will 403 rather than 404 if the list is
   # empty, which still distinguishes the two processes.

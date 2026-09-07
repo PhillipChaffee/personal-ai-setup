@@ -57,6 +57,34 @@ bad() { echo "FAIL  $1"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
 jget() { python3 -c "import json,sys; d=json.load(sys.stdin); print(eval(sys.argv[1]))" "$1"; }
 cstate() { STUB_ENGINE_STATE="$WORK/stub" "$HERE/stub-engine.sh" container inspect --format '{{.State.Status}}' "code-agent-$1" 2>/dev/null || echo absent; }
 
+# Poll until the github sweep has published a pass that STARTED after now, using
+# /api/health's github_at as the predicate.
+#
+# TWO advances, not one: a pass already in flight when the world changed was
+# reading the OLD world, so waiting for a single advance can return a snapshot
+# taken before the fixture under test existed.
+#
+# A fixed sleep is forbidden here. At INTERVAL=2 a sweep can legitimately land
+# mid-restart or on a half-written index, and sleep-and-hope makes every
+# downstream assertion silently vacuous -- which is the flake class this file
+# already documents. So this FAILS loudly on timeout rather than falling through.
+wait_sweeps() { # wait_sweeps <advances>
+  local want="${1:-2}" seen=0 last cur i
+  # shellcheck disable=SC2086
+  last="$($CURL "$BASE/api/health" 2>/dev/null | jget "d.get('github_at', 0)" 2>/dev/null || echo 0)"
+  for i in $(seq 1 120); do
+    sleep 0.25
+    # shellcheck disable=SC2086
+    cur="$($CURL "$BASE/api/health" 2>/dev/null | jget "d.get('github_at', 0)" 2>/dev/null || echo 0)"
+    if [ "$cur" != "$last" ]; then
+      seen=$((seen + 1)); last="$cur"
+      [ "$seen" -ge "$want" ] && return 0
+    fi
+  done
+  bad "the github sweep did not advance $want time(s) in 30s (github_at stuck at $last)"
+  return 1
+}
+
 MANAGER_PID=""
 GITHUB_PID=""
 NTFY_PID=""
@@ -178,6 +206,7 @@ env -i PATH="$PATH" HOME="$HOME" \
   CODE_AGENT_IMAGE=mock \
   CODE_AGENT_IDLE_SECONDS="$IDLE_SECONDS" \
   CODE_AGENT_REAPER_INTERVAL=2 \
+  CODE_AGENT_GITHUB_INTERVAL=2 \
   CODE_AGENT_MAX_ACTIVE=2 \
   CODE_AGENT_TLS_CERT="$WORK/no-cert" \
   CODE_AGENT_TLS_KEY="$WORK/no-key" \
@@ -670,6 +699,153 @@ then
   ok "a truncated index.json degrades to empty and says so, instead of killing every request"
 else
   bad "corrupt-index / ChatLaunchError arms (see the assertion above)"
+fi
+
+# ---- 0e. the github sweep's dispositions and its error nets ------------------
+# The sweep answers /api/pulls from a cache so the app's ten-second poll costs no
+# GitHub calls. Its three dispositions are three different CLAIMS, and the live
+# stack can only produce one of them: an id in `pulls` with rows. A chat whose
+# repo left the allowlist, one GitHub refuses to answer for, and one that raises
+# something gh() does not convert all need arranging, and the loop's never-die
+# net needs a pass that raises. All in-process.
+cat >"$WORK/preflight-github.py" <<'PY'
+import contextlib, importlib.util, io, sys, time, types
+
+spec = importlib.util.spec_from_file_location("cam", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+sys.modules["cam"] = mod
+spec.loader.exec_module(mod)
+
+
+def chat(cid):
+    return mod.Chat(id=cid, repo="r", title="t", port=1, branch="b", last_active=time.time())
+
+
+# 1. One pass over an index holding every disposition at once.
+idx = mod.Index(chats={c: chat(c) for c in ("fine", "gone", "refused", "weird")})
+mod.Index.load = classmethod(lambda cls: idx)
+
+
+def fake_repo_slug(c):
+    if c.id == "gone":
+        # What slug_of really raises for a repo off the allowlist, and for the
+        # _probe chat whose RepoEntry carries an empty url.
+        raise mod.GitHubError(409, "repo 'r' is not in the allowlist any more")
+    return "o/r"
+
+
+def fake_chat_pulls(c):
+    if c.id == "refused":
+        raise mod.GitHubError(502, "GitHub is unreachable")
+    if c.id == "weird":
+        # gh() converts OSError and HTTPException; it does not convert this. A
+        # non-ASCII branch in a hand-edited index.json raises exactly it out of
+        # http.client's putrequest.
+        raise UnicodeEncodeError("ascii", "brünch", 1, 2, "ordinal not in range")
+    return [{"number": 7, "title": "t"}]
+
+
+mod.repo_slug = fake_repo_slug
+mod.chat_pulls = fake_chat_pulls
+
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    mod.github_pass()
+snap = mod._github_memory.snapshot
+
+assert snap.as_of > 0, snap.as_of
+assert list(snap.pulls) == ["fine"], list(snap.pulls)
+assert snap.pulls["fine"] == [{"number": 7, "title": "t"}], snap.pulls["fine"]
+# Settled vs retryable are different buckets. A probe chat parked in
+# `unreachable` would spin on a screen forever.
+assert snap.no_remote == frozenset({"gone"}), snap.no_remote
+assert snap.unreachable == frozenset({"refused", "weird"}), snap.unreachable
+# A chat with no answer is NAMED, never given an empty list: the app reads an
+# empty list as "nothing is open", which a failure is not.
+for cid in ("gone", "refused", "weird"):
+    assert cid not in snap.pulls, cid
+# THE UNION INVARIANT: every chat in the index is in exactly one disposition.
+assert set(snap.pulls) | snap.unreachable | snap.no_remote == set(idx.chats)
+assert not (set(snap.pulls) & snap.unreachable)
+assert not (snap.unreachable & snap.no_remote)
+# One line per pass with a count, not one per chat.
+out = buf.getvalue()
+assert "github sweep: 3 chat(s) had no answer" in out, out
+
+# 2. as_of is stamped BEFORE the walk, not after. Same shape as the reaper's
+#    sampled_at fixture: a slow call whose own reading must be LATER than the
+#    stamp. Measured after, as_of would date the readings to the wrong end of a
+#    walk that can run for minutes at gh()'s timeout=20.
+readings = []
+
+
+def slow_pulls(c):
+    time.sleep(0.05)
+    readings.append(time.time())
+    return []
+
+
+mod.repo_slug = lambda c: "o/r"
+mod.chat_pulls = slow_pulls
+mod.github_pass()
+assert readings, "the walk never ran"
+assert mod._github_memory.snapshot.as_of <= readings[0], (
+    mod._github_memory.snapshot.as_of, readings[0])
+
+# 3. Eviction is structural: the next pass rebuilds from the index it loaded, so
+#    a deleted chat is gone by omission. There is no eviction code to get wrong,
+#    and this is the assertion that keeps it that way.
+assert set(mod._github_memory.snapshot.pulls) == set(idx.chats)
+smaller = mod.Index(chats={"fine": chat("fine")})
+mod.Index.load = classmethod(lambda cls: smaller)
+mod.github_pass()
+snap2 = mod._github_memory.snapshot
+assert set(snap2.pulls) == {"fine"}, set(snap2.pulls)
+for gone in ("gone", "refused", "weird"):
+    assert gone not in snap2.pulls
+    assert gone not in snap2.unreachable
+    assert gone not in snap2.no_remote
+
+# 4. The publish is one whole object, so a reader can never see half a pass.
+assert isinstance(snap2, mod.GitHubSnapshot)
+wire = snap2.to_wire()
+assert sorted(wire) == ["as_of", "no_remote", "unreachable"], sorted(wire)
+assert wire["unreachable"] == [] and wire["no_remote"] == []
+
+# 5. github_loop's net. reaper_loop's identical arm is uncovered today, so
+#    without this one this would be too. `time` is replaced on the MODULE rather
+#    than patching time.sleep globally, which would poison this process; and the
+#    escape is KeyboardInterrupt, a BaseException, so the loop's own
+#    `except Exception` cannot swallow the thing ending the test.
+def boom_pass():
+    raise RuntimeError("sweep exploded")
+
+
+def stop_sleeping(_seconds):
+    raise KeyboardInterrupt
+
+
+mod.github_pass = boom_pass
+mod.time = types.SimpleNamespace(time=time.time, sleep=stop_sleeping)
+buf2 = io.StringIO()
+try:
+    with contextlib.redirect_stdout(buf2):
+        mod.github_loop()
+except KeyboardInterrupt:
+    pass
+else:
+    raise AssertionError("github_loop returned instead of looping")
+# It logged and kept going -- reaching sleep at all proves it did not die.
+assert "github sweep failed: RuntimeError" in buf2.getvalue(), buf2.getvalue()
+PY
+if "${MANAGER_PY[@]}" "$WORK/preflight-github.py" "$REPO_ROOT/scripts/vps/code-agent-manager.py"
+then
+  ok "the sweep sorts every chat into exactly one of pulls/unreachable/no_remote"
+  ok "a repo off the allowlist is 'no_remote' (settled), not 'unreachable' (retryable)"
+  ok "the sweep stamps as_of before the walk, and evicts by rebuilding"
+  ok "the sweep loop logs and survives a pass that raises, instead of dying"
+else
+  bad "github sweep dispositions / loop net (see the assertion above)"
 fi
 
 # ---- 1. auth ----------------------------------------------------------------
@@ -1338,6 +1514,73 @@ assert got[11]["additions"] == 77, got[11]
 assert got[11]["deletions"] == 33, got[11]
 assert got[11]["changed_files"] == 3, got[11]
 ' && ok "pull size counts survive the detail call" || bad "pull counts wrong: $PULLS"
+
+# ---- 5b2. the same pulls, served from the sweep's cache ----------------------
+# BEFORE the merge tests on purpose: a merge mutates the fake's fixture state,
+# and a byte-identity assertion taken after one would race the sweep.
+if wait_sweeps 2; then
+  # shellcheck disable=SC2086
+  ALL_PULLS="$($CURL "$BASE/api/pulls")"
+  printf '%s' "$ALL_PULLS" > "$WORK/all-pulls.json"
+  printf '%s' "$PULLS" > "$WORK/one-pulls.json"
+  # THE assertion for this feature. The sweep calls chat_pulls() unmodified, so
+  # the cached rows must be identical to the interactive route's; anything else
+  # means the cache is not serving what it claims to be serving.
+  if python3 - "$WORK/all-pulls.json" "$WORK/one-pulls.json" "$PR_CHAT" <<'PY'
+import json, sys
+allp = json.load(open(sys.argv[1]))
+onep = json.load(open(sys.argv[2]))
+cached = allp["pulls"][sys.argv[3]]
+live = onep["pulls"]
+by_number = lambda rows: sorted(rows, key=lambda r: r["number"])
+assert by_number(cached) == by_number(live), (len(cached), len(live))
+assert allp["as_of"] > 0, "the cache served a cold snapshot"
+PY
+  then
+    ok "/api/pulls serves rows identical to the per-chat route, from cache"
+  else
+    bad "the cached pulls differ from the interactive route's"
+  fi
+
+  # shellcheck disable=SC2086
+  CHATS_NOW="$($CURL "$BASE/api/chats")"
+  printf '%s' "$CHATS_NOW" > "$WORK/chats-now.json"
+  if python3 - "$WORK/all-pulls.json" "$WORK/chats-now.json" <<'PY'
+import json, sys
+allp = json.load(open(sys.argv[1]))
+ids = {c["id"] for c in json.load(open(sys.argv[2]))["chats"]}
+buckets = set(allp["pulls"]) | set(allp["unreachable"]) | set(allp["no_remote"])
+assert allp["unreachable"] == [], allp["unreachable"]
+assert allp["no_remote"] == [], allp["no_remote"]
+# Every chat is accounted for: named in a bucket, never silently dropped.
+assert ids <= buckets, sorted(ids - buckets)
+PY
+  then
+    ok "every chat is named in exactly one of pulls/unreachable/no_remote"
+  else
+    bad "the sweep left a chat in no disposition at all"
+  fi
+
+  # THE COST PROPERTY, measured independently of request count. An inline
+  # implementation scales with requests; a cache does not. The two deltas must
+  # be EQUAL, not zero -- at INTERVAL=2 under coverage, 40 requests will not
+  # reliably fit inside one sweep tick, and asserting zero would be exactly the
+  # timing flake this harness documents elsewhere.
+  CALLS0="$(curl -sS "http://127.0.0.1:$GH_PORT/__calls" | jget "d['calls']")"
+  # shellcheck disable=SC2086
+  for _ in $(seq 1 10); do $CURL -o /dev/null "$BASE/api/pulls"; done
+  CALLS1="$(curl -sS "http://127.0.0.1:$GH_PORT/__calls" | jget "d['calls']")"
+  # shellcheck disable=SC2086
+  for _ in $(seq 1 30); do $CURL -o /dev/null "$BASE/api/pulls"; done
+  CALLS2="$(curl -sS "http://127.0.0.1:$GH_PORT/__calls" | jget "d['calls']")"
+  # Subtract the two counter reads themselves from each window.
+  D1=$(( CALLS1 - CALLS0 - 1 )); D2=$(( CALLS2 - CALLS1 - 1 ))
+  if [ "$D1" -eq "$D2" ]; then
+    ok "30 reads of /api/pulls cost the same GitHub calls as 10 — it is a cache"
+  else
+    bad "GitHub calls scaled with requests: 10 reads cost $D1, 30 cost $D2"
+  fi
+fi
 
 # shellcheck disable=SC2086
 BODY="$($CURL -X POST -H 'Content-Type: application/json' -d '{}' \
