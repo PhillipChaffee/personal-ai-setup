@@ -1118,6 +1118,179 @@ sleep 6
   && ok "an aborted turn does not buzz" \
   || bad "abort fired a turn notification: $TURNS_BEFORE -> $(ntfy_count turn)"
 
+# ---- 5ae. the reaper's error nets and its row filters (in-process) ----------
+# reaper_pass wraps three calls in `except Exception` precisely so a buzz can
+# never cost a spin-down — this file has already shipped that failure once. The
+# only way to prove those nets hold is to make the calls raise, which no live
+# fixture can do. Same for the row filters: the running manager never produces a
+# malformed ask row, and an ntfy server that answers 503 is not something
+# fake-ntfy.py does.
+cat >"$WORK/preflight-reaper.py" <<'PY'
+import contextlib, http.server, importlib.util, io, sys, threading, time
+
+spec = importlib.util.spec_from_file_location("cam", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+sys.modules["cam"] = mod
+spec.loader.exec_module(mod)
+
+real_post_ntfy = mod._post_ntfy
+
+# Stub the notifier at the TOP. This fixture does NOT run under `env -i`, so a
+# real NTFY_SERVER in the environment would otherwise send live traffic.
+fired = []
+mod.notify_agent = lambda kind, count, chats: fired.append((kind, count, sorted(chats)))
+mod._post_ntfy = lambda *a, **k: None
+
+
+def chat(cid, probe=False):
+    return mod.Chat(id=cid, repo="r", title="t", port=1, branch="b", probe=probe,
+                    last_active=time.time())
+
+
+# 1. notify_new_asks drops malformed rows, probe chats and unknown chats.
+idx = mod.Index(chats={"real": chat("real"), "probe1": chat("probe1", probe=True)})
+mod._reaper_memory.seen_asks.clear()
+fired.clear()
+mod.notify_new_asks(
+    idx,
+    [
+        {"chatId": 5, "id": "a"},           # chatId is not a str
+        {"chatId": "real", "id": ""},       # empty ask id
+        {"chatId": "real", "id": "a1"},     # the one real row
+        {"chatId": "probe1", "id": "p1"},   # a probe chat: nobody's pocket
+        {"chatId": "gone", "id": "g1"},     # not in the index at all
+    ],
+    [],
+    frozenset({"real", "probe1"}),
+)
+assert fired == [("ask", 1, ["real"])], fired
+# The skip happens BEFORE seen.setdefault, so a skipped chat must leave no
+# memory behind. Asserting absence from seen_asks is a real consequence; merely
+# asserting the buzz count would pass even if the rows had been remembered.
+assert "probe1" not in mod._reaper_memory.seen_asks, dict(mod._reaper_memory.seen_asks)
+assert "gone" not in mod._reaper_memory.seen_asks, dict(mod._reaper_memory.seen_asks)
+
+# 2. notify_finished_turns forgets arms whose chat is deleted or not running.
+now = time.time()
+stale = now - (mod.ARM_SETTLE_SECONDS + 10)
+mod._reaper_memory.armed.clear()
+mod._reaper_memory.armed.update({"deleted": stale, "notrun": stale, "real": stale})
+idx2 = mod.Index(chats={"real": chat("real"), "notrun": chat("notrun")})
+mod._reaper_memory.prev_running = frozenset({"real"})
+fired.clear()
+mod.notify_finished_turns(idx2, {"real": "idle"}, frozenset({"real"}), now)
+assert fired == [("turn", 1, ["real"])], fired
+assert "deleted" not in mod._reaper_memory.armed, dict(mod._reaper_memory.armed)
+assert "notrun" not in mod._reaper_memory.armed, dict(mod._reaper_memory.armed)
+
+# 3. reaper_pass, PASS 1: the ask probe raises. The spin-down must still run and
+#    notify_new_asks must be SKIPPED -- feeding it an empty map would revoke
+#    every blocked chat's MAX_ACTIVE exemption on a fan-out hiccup.
+idx3 = mod.Index(chats={"c1": chat("c1"), "c2": chat("c2")})
+mod.Index.load = classmethod(lambda cls: idx3)
+mod.container_state = lambda cid: "running"
+mod.session_state = lambda c: "idle"
+
+
+def boom(*a, **k):
+    raise RuntimeError("probe exploded")
+
+
+calls = []
+mod.spin_down_idle = lambda *a: calls.append("spin")
+mod.pending_permissions = boom
+mod.notify_new_asks = lambda *a: calls.append("asks")
+mod.notify_finished_turns = lambda *a: calls.append("turns")
+mod._reaper_memory.prev_running = frozenset()
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    mod.reaper_pass()
+out = buf.getvalue()
+assert "reaper ask probe failed: RuntimeError" in out, out
+assert calls == ["spin", "turns"], calls
+assert mod._reaper_memory.prev_running == frozenset({"c1", "c2"})
+
+# 4. PASS 2: both notifiers raise; the pass still finishes and still records
+#    prev_running. The prev_running RESET below is mandatory -- PASS 1 already
+#    left it at exactly this value, so without the reset the assertion is
+#    vacuous rather than evidence that line 1492 was reached.
+mod._reaper_memory.prev_running = frozenset()
+calls2 = []
+mod.spin_down_idle = lambda *a: calls2.append("spin")
+mod.pending_permissions = lambda chats: ([], [])
+
+
+def boom_asks(*a):
+    raise RuntimeError("asks exploded")
+
+
+def boom_turns(*a):
+    raise RuntimeError("turns exploded")
+
+
+mod.notify_new_asks = boom_asks
+mod.notify_finished_turns = boom_turns
+buf2 = io.StringIO()
+with contextlib.redirect_stdout(buf2):
+    mod.reaper_pass()
+out2 = buf2.getvalue()
+assert "reaper notify failed (asks): RuntimeError" in out2, out2
+assert "reaper notify failed (turns): RuntimeError" in out2, out2
+assert calls2 == ["spin"], calls2
+assert mod._reaper_memory.prev_running == frozenset({"c1", "c2"})
+
+
+# 5. an ntfy server that ANSWERS, with a 4xx/5xx. Distinct from "lost".
+class Ntfy(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        # Drain the body FIRST. This is REQUIRED, not hygiene: answering and
+        # closing with an unread body still in the receive queue emits RST,
+        # http.client raises ConnectionResetError inside _post_ntfy's try, and
+        # the "lost" arm runs instead of the "refused" one -- the test would go
+        # red for entirely the wrong reason. fake-ntfy.py reads the body for
+        # exactly this reason.
+        n = int(self.headers.get("Content-Length") or 0)
+        if n:
+            self.rfile.read(n)
+        self.send_response(503)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, *a):
+        pass
+
+
+srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Ntfy)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+mod.NTFY_SERVER = "http://127.0.0.1:%d" % srv.server_address[1]
+mod.NTFY_AGENT_TOPIC = "t-fixture"
+mod._post_ntfy = real_post_ntfy
+buf3 = io.StringIO()
+with contextlib.redirect_stdout(buf3):
+    # Called directly, on THIS thread: notify_agent posts on a daemon thread and
+    # the assertion would race it.
+    mod._post_ntfy("turn", "T", "default", '{"kind":"turn"}')
+assert "agent notification refused (turn): HTTP 503" in buf3.getvalue(), buf3.getvalue()
+
+# 6. arm_from_proxy refuses to arm a probe chat or a rejected prompt.
+mod._reaper_memory.armed.clear()
+mod.arm_from_proxy(chat("probechat", probe=True), "/session/s/prompt", 200)
+mod.arm_from_proxy(chat("rejected"), "/session/s/prompt", 400)
+mod.arm_from_proxy(chat("accepted"), "/session/s/prompt", 200)
+assert list(mod._reaper_memory.armed) == ["accepted"], dict(mod._reaper_memory.armed)
+PY
+if "${MANAGER_PY[@]}" "$WORK/preflight-reaper.py" "$REPO_ROOT/scripts/vps/code-agent-manager.py"
+then
+  ok "notify_new_asks drops malformed rows, probe chats and deleted chats without remembering them"
+  ok "notify_finished_turns forgets arms whose chat vanished or stopped"
+  ok "a raising ask probe still spins down, and skips the ask buzz rather than emptying it"
+  ok "both notifiers can raise and the pass still completes and records prev_running"
+  ok "an ntfy server that answers 5xx is 'refused', not 'lost'"
+  ok "arm_from_proxy arms neither a probe chat nor a rejected prompt"
+else
+  bad "reaper error nets / row filters (see the assertion above)"
+fi
+
 # ---- 5b. pull requests ------------------------------------------------------
 # These are GitHub calls the MANAGER makes. They must never proxy into the
 # container, so they must work against a chat whose branch is the fixture's
