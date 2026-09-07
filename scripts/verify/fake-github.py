@@ -90,6 +90,10 @@ BRANCHES_FILE = os.environ.get("FAKE_GITHUB_BRANCHES_FILE", "")
 MODE = os.environ.get("FAKE_GITHUB_MODE", "")
 
 STATE_LOCK = threading.Lock()
+# Every request this fake has seen, readable at GET /__calls. It exists so a
+# test can assert a manager-side CACHE is a cache: N reads of a cached route
+# must cost the same GitHub calls as M reads, for any N and M.
+CALLS = 0
 
 
 def _pull(number: int, title: str, **over: object) -> Wire:
@@ -206,9 +210,12 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def do_GET(self) -> None:
+        if self.counter_route():
+            return
         self.route()
 
     def do_PUT(self) -> None:
+        self.count_request()
         self.route()
 
     def send_raw(self, code: int, raw: bytes) -> None:
@@ -234,6 +241,29 @@ class Handler(BaseHTTPRequestHandler):
         else:
             return False
         return True
+
+    def count_request(self) -> int:
+        """Count one request and return the running total."""
+        with STATE_LOCK:
+            global CALLS  # noqa: PLW0603 -- a counter is exactly what this is
+            CALLS += 1
+            return CALLS
+
+    def counter_route(self) -> bool:
+        """Count this request; answer GET /__calls. True when it answered.
+
+        Called from do_GET BEFORE route(), so it lands ahead of
+        whole_request_mode(): under `denied`/`serverfail`/`notjson` that helper
+        answers everything, and a counter read would come back as a 403 body --
+        the assertion built on it would then be measuring the failure mode
+        rather than the call count. (Unreadable under `down`, which binds no
+        socket at all.)
+        """
+        seen = self.count_request()
+        if urlparse(self.path).path == "/__calls":
+            self.send(200, {"calls": seen})
+            return True
+        return False
 
     def route(self) -> None:
         if self.whole_request_mode():

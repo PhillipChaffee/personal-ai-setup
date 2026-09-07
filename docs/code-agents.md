@@ -113,6 +113,9 @@ curl -u opencode:$OPENCODE_SERVER_PASSWORD -X POST https://<brain>:4300/api/chat
 # what the app's base-branch picker shows (default marked)
 curl -u ... https://<brain>:4300/api/repos/<name>/branches
 
+# every chat's pull requests in ONE request, from the manager's cache
+curl -u ... https://<brain>:4300/api/pulls
+
 # wake / stop / delete
 curl -u ... -X POST   https://<brain>:4300/api/chats/<id>/wake
 curl -u ... -X POST   https://<brain>:4300/api/chats/<id>/stop
@@ -173,6 +176,38 @@ second is the one that matters: a blocked agent is doing nothing at all until
 you answer it. Subscribe the ntfy app to that topic
 ([setup §6a](setup/10-accounts.md)); leave the variable empty and nothing is
 sent.
+
+## The pull-request cache
+
+`GET /api/pulls` answers every chat's pull requests at once, from a snapshot a
+background thread refreshes every `CODE_AGENT_GITHUB_INTERVAL` (300s). The
+per-chat `GET /api/chats/<id>/pulls` still exists and is unchanged — it is the
+interactive one, and it spends GitHub calls because a reader just asked for
+them. The aggregate exists because the app's table polls, and the same table
+swept client-side across 24 chats on a ten-second poll is 34,560 GitHub requests
+an hour: 691% of a fine-grained PAT's budget.
+
+Every chat in the index is named in exactly one of three places, and they are
+three different claims:
+
+| where | means |
+|---|---|
+| `pulls["<id>"]` | GitHub answered. `[]` means **nothing is open** — a measurement. |
+| `unreachable` | GitHub was asked and would not say. **Retryable.** Render "unknown", never "nothing". |
+| `no_remote` | Nothing to ask: a `_probe` chat, or a repo that left the allowlist. **Settled**, not retryable. |
+
+A chat in `unreachable` or `no_remote` is **absent from `pulls` entirely** — it
+is never given an empty list, because an empty list is a measurement and a
+failure is not one. `as_of` is when the sweep that produced the answer started;
+`as_of == 0.0` means no sweep has completed yet (a cold cache after a restart),
+which is otherwise indistinguishable from GitHub being down for every chat at
+once. `/api/health`'s `github_at` carries the same stamp, so a sweep thread that
+died is visible from outside.
+
+The route always answers 200: it serves a cache, and failure is per chat and
+already on the wire.
+
+## Notifications
 
 It rides the reaper's existing sweep, so the latency is up to
 `CODE_AGENT_REAPER_INTERVAL` (60s), and every read it makes goes direct to

@@ -22,6 +22,9 @@ EventSource/browser contexts; TLS via the brain's tailnet cert when present):
     GET    /api/repos                   the allowlist (names + flags)
     GET    /api/repos/<name>/branches   a repo's branches, default marked
     GET    /api/chats                   index merged with live container state
+    GET    /api/pulls                   every chat's pull requests, from the
+                                        manager's own cache — one request in
+                                        place of the app's client-side fan-out
     POST   /api/chats                   {"repo","task"?,"title"?,"model"?,"base"?}
     POST   /api/chats/<id>/wake         start a stopped chat's container
     POST   /api/chats/<id>/stop         stop a running chat's container
@@ -51,6 +54,7 @@ Tunables (optional):
     CODE_AGENT_BIND           testing/dev ONLY: bind this address instead of
                               the tailnet IP (never set on the brain)
     CODE_AGENT_REAPER_INTERVAL  idle-reaper cadence seconds, default 60
+    CODE_AGENT_GITHUB_INTERVAL  github sweep cadence seconds, default 300
     NTFY_AGENT_TOPIC          the phone's AGENT channel: buzz when a turn ends
                               or an ask is parked. Empty (the default) disables
                               notification entirely. DELIBERATELY NOT the same
@@ -109,6 +113,11 @@ TLS_CERT = Path(os.environ.get("CODE_AGENT_TLS_CERT", "/data/tls/cert.pem"))
 TLS_KEY = Path(os.environ.get("CODE_AGENT_TLS_KEY", "/data/tls/key.pem"))
 BIND_OVERRIDE = os.environ.get("CODE_AGENT_BIND", "")
 REAPER_INTERVAL = int(os.environ.get("CODE_AGENT_REAPER_INTERVAL", "60"))
+# The GitHub sweep's cadence. Its OWN knob rather than the reaper's, because the
+# two are priced in different currencies: a reaper pass costs local subprocesses,
+# a sweep pass costs a fine-grained PAT's 5,000 requests/hour. github_pass()
+# carries the arithmetic behind this default.
+GITHUB_INTERVAL = int(os.environ.get("CODE_AGENT_GITHUB_INTERVAL", "300"))
 # Comfortably above the phone app's 8 MB attachment cap (~10.7 MB base64 plus
 # the JSON envelope), and low enough that a declared Content-Length is not an
 # instruction to allocate arbitrary memory.
@@ -1526,6 +1535,182 @@ def reaper_loop() -> None:
             log(f"reaper error: {e}")
 
 
+# ---------------------------------------------------------- the github sweep
+#
+# What pull requests are open on every tree, answered without the app fanning
+# out. /api/chats is polled every ten seconds, and the per-chat pull route costs
+# 1 + 3P GitHub calls; swept client-side across 24 chats on that poll it is
+# 34,560 requests an hour, 691% of a fine-grained PAT's budget (issue #29
+# measures it). So it gets the treatment `_reaper_memory.blocked` already gets:
+# computed on this thread, published as one whole answer, served from a dict
+# read.
+#
+# CONCURRENCY, stated once and load-bearing. This thread takes NO LOCK — not
+# `_lock`, not `armed_lock` — and neither does the route that reads it. It
+# publishes by REBINDING `_github_memory.snapshot`: one attribute store of one
+# frozen object, so a reader that binds it into a local sees exactly one pass's
+# answer and can never see half of one. There is no lock ORDER to get wrong here
+# because there is no lock: github_pass's whole call graph — Index.load,
+# load_repos, repo_slug/slug_of, gh, chat_pulls, pull_to_wire, summarise_checks,
+# log — acquires nothing. `with _lock` appears only in create_chat, wake_chat,
+# touch and route_delete_chat, none of which is reachable from here.
+#
+# Do NOT "improve" this into a dict the pass mutates in place. A mutated dict has
+# no single instant at which a reader's answer becomes whole, and a `cid in d`
+# followed by `d[cid]` across a rebind is a KeyError on the app's ten-second
+# poll.
+#
+# And do NOT add a second writer. The tempting one is invalidating a chat's row
+# from route_merge when a merge lands; it would make a request thread a second
+# writer and void the argument above. The cost of leaving it out is that a
+# sibling chat's row is stale for up to one interval, which `as_of` makes
+# visible.
+
+
+@dataclass(frozen=True)
+class GitHubSnapshot:
+    """One completed sweep's answer about every chat that was in the index.
+
+    Three dispositions, and they are three DIFFERENT claims. Every chat present
+    when the pass started is in exactly one:
+
+      * `pulls[cid]` present — GitHub answered. `pulls[cid] == []` means
+        "nothing is open", which is a measurement, not a silence.
+      * `cid in unreachable` — GitHub was asked and would not say. Retryable.
+        The app must render "unknown" here, never "nothing".
+      * `cid in no_remote` — there is nothing to ask: a `_probe` chat, or a repo
+        that left the allowlist or never carried a GitHub URL. Settled, not
+        retryable, and NOT the same fact as a failure — a probe chat parked in
+        `unreachable` spins on a screen forever.
+
+    `as_of` is stamped BEFORE the walk, for the reason reaper_pass stamps
+    `sampled_at` first: it answers "how old are these readings", and a stamp
+    taken afterwards dates them to the wrong end of a walk that can run for
+    minutes at gh()'s timeout=20. `as_of == 0.0` means no pass has ever
+    completed — the cold cache after a restart, which is otherwise byte for byte
+    the same answer as "GitHub is down for every chat at once".
+    """
+
+    as_of: float = 0.0
+    pulls: dict[str, list[dict[str, object]]] = field(default_factory=dict)
+    unreachable: frozenset[str] = frozenset()
+    no_remote: frozenset[str] = frozenset()
+
+    def to_wire(self) -> dict[str, object]:
+        """Return the freshness/disposition block every route carries alike."""
+        return {
+            "as_of": self.as_of,
+            "unreachable": sorted(self.unreachable),
+            "no_remote": sorted(self.no_remote),
+        }
+
+
+@dataclass
+class GitHubMemory:
+    """The holder. An ATTRIBUTE, never a module `global` — see ReaperMemory.
+
+    Rebinding a module global would need `global`, which this file does not use
+    anywhere; and separate globals rebound in sequence would let a reader see one
+    pass's `pulls` beside the previous pass's `unreachable`.
+    """
+
+    snapshot: GitHubSnapshot = field(default_factory=GitHubSnapshot)
+
+
+_github_memory = GitHubMemory()
+
+
+def github_pass() -> None:
+    """One sweep of every chat in the index for its open pull requests.
+
+    COST, because this spends the PAT budget so the app's ten-second poll can
+    spend none of it. Per chat: one pull list, and per pull one detail plus the
+    two summarise_checks makes — 1 + 3P. At 24 chats with one pull each that is
+    96 calls a pass, 1,152/hour at the 300s default: ~23% of a fine-grained
+    PAT's 5,000, against 34,560/hour for the same table swept on the app's poll.
+    The interval is the only lever; if P rises that knob is what moves.
+
+    Failure is per chat: one chat's bad answer costs that chat its row and
+    nothing else, and the chat is NAMED rather than dropped. The pass itself may
+    not fail — a cache frozen at the last good pass with nothing in the log is
+    this file's already-shipped reaper failure in a new place.
+
+    Chats are walked in id order and the walk is not budgeted. The bound is the
+    index size times gh()'s timeout=20, which is why `as_of` is on the wire.
+    """
+    as_of = time.time()
+    index = Index.load()
+    pulls: dict[str, list[dict[str, object]]] = {}
+    unreachable: set[str] = set()
+    no_remote: set[str] = set()
+    failures: list[str] = []
+    for cid, chat in sorted(index.chats.items()):
+        try:
+            # Asked before the pull list purely to separate the dispositions:
+            # slug_of's 409 is a `_probe` chat or a repo that left the
+            # allowlist, which is settled rather than retryable and must not
+            # share a bucket with a GitHub outage.
+            repo_slug(chat)
+        except GitHubError as e:
+            no_remote.add(cid)
+            failures.append(f"{cid}: {e.message}")
+            continue
+        try:
+            rows = chat_pulls(chat)
+        except GitHubError as e:
+            unreachable.add(cid)
+            failures.append(f"{cid}: {e.message}")
+            continue
+        except Exception as e:  # noqa: BLE001 - one chat may never cost the pass
+            # gh() converts OSError and HTTPException, but not everything a
+            # hand-edited index.json can cause: a non-ASCII branch raises
+            # UnicodeEncodeError out of http.client's putrequest, which is the
+            # identical escape the ntfy sender already shipped once.
+            unreachable.add(cid)
+            failures.append(f"{cid}: {type(e).__name__}: {e}")
+            continue
+        pulls[cid] = rows
+    if failures:
+        # ONE line per pass with a count, not one per chat: 24 chats every 300s
+        # would be 288 journald lines an hour for the length of a GitHub outage.
+        # Silent is worse — a sweep that has quietly frozen every row into
+        # "unknown" would leave nothing to find.
+        log(f"github sweep: {len(failures)} chat(s) had no answer (first: {failures[0]})")
+    # THE PUBLISH. One store, one whole object, no lock. Rebuilt from the index
+    # this pass loaded, so a chat deleted since the last pass is gone by omission
+    # and there is no eviction path to get wrong.
+    _github_memory.snapshot = GitHubSnapshot(
+        as_of=as_of,
+        pulls=pulls,
+        unreachable=frozenset(unreachable),
+        no_remote=frozenset(no_remote),
+    )
+
+
+def github_loop() -> None:
+    """Sweep, THEN sleep — never the other way round, and never die.
+
+    reaper_loop sleeps first, which costs it nothing: its answer is re-derived
+    from the container engine every pass. This one's answer IS the cache, so
+    sleeping first would render every row on the app's list "unknown" for a full
+    interval after every deploy — five minutes at the default, on a plane that is
+    otherwise up. The price is that a manager starting with a populated index
+    makes outbound GitHub calls within milliseconds of boot.
+
+    `except Exception`, deliberately WIDER than reaper_loop's
+    (OSError, subprocess.SubprocessError, ValueError): GitHubError subclasses
+    RuntimeError, which that tuple does not catch. A loop copied from it would
+    die on the first 502 and freeze this cache for the life of the process while
+    the route kept serving it, with one line in the log and never another.
+    """
+    while True:
+        try:
+            github_pass()
+        except Exception as e:  # noqa: BLE001 - this thread must never die
+            log(f"github sweep failed: {type(e).__name__}: {e}")
+        time.sleep(GITHUB_INTERVAL)
+
+
 # The ONE place an agent notification is assembled (docs/privacy.md). Two
 # kinds, and only two. The ask is `high` because a blocked agent is doing
 # nothing at all until it is answered; a turn end is ordinary news.
@@ -1771,6 +1956,7 @@ class Handler(BaseHTTPRequestHandler):
         "/api/repos": "route_repos",
         "/api/chats": "route_list_chats",
         "/api/permissions": "route_permissions",
+        "/api/pulls": "route_all_pulls",
     }
     ROUTE_PULLS = re.compile(r"^/api/chats/([a-zA-Z0-9-]+)/pulls$")
     ROUTE_MERGE = re.compile(r"^/api/chats/([a-zA-Z0-9-]+)/pulls/([0-9]+)/merge$")
@@ -1826,6 +2012,11 @@ class Handler(BaseHTTPRequestHandler):
                 # so do not count against max_active (admission_count). Without
                 # this field, "active: 3, max_active: 2" reads as a bug.
                 "blocked": sum(1 for cid in index.chats if cid in _reaper_memory.blocked),
+                # The github sweep's own liveness. A thread that has died leaves
+                # this frozen while /api/pulls keeps answering from its last
+                # snapshot, which is otherwise invisible from outside. 0.0 means
+                # no pass has completed yet.
+                "github_at": _github_memory.snapshot.as_of,
                 "max_active": MAX_ACTIVE,
                 "idle_seconds": IDLE_SECONDS,
             },
@@ -1917,6 +2108,25 @@ class Handler(BaseHTTPRequestHandler):
         if chat is None:
             self.send_json(404, {"error": "unknown chat"})
         return chat
+
+    def route_all_pulls(self) -> None:
+        """Every chat's pull requests at once, from the sweep's cache.
+
+        The per-chat route below stays and is unchanged: it is the interactive
+        one, and it may spend GitHub calls because a reader just asked for them.
+        This is the one the app's TABLE polls, and it costs a dict read.
+
+        Always 200. A chat with no answer is named in `unreachable` or
+        `no_remote`, never dropped and never given an empty list — the app reads
+        an empty list as "nothing is open", and a failure is not that. A GitHub
+        outage is likewise not a 502 here: this serves a cache, and the failure
+        is per chat and already on the wire.
+        """
+        # Bound ONCE. The sweep thread rebinds this attribute; reading it twice
+        # could mix two passes into one answer, which is the whole reason it is
+        # published as a single frozen object.
+        snap = _github_memory.snapshot
+        self.send_json(200, {"pulls": snap.pulls, **snap.to_wire()})
 
     def route_pulls(self, chat_id: str) -> None:
         """List this chat's pull requests.
@@ -2128,6 +2338,7 @@ def main() -> None:
         ctx.load_cert_chain(TLS_CERT, TLS_KEY)
         server.socket = ctx.wrap_socket(server.socket, server_side=True)
     threading.Thread(target=reaper_loop, daemon=True).start()
+    threading.Thread(target=github_loop, daemon=True).start()
     log(
         f"listening on {host}:{GATEWAY_PORT} "
         f"(tls={'yes' if have_tls else 'NO'}, engine={ENGINE}, image={IMAGE}, "
