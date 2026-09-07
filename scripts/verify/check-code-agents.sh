@@ -39,7 +39,16 @@ while [ "$#" -gt 0 ]; do
 done
 
 PORT=4300
-MAX_DISK_GB="${CODE_AGENT_MAX_DISK_GB:-20}"
+# Deliberately EMPTY by default. The ceiling is derived from the size of the
+# volume at check time (see §5) rather than hardcoded, because a fixed number
+# can silently exceed the disk it is supposed to protect: this was 20, while
+# infra/terraform/variables.tf defaults data_volume_size to 10 GB. On a default
+# install /data therefore filled completely at 10 GB while this check still
+# reported PASS, since 10 < 20 -- a guard that could never fire.
+# Set CODE_AGENT_MAX_DISK_GB to override with an absolute ceiling in GB.
+MAX_DISK_GB="${CODE_AGENT_MAX_DISK_GB:-}"
+# Share of the /data volume the chat volumes may occupy before this FAILs.
+CODE_AGENT_MAX_DISK_PCT="${CODE_AGENT_MAX_DISK_PCT:-75}"
 
 # ---- mode detection ---------------------------------------------------------
 # One sentinel, in lib.sh. This used to probe /data/code-agents, so a brain
@@ -143,11 +152,34 @@ if [ "$MODE" = "local" ]; then
     fail "GITHUB_CODE_AGENT_PAT empty — clones of private repos and agent push/PR will fail"
   fi
   USED_KB="$(du -sk /data/code-agents 2>/dev/null | cut -f1 || echo 0)"
-  USED_GB=$((USED_KB / 1024 / 1024))
-  if [ "$USED_GB" -lt "$MAX_DISK_GB" ]; then
-    pass "chat volumes footprint ${USED_GB}GB < ${MAX_DISK_GB}GB"
+  [ -n "$USED_KB" ] || USED_KB=0
+  # Total size of the filesystem holding /data, so the ceiling tracks the volume
+  # the operator actually provisioned instead of a number written down once.
+  TOTAL_KB="$(df -Pk /data 2>/dev/null | awk 'NR==2 {print $2}' || echo 0)"
+  [ -n "$TOTAL_KB" ] || TOTAL_KB=0
+
+  if [ -n "$MAX_DISK_GB" ]; then
+    CEILING_KB=$((MAX_DISK_GB * 1024 * 1024))
+    CEILING_DESC="${MAX_DISK_GB}GB (CODE_AGENT_MAX_DISK_GB)"
+  elif [ "$TOTAL_KB" -gt 0 ]; then
+    CEILING_KB=$((TOTAL_KB * CODE_AGENT_MAX_DISK_PCT / 100))
+    CEILING_DESC="${CODE_AGENT_MAX_DISK_PCT}% of the $((TOTAL_KB / 1024 / 1024))GB /data volume"
   else
-    fail "chat volumes at ${USED_GB}GB (>= ${MAX_DISK_GB}GB) — delete old chats (the app, or DELETE /api/chats/<id>?purge=1)"
+    CEILING_KB=0
+    CEILING_DESC=""
+  fi
+
+  # Compare in KB and report one decimal. Against an INTEGER ceiling the old
+  # truncation did not change the verdict (floor(u) < N and u < N agree for
+  # integer N) -- but it made the number you read useless: a volume 98% full
+  # reported "9GB" of a 10GB disk, which looks like plenty of headroom.
+  USED_DESC="$((USED_KB / 1024 / 1024)).$(( (USED_KB * 10 / 1024 / 1024) % 10 ))GB"
+  if [ "$CEILING_KB" -le 0 ]; then
+    skip "cannot size /data (df returned nothing) — chat volumes at ${USED_DESC}"
+  elif [ "$USED_KB" -lt "$CEILING_KB" ]; then
+    pass "chat volumes footprint ${USED_DESC} < ${CEILING_DESC}"
+  else
+    fail "chat volumes at ${USED_DESC} (>= ${CEILING_DESC}) — delete old chats (the app, or DELETE /api/chats/<id>?purge=1)"
   fi
 fi
 

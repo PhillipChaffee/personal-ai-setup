@@ -149,8 +149,11 @@ All figures verified as of 2026-08-20 — re-verify at signup (`scripts/verify/p
 | OpenCode Zen inference (PAYG — **disable auto-reload, set a cap**) | ~$5–20/mo typical |
 | Together AI inference (min $5 top-up; sensitive tier + default hub) | ~$5–10/mo |
 | Tailscale (personal plan), ntfy failure-alert emails (free tier) | $0 |
+| Code agents on the brain (containers) | no new account — bills to the Zen/Together lines above, plus disk |
 | Pal Chat (backup phone client) | ~$7 one-time |
 | **Total** | **~$15–35/mo** |
+
+Code agents are the one line that can move the total on their own: an autonomous coding chat consumes far more per session than a conversation, and several can run at once. They default to `opencode/deepseek-v4-flash` (cheap, big context) and refuse Zen's free models unless a repo is flagged `public_throwaway`; `opencode stats` inside a chat reports actual spend. They also consume **disk** — each chat gets its own volume under `/data/code-agents`, on the same 10 GB volume as everything else by default, so `check-code-agents.sh` fails once they occupy 75% of it. Grow `data_volume_size` (Hetzner volumes grow without recreation) or delete old chats; see [`docs/code-agents.md`](docs/code-agents.md).
 
 Routing keeps costs predictable: scheduled automations run on `minimax-m2.7` ($0.30/$1.20 per 1M tokens), daily coding on `kimi-k2.6` ($0.95/$4.00), escalating to `claude-sonnet-5` ($2/$10) only when needed; the default hub and sensitive tier run on Together's `Qwen3.5-397B` ($0.60/$3.60). Full table with hard rules: [`docs/model-routing.md`](docs/model-routing.md).
 
