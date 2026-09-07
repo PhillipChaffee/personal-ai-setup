@@ -207,6 +207,40 @@ died is visible from outside.
 The route always answers 200: it serves a cache, and failure is per chat and
 already on the wire.
 
+## The per-tree change stat
+
+The same sweep measures each tree's branch against its base with one GitHub
+`compare` call, so `GET /api/chats` can carry a size for every row **without
+waking a single container**. The only other source of change size is
+`/chat/<id>/session/<sid>/diff`, which goes through the proxy and starts the
+container — eight sleeping trees would mean eight cold starts.
+
+```json
+"stat": { "ahead": 3, "behind": 0, "commits": 3,
+          "files": 7, "additions": 1769, "deletions": 289,
+          "truncated": false }
+```
+
+**An absent `stat` is not zero, and the app must not render it as one.**
+
+| situation | `stat` |
+|---|---|
+| branch pushed, ahead of base | present, exact |
+| compare is `identical` | present, **all zeros** — a real measurement |
+| **branch never pushed** (compare 404s) | **absent** |
+| more than 300 files | present, `truncated: true` — `ahead`/`behind`/`commits` stay exact, the rest are lower bounds |
+| GitHub failed, or the base could not be resolved | absent, and the chat is in `unreachable` |
+
+That third row is the one that matters most: `allow_push` defaults to **false**,
+so pushing is a permission ask and "never pushed" is the **dominant steady
+state** for a sleeping tree. A row that draws an absent stat as "0 files
+changed" will lie about most trees. Draw nothing, or draw "unknown".
+
+Two more honest edges: `commits` is GitHub's `ahead_by`, not `total_commits`
+(only `ahead_by` stays exact past GitHub's 10,000-commit cap); and the stat
+measures the last **pushed** commit, while the `diff` route measures the working
+tree — two numbers on one row that can legitimately disagree.
+
 ## Notifications
 
 It rides the reaper's existing sweep, so the latency is up to

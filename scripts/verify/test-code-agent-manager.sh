@@ -717,6 +717,11 @@ sys.modules["cam"] = mod
 spec.loader.exec_module(mod)
 
 
+# Kept before anything stubs it: the sections below replace mod.compare_stat to
+# drive github_pass, and section 6 needs the REAL one back.
+real_compare_stat = mod.compare_stat
+
+
 def chat(cid):
     return mod.Chat(id=cid, repo="r", title="t", port=1, branch="b", last_active=time.time())
 
@@ -747,6 +752,12 @@ def fake_chat_pulls(c):
 
 mod.repo_slug = fake_repo_slug
 mod.chat_pulls = fake_chat_pulls
+# A stat for EVERY chat that gets as far as being measured, including the one
+# whose pull list then fails. That is what makes the atomicity assertion below
+# real rather than incidental.
+mod.compare_stat = lambda c, s, h: {"ahead": 1, "behind": 0, "commits": 1,
+                                    "files": 1, "additions": 2, "deletions": 3,
+                                    "truncated": False}
 
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
@@ -764,6 +775,11 @@ assert snap.unreachable == frozenset({"refused", "weird"}), snap.unreachable
 # empty list as "nothing is open", which a failure is not.
 for cid in ("gone", "refused", "weird"):
     assert cid not in snap.pulls, cid
+# ATOMICITY: "refused" was measured -- compare_stat returned for it -- but its
+# pull list raised, so it publishes NOTHING. A half-row (a fresh stat beside a
+# stale pull list, with the chat also named unreachable) is exactly the
+# ambiguity `unreachable` exists to prevent.
+assert list(snap.stats) == ["fine"], list(snap.stats)
 # THE UNION INVARIANT: every chat in the index is in exactly one disposition.
 assert set(snap.pulls) | snap.unreachable | snap.no_remote == set(idx.chats)
 assert not (set(snap.pulls) & snap.unreachable)
@@ -812,7 +828,149 @@ wire = snap2.to_wire()
 assert sorted(wire) == ["as_of", "no_remote", "unreachable"], sorted(wire)
 assert wire["unreachable"] == [] and wire["no_remote"] == []
 
-# 5. github_loop's net. reaper_loop's identical arm is uncovered today, so
+# 5. compare_to_stat: the parser, with no server at all.
+#    `commits` must be ahead_by, NOT total_commits -- they agree below GitHub's
+#    10,000-commit cap and only ahead_by stays exact above it, so a body where
+#    the two DIFFER is the only way to assert this non-vacuously.
+full = mod.compare_to_stat({
+    "ahead_by": 3, "behind_by": 1, "total_commits": 99,
+    "files": [{"additions": 40, "deletions": 5}, {"additions": 2, "deletions": 11}],
+})
+assert full == {"ahead": 3, "behind": 1, "commits": 3, "files": 2,
+                "additions": 42, "deletions": 16, "truncated": False}, full
+
+# `identical` is a real MEASUREMENT of zero, not an absence. It must return a
+# dict; only a body we cannot read returns None.
+same = mod.compare_to_stat({"status": "identical", "ahead_by": 0, "behind_by": 0, "files": []})
+assert same is not None and same["files"] == 0 and same["additions"] == 0, same
+
+# At the cap the counts become lower bounds, which is what `truncated` says.
+# Asserting the exact sums is the point: a truncated block is an honest partial,
+# never a guess and never a zero.
+big = mod.compare_to_stat(
+    {"ahead_by": 1, "behind_by": 0, "files": [{"additions": 1, "deletions": 2}] * mod.FILES_CAP})
+assert big is not None and big["truncated"] is True, big
+assert big["files"] == mod.FILES_CAP, big
+assert big["additions"] == mod.FILES_CAP and big["deletions"] == 2 * mod.FILES_CAP, big
+
+# Wrong-shaped bodies are None, never zeros. The 301 is real: GitHub answers a
+# RENAMED repo with a JSON object, and read leniently it would arrive on a
+# screen as "this branch changed nothing".
+assert mod.compare_to_stat(["not", "a", "dict"]) is None
+assert mod.compare_to_stat({"message": "Moved Permanently", "url": "x"}) is None
+assert mod.compare_to_stat({"ahead_by": True, "behind_by": 0}) is None, "a bool passed as a count"
+# A junk `files` entry is skipped and a junk count reads as 0, without raising.
+mixed = mod.compare_to_stat(
+    {"ahead_by": 0, "behind_by": 0, "files": ["nope", {"additions": "x", "deletions": 3}]})
+assert mixed is not None and mixed["files"] == 1, mixed
+assert mixed["additions"] == 0 and mixed["deletions"] == 3, mixed
+
+# 6. compare_stat against a recorder, for the URL it builds and the refs it
+#    refuses.
+import http.server, threading  # noqa: E402
+
+
+class Rec(http.server.BaseHTTPRequestHandler):
+    paths = []
+    answer = (200, b'{"ahead_by": 1, "behind_by": 0, "files": []}')
+    repo_answer = (200, b'{"default_branch": "main"}')
+
+    def do_GET(self):
+        Rec.paths.append(self.path)
+        status, body = Rec.repo_answer if "/compare/" not in self.path else Rec.answer
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+
+srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Rec)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+mod.GH_API = "http://127.0.0.1:%d" % srv.server_address[1]
+mod.GH_PAT = "pat-fixture"
+# The real one back: section 1 replaced it to drive github_pass, and calling
+# that stub here would assert against the fixture instead of the code.
+mod.compare_stat = real_compare_stat
+
+
+def tree(cid, branch="agent/x", base=""):
+    return mod.Chat(id=cid, repo="r", title="t", port=1, branch=branch, base=base)
+
+
+# The heads memo: two chats with no base on the SAME slug must resolve the
+# default branch ONCE. Without it the stat costs two calls per chat, and eight
+# chats on one repo ask the same question eight times -- this assertion is what
+# keeps the documented cost model true.
+Rec.paths.clear()
+heads = {}
+mod.compare_stat(tree("a"), "o/r", heads)
+mod.compare_stat(tree("b"), "o/r", heads)
+assert sum(1 for p in Rec.paths if "/compare/" not in p) == 1, Rec.paths
+
+# An explicit base is percent-encoded with its slash intact, and per_page=1 is
+# sent so GitHub does not ship a commits[] nobody reads.
+Rec.paths.clear()
+mod.compare_stat(tree("c", base="release/2.x"), "o/r", {})
+assert Rec.paths == ["/repos/o/r/compare/release/2.x...agent/x?per_page=1"], Rec.paths
+
+# INJECTION, both refs, PAIRED. `branch` is the one the existing code never
+# validates -- Chat.from_wire takes whatever index.json holds, and this harness
+# rewrites `branch` in it by hand. Zero requests is the assertion: a refusal
+# that still sent the request would have refused too late.
+for bad_chat in (tree("d", base="../../../user"), tree("e", branch="main\nX-Injected: 1")):
+    Rec.paths.clear()
+    try:
+        mod.compare_stat(bad_chat, "o/r", {"o/r": "main"})
+    except mod.GitHubError:
+        pass
+    else:
+        raise AssertionError("an unusable ref reached the URL")
+    assert Rec.paths == [], Rec.paths
+
+# A base that could not be RESOLVED must raise, not 404. default_branch degrades
+# to "" rather than raising, and an empty base would build `/compare/...agent/x`,
+# draw the same 404, and be misreported as "never pushed".
+Rec.paths.clear()
+Rec.repo_answer = (403, b'{"message": "Resource not accessible"}')
+try:
+    mod.compare_stat(tree("f"), "o/r", {})
+except mod.GitHubError:
+    pass
+else:
+    raise AssertionError("an unresolvable base was not reported as a failure")
+assert not [p for p in Rec.paths if "/compare/" in p], "it compared against an empty base"
+Rec.repo_answer = (200, b'{"default_branch": "main"}')
+
+# 404 is "never pushed" -- None, no raise. Any other error is a real failure.
+Rec.answer = (404, b'{"message": "Not Found"}')
+assert mod.compare_stat(tree("g"), "o/r", {"o/r": "main"}) is None
+Rec.answer = (500, b'{"message": "boom"}')
+try:
+    mod.compare_stat(tree("h"), "o/r", {"o/r": "main"})
+except mod.GitHubError:
+    pass
+else:
+    raise AssertionError("a 500 was swallowed as 'never pushed'")
+Rec.answer = (200, b'{"ahead_by": 1, "behind_by": 0, "files": []}')
+
+# 7. A missing stat must not cost the row its pull requests: the two are
+#    independent facts about one chat.
+one = mod.Index(chats={"solo": chat("solo")})
+mod.Index.load = classmethod(lambda cls: one)
+mod.repo_slug = lambda c: "o/r"
+mod.compare_stat = lambda c, s, h: None
+mod.chat_pulls = lambda c: []
+mod.github_pass()
+snap3 = mod._github_memory.snapshot
+assert "solo" not in snap3.stats, "a 404 compare produced a stat anyway"
+assert snap3.pulls["solo"] == [], snap3.pulls
+assert "solo" not in snap3.unreachable and "solo" not in snap3.no_remote
+
+# 8. github_loop's net. reaper_loop's identical arm is uncovered today, so
 #    without this one this would be too. `time` is replaced on the MODULE rather
 #    than patching time.sleep globally, which would poison this process; and the
 #    escape is KeyboardInterrupt, a BaseException, so the loop's own
@@ -1580,6 +1738,34 @@ PY
   else
     bad "GitHub calls scaled with requests: 10 reads cost $D1, 30 cost $D2"
   fi
+
+  # ---- the change stat, on the same cached snapshot -------------------------
+  if python3 - "$WORK/chats-now.json" "$PR_CHAT" <<'PY'
+import json, sys
+chats = json.load(open(sys.argv[1]))
+rows = {c["id"]: c for c in chats["chats"]}
+stat = rows[sys.argv[2]].get("stat")
+assert stat is not None, "the chat on the fixture branch has no stat"
+# The fake answers ahead_by=3 with total_commits=99: `commits` must follow
+# ahead_by, or a row contradicts its own ahead count.
+assert stat["ahead"] == 3 and stat["commits"] == 3, stat
+assert stat["behind"] == 0, stat
+# Three files with distinct counts, so a client that sums them wrong fails.
+assert stat["files"] == 3, stat
+assert stat["additions"] == 49, stat
+assert stat["deletions"] == 16, stat
+assert stat["truncated"] is False, stat
+assert chats["github"]["as_of"] > 0, chats["github"]
+# The ABSENCE half -- an unpushed branch carrying no stat rather than zeros --
+# is asserted in section 5d under `nocompare`, where it can be produced on
+# demand. Only one chat exists at this point in the run, so there is no
+# never-pushed sibling here to check it against.
+PY
+  then
+    ok "a pushed branch carries an exact stat; an unpushed one carries none at all"
+  else
+    bad "the change stat is wrong or leaked zeros onto an unpushed branch"
+  fi
 fi
 
 # shellcheck disable=SC2086
@@ -1665,6 +1851,37 @@ for p in pulls:
 assert all(p["title"] for p in pulls), "the row lost more than the detail fields"
 ' && ok "a failed detail call omits the counts rather than zeroing them" \
   || bad "nodetail: $PULLS"
+
+# A lost compare must cost the tree its STAT and nothing else. This is the
+# absence half of the stat contract, produced on demand: `allow_push` defaults
+# to false, so "never pushed" is the dominant steady state for a real tree, and
+# a row rendered as "0 files changed" rather than "unknown" would lie about most
+# of them.
+restart_github nocompare
+if wait_sweeps 2; then
+  # shellcheck disable=SC2086
+  $CURL "$BASE/api/chats" > "$WORK/chats-nocompare.json"
+  # shellcheck disable=SC2086
+  $CURL "$BASE/api/pulls" > "$WORK/pulls-nocompare.json"
+  if python3 - "$WORK/chats-nocompare.json" "$WORK/pulls-nocompare.json" "$PR_CHAT" <<'PY'
+import json, sys
+rows = {c["id"]: c for c in json.load(open(sys.argv[1]))["chats"]}
+allp = json.load(open(sys.argv[2]))
+cid = sys.argv[3]
+assert "stat" not in rows[cid], rows[cid].get("stat")
+# NOT a failure: a 404 compare is an answer, so the chat stays out of both
+# failure buckets and keeps everything else it had.
+assert cid not in allp["unreachable"], allp["unreachable"]
+assert cid not in allp["no_remote"], allp["no_remote"]
+assert len(allp["pulls"][cid]) == 7, len(allp["pulls"][cid])
+PY
+  then
+    ok "a branch with no compare loses its stat and keeps its pull requests"
+  else
+    bad "nocompare: the lost stat took the row's pulls or its disposition with it"
+  fi
+fi
+restart_github ""
 
 # GitHub says 405 for branch protection; the app wants one "GitHub said no"
 # case carrying GitHub's own sentence.

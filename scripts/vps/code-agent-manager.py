@@ -92,7 +92,7 @@ from dataclasses import asdict, dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypeGuard
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 # ------------------------------------------------------------- configuration
@@ -1583,6 +1583,14 @@ class GitHubSnapshot:
         retryable, and NOT the same fact as a failure — a probe chat parked in
         `unreachable` spins on a screen forever.
 
+    `stats[cid]` is a FOURTH fact, and it is orthogonal to the three above: a
+    chat GitHub answered for can still have no stat, because the compare 404s
+    when the branch was never pushed. `allow_push` defaults to False, so a push
+    is a permission ask and "never pushed" is the DOMINANT steady state for a
+    sleeping tree. An absent stat therefore means "not measured"; it must never
+    render as "0 files changed". Only `status: identical` produces a real
+    all-zero stat, and that one is a measurement.
+
     `as_of` is stamped BEFORE the walk, for the reason reaper_pass stamps
     `sampled_at` first: it answers "how old are these readings", and a stamp
     taken afterwards dates them to the wrong end of a walk that can run for
@@ -1592,6 +1600,7 @@ class GitHubSnapshot:
     """
 
     as_of: float = 0.0
+    stats: dict[str, dict[str, object]] = field(default_factory=dict)
     pulls: dict[str, list[dict[str, object]]] = field(default_factory=dict)
     unreachable: frozenset[str] = frozenset()
     no_remote: frozenset[str] = frozenset()
@@ -1619,16 +1628,120 @@ class GitHubMemory:
 
 _github_memory = GitHubMemory()
 
+# GitHub's cap on compare's `files[]`. Past it the per-file sums are partial,
+# which is what `truncated` on the wire says.
+FILES_CAP = 300
+
+
+def _is_count(value: object) -> TypeGuard[int]:
+    # `isinstance(True, int)` is true in Python, so bools are excluded by hand:
+    # a malformed answer must not arrive on a screen as "1 commit ahead".
+    # A TypeGuard rather than a bool so the one definition of "is a count" also
+    # narrows for mypy --strict, instead of being restated at each call site.
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _count(raw: dict[str, Any], key: str) -> int:
+    value = raw.get(key)
+    return value if _is_count(value) else 0
+
+
+def compare_to_stat(raw: object) -> dict[str, object] | None:
+    """Turn GitHub's compare body into the app's stat block, or None.
+
+    Compare carries NO top-level `additions`/`deletions` — only per-file ones,
+    checked against the live API — so both sums are computed here, and they stop
+    being exact precisely when `files[]` hits GitHub's cap. That is what
+    `truncated` flags: `ahead`/`behind`/`commits` stay exact through the cap,
+    while `files`/`additions`/`deletions` become lower bounds.
+
+    `commits` is `ahead_by`, NOT `total_commits`. The two agree below GitHub's
+    10,000-commit cap and only `ahead_by` stays exact above it, so shipping
+    `total_commits` would send a row that contradicts its own ahead count.
+
+    Anything wrong-shaped is None rather than zeros. GitHub answers a renamed
+    repo with 301 and a JSON OBJECT; read leniently that body would arrive on a
+    screen as "this branch changed nothing", which is the exact confusion
+    DETAIL_ONLY_COUNTS exists to prevent one function over.
+    """
+    if not isinstance(raw, dict):
+        return None
+    ahead, behind = raw.get("ahead_by"), raw.get("behind_by")
+    if not _is_count(ahead) or not _is_count(behind):
+        return None
+    listed = raw.get("files")
+    files = [f for f in listed if isinstance(f, dict)] if isinstance(listed, list) else []
+    return {
+        "ahead": ahead,
+        "behind": behind,
+        "commits": ahead,
+        "files": len(files),
+        "additions": sum(_count(f, "additions") for f in files),
+        "deletions": sum(_count(f, "deletions") for f in files),
+        "truncated": len(files) >= FILES_CAP,
+    }
+
+
+def compare_stat(chat: Chat, slug: str, heads: dict[str, str]) -> dict[str, object] | None:
+    """Measure this chat's branch against its base, or None for "no answer".
+
+    `heads` memoises `default_branch` for the life of ONE pass. `chat.base` is
+    "" for every chat made before the base picker existed, so without it the
+    stat costs two GitHub calls per chat instead of one, and eight chats on one
+    repo would ask the same question eight times.
+
+    BOTH refs are shape-checked and percent-encoded before they reach the URL.
+    `base` is validated at create time only, and `branch` is never validated at
+    all — Chat.from_wire takes whatever index.json holds, and index.json is a
+    file a human edits by hand (this repo's own harness rewrites `branch` in it).
+    These strings are interpolated into an authenticated outbound request line.
+
+    Returns None for the 404, which is the honest "this branch was never pushed"
+    and is NOT a failure. Raises GitHubError for everything the caller must
+    report as unreachable — including a base that could not be resolved, because
+    `default_branch` degrades to "" rather than raising and an empty base would
+    build `/compare/...agent/x`, draw the SAME 404, and be misreported as "never
+    pushed" when the truth is "we could not find out what to compare against".
+    """
+    base = chat.base
+    if not base:
+        # Resolved only when this chat actually needs it, and memoised for the
+        # rest of the pass: a repo whose chats all carry an explicit base costs
+        # no `GET /repos/{slug}` at all.
+        if slug not in heads:
+            heads[slug] = default_branch(slug)
+        base = heads[slug]
+    if not base or base_shape_error(base) or base_shape_error(chat.branch):
+        msg = f"cannot compare {chat.branch}: unusable ref"
+        raise GitHubError(502, msg)
+    # `commits[]` is never read here and GitHub caps it at 250 regardless;
+    # per_page=1 is the documented way to stop it being sent. `files[]` is
+    # unaffected — measured against the live API, 62 files still arrive.
+    path = (
+        f"/repos/{slug}/compare/"
+        f"{quote(base, safe='/')}...{quote(chat.branch, safe='/')}?per_page=1"
+    )
+    try:
+        raw = gh("GET", path)
+    except GitHubError as e:
+        if e.status == HTTPStatus.NOT_FOUND:
+            return None
+        raise
+    return compare_to_stat(raw)
+
 
 def github_pass() -> None:
-    """One sweep of every chat in the index for its open pull requests.
+    """One sweep of every chat in the index: its change stat and its pulls.
 
     COST, because this spends the PAT budget so the app's ten-second poll can
-    spend none of it. Per chat: one pull list, and per pull one detail plus the
-    two summarise_checks makes — 1 + 3P. At 24 chats with one pull each that is
-    96 calls a pass, 1,152/hour at the 300s default: ~23% of a fine-grained
-    PAT's 5,000, against 34,560/hour for the same table swept on the app's poll.
-    The interval is the only lever; if P rises that knob is what moves.
+    spend none of it. Per chat: one compare, one pull list, and per pull one
+    detail plus the two summarise_checks makes — 2 + 3P — plus one
+    `GET /repos/{slug}` per distinct repo that has a chat with no explicit base,
+    memoised in `heads` for the life of the pass. At 24
+    chats with one pull each over 3 repos that is 123 calls a pass, 1,476/hour
+    at the 300s default: ~30% of a fine-grained PAT's 5,000, against 34,560/hour
+    for the same table swept on the app's poll. The interval is the only lever;
+    if P rises that knob is what moves.
 
     Failure is per chat: one chat's bad answer costs that chat its row and
     nothing else, and the chat is NAMED rather than dropped. The pass itself may
@@ -1640,22 +1753,25 @@ def github_pass() -> None:
     """
     as_of = time.time()
     index = Index.load()
+    heads: dict[str, str] = {}
+    stats: dict[str, dict[str, object]] = {}
     pulls: dict[str, list[dict[str, object]]] = {}
     unreachable: set[str] = set()
     no_remote: set[str] = set()
     failures: list[str] = []
     for cid, chat in sorted(index.chats.items()):
         try:
-            # Asked before the pull list purely to separate the dispositions:
+            # Asked before the rest purely to separate the dispositions:
             # slug_of's 409 is a `_probe` chat or a repo that left the
             # allowlist, which is settled rather than retryable and must not
             # share a bucket with a GitHub outage.
-            repo_slug(chat)
+            slug = repo_slug(chat)
         except GitHubError as e:
             no_remote.add(cid)
             failures.append(f"{cid}: {e.message}")
             continue
         try:
+            stat = compare_stat(chat, slug, heads)
             rows = chat_pulls(chat)
         except GitHubError as e:
             unreachable.add(cid)
@@ -1669,6 +1785,13 @@ def github_pass() -> None:
             unreachable.add(cid)
             failures.append(f"{cid}: {type(e).__name__}: {e}")
             continue
+        # Assigned only after BOTH calls returned, so a chat is in exactly one
+        # disposition. A half-row — a fresh stat, stale pulls, and the chat
+        # named unreachable at the same time — is the ambiguity `unreachable`
+        # exists to prevent. `stat` is None for a branch that was never pushed,
+        # which is not a failure and must not cost the row its pulls.
+        if stat is not None:
+            stats[cid] = stat
         pulls[cid] = rows
     if failures:
         # ONE line per pass with a count, not one per chat: 24 chats every 300s
@@ -1681,6 +1804,7 @@ def github_pass() -> None:
     # and there is no eviction path to get wrong.
     _github_memory.snapshot = GitHubSnapshot(
         as_of=as_of,
+        stats=stats,
         pulls=pulls,
         unreachable=frozenset(unreachable),
         no_remote=frozenset(no_remote),
@@ -2051,13 +2175,26 @@ class Handler(BaseHTTPRequestHandler):
 
     def route_list_chats(self) -> None:
         index = Index.load()
+        # Bound ONCE, outside the loop. The sweep thread rebinds this attribute;
+        # re-reading it per chat could mix two passes into one answer, which is
+        # the whole reason it is published as a single frozen object.
+        snap = _github_memory.snapshot
         out: list[dict[str, object]] = []
         for cid, chat in sorted(index.chats.items(), key=lambda kv: -kv[1].last_active):
             entry = chat.to_wire()
             entry["status"] = container_state(cid)
             entry["url"] = f"/chat/{cid}"
+            stat = snap.stats.get(cid)
+            if stat is not None:
+                # ABSENT, never zeroed — DETAIL_ONLY_COUNTS' rule one route
+                # over. An all-zero stat is the positive claim "this branch
+                # changed nothing", which `identical` really does make and a
+                # compare-404 does not. Spliced here and never a Chat field:
+                # to_wire is asdict() and Index.save persists every field, so a
+                # field would rot into index.json and evaporate on the next save.
+                entry["stat"] = stat
             out.append(entry)
-        self.send_json(200, {"chats": out})
+        self.send_json(200, {"chats": out, "github": snap.to_wire()})
 
     def route_create_chat(self) -> None:
         try:
