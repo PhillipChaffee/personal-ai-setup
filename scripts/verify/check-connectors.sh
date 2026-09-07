@@ -63,8 +63,8 @@ Usage: check-connectors.sh [--smoke <id>] [--acp-roundtrip <id>] [--acp-url <url
                           $GOOSE_ACP_URL, else https://127.0.0.1:3284/acp.
                           On the brain: https://<tailscale-ip>:3284/acp.
   --goose-version <tag>   Pin the ACP contract check to this tag. Default is
-                          derived from infra/terraform/templates/cloud-init.yaml.tftpl
-                          (GOOSE_VERSION=...), falling back to v1.46.0.
+                          read from config/pins.yaml (goose.version), which is
+                          the single source both installers read.
   --offline               Skip the two network checks outright.
 
 Validates every config/connectors/*.yaml. Exits non-zero if anything FAILs.
@@ -105,7 +105,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONNECTOR_DIR="$REPO_ROOT/config/connectors"
 PRIVACY_DOC="$REPO_ROOT/docs/privacy.md"
-CLOUD_INIT="$REPO_ROOT/infra/terraform/templates/cloud-init.yaml.tftpl"
 
 # A non-interactive SSH shell on the brain does not source the profile that
 # puts ~/.local/bin on PATH, so fall back to the known install location the way
@@ -115,22 +114,47 @@ CLOUD_INIT="$REPO_ROOT/infra/terraform/templates/cloud-init.yaml.tftpl"
 GOOSE_BIN="$(resolve_goose_bin)"
 
 # ---- the pinned goose version ----------------------------------------------
-# Single source of truth is the brain's installer line in cloud-init; the Mac
-# pins the same release with `brew pin block-goose-cli`. Deriving it means a
-# deliberate bump drags this check along instead of leaving a stale literal in
-# a verification script.
+# THE SOURCE MOVED, and this check silently stopped working when it did.
+#
+# It used to grep cloud-init for a literal `GOOSE_VERSION=v1.46.0`. cloud-init
+# is now a Terraform template that interpolates `v${goose_version}` from
+# config/pins.yaml, so the grep stopped matching, this fell through to the
+# built-in default, and reported `source: built-in default (cloud-init not
+# readable)` -- while cloud-init was perfectly readable. It went unnoticed
+# because the default happens to equal the pin TODAY; the first bump would have
+# left this asserting the old version forever.
+#
+# So: read config/pins.yaml, which is now the single source both installers
+# read. Parsed with awk scoped to the `goose:` block rather than a bare grep
+# for `version:`, because that file is explicitly for pins "more than one
+# installer needs" and will grow other tools.
 GOOSE_TAG=""
 TAG_SOURCE=""
+PINS_FILE="$REPO_ROOT/config/pins.yaml"
 if [ -n "$GOOSE_TAG_FLAG" ]; then
   GOOSE_TAG="$GOOSE_TAG_FLAG"
   TAG_SOURCE="--goose-version flag"
-elif [ -r "$CLOUD_INIT" ]; then
-  GOOSE_TAG="$(grep -oE 'GOOSE_VERSION=v[0-9]+\.[0-9]+\.[0-9]+' "$CLOUD_INIT" | head -n 1 | cut -d= -f2 || true)"
-  [ -n "$GOOSE_TAG" ] && TAG_SOURCE="infra/terraform/templates/cloud-init.yaml.tftpl"
+elif [ -r "$PINS_FILE" ]; then
+  PINS_VER="$(awk '
+    /^goose:/           { inblock = 1; next }
+    inblock && /^[^ \t]/ { exit }
+    inblock && $1 == "version:" {
+      gsub(/["\047]/, "", $2); print $2; exit
+    }
+  ' "$PINS_FILE")"
+  if [ -n "$PINS_VER" ]; then
+    GOOSE_TAG="v$PINS_VER"
+    TAG_SOURCE="config/pins.yaml"
+  fi
 fi
 if [ -z "$GOOSE_TAG" ]; then
-  GOOSE_TAG="v1.46.0"
-  TAG_SOURCE="built-in default (cloud-init not readable)"
+  # Deliberately NOT a silent fallback to a literal: a stale pin here asserts
+  # yesterday's ACP contract against today's goose and calls it a pass.
+  die 2 "cannot read the pinned goose version from $PINS_FILE" \
+    "  Pass it explicitly:  --goose-version vX.Y.Z" \
+    "  config/pins.yaml is the single source both installers read; if it is" \
+    "  missing or its goose.version key was renamed, fix that rather than" \
+    "  letting this check assert against a version nobody chose."
 fi
 GOOSE_VER="${GOOSE_TAG#v}"
 
@@ -1865,7 +1889,7 @@ if [ -n "$GOOSE_BIN" ]; then
     echo "      Every wire shape in these manifests was verified against the pinned"
     echo "      release, and the ACP method names have already broken twice in released"
     echo "      history. Mac: brew pin block-goose-cli (scripts/mac/bootstrap-mac.sh)."
-    echo "      Brain: GOOSE_VERSION in infra/terraform/templates/cloud-init.yaml.tftpl."
+    echo "      Both surfaces read config/pins.yaml — bump goose.version there."
   fi
 else
   skip "goose CLI not installed here — manifest validation does not need it"
