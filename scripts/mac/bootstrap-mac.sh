@@ -7,6 +7,19 @@
 # OpenCode and goose), OpenCode agents, and global AGENTS.md rules (never
 # overwriting existing files). Idempotent — safe to re-run after a failed
 # step. See docs/setup/20-mac-setup.md and docs/cursor-port.md.
+#
+# PAI_EXEC — TESTING/DEV ONLY, never set this on a real Mac. When set, it must
+# name an executable under <this repo>/scripts/verify/ (enforced below, exit 2),
+# and every external binary this script invokes goes to it instead: `pai_exec
+# uname -s`, `pai_exec brew ...`, `pai_exec goose --version`, and `pai_have brew`
+# for the presence probe (`have` is a seam VERB, not a binary name). Unset, both
+# helpers are strict no-ops -- `${PAI_EXEC:+...}` expands to nothing, so the
+# command runs verbatim with its own exit status, redirections and pipes. What
+# does NOT go through the seam, on purpose: mkdir/cp/mv/rm (a fake $HOME
+# substitutes for all of them, which keeps the no-clobber and atomic-skill
+# logic REAL), and python3/uv (local compute over config/pins.yaml -- routing
+# them would fake away the pin comparison). scripts/verify/fake-exec.sh is the
+# only implementation; scripts/verify/test-base-install.sh drives it.
 set -euo pipefail
 
 usage() {
@@ -26,7 +39,56 @@ case "${1:-}" in
   *) echo "bootstrap-mac.sh: unknown argument: $1" >&2; usage >&2; exit 2 ;;
 esac
 
-if [ "$(uname -s)" != "Darwin" ]; then
+# Hoisted ABOVE the platform guard, because the guard now consults the seam and
+# the containment check below needs REPO_ROOT. cd/dirname/pwd/BASH_SOURCE are
+# pure and platform-independent, so moving them past a `uname` test changes
+# nothing about what the script does.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# THE SEAM. See the PAI_EXEC paragraph in this file's header.
+#
+# `${PAI_EXEC:+"$PAI_EXEC"}` expands to NOTHING when unset -- not to an empty
+# word -- so "$@" runs verbatim. `:+` is also one of the expansions `set -u`
+# does not fault on, which is why no call site needs a guard. The body is a
+# single command, so the function's exit status IS the call's, and redirections
+# or pipes written on the call attach to it exactly as before.
+pai_exec() { ${PAI_EXEC:+"$PAI_EXEC"} "$@"; }
+
+# The presence half. `command -v` is a shell builtin consulting PATH, so it
+# cannot be handed to an external dispatcher; `have` is a seam VERB that the
+# dispatcher answers from a fixed allowlist.
+pai_have() {
+  if [ -n "${PAI_EXEC:-}" ]; then
+    pai_exec have "$1"
+  else
+    command -v "$1" >/dev/null 2>&1
+  fi
+}
+
+# CONTAINMENT, and it is a gate rather than a banner. Routing `uname` through
+# the seam means a program outside this script now answers "what OS is this",
+# so three independent things must go wrong before a real machine is at risk:
+# PAI_EXEC must be set at all, it must point INSIDE this repo's scripts/verify/,
+# and fake-exec.sh itself refuses every call unless $HOME is under
+# $PAI_FAKE_ROOT. The `-x` test matters for a reason that is not obvious: an
+# unexecutable PAI_EXEC yields an empty command substitution inside the `if`
+# below -- which does not trip `set -e` -- so "" != "Darwin" and a Mac user is
+# told the script is macOS-only. That is the seam failing in a way
+# indistinguishable from running on Linux.
+if [ -n "${PAI_EXEC:-}" ]; then
+  case "$PAI_EXEC" in
+    "$REPO_ROOT"/scripts/verify/*) ;;
+    *) echo "bootstrap-mac.sh: PAI_EXEC must be a file under $REPO_ROOT/scripts/verify/" >&2
+       exit 2 ;;
+  esac
+  [ -x "$PAI_EXEC" ] || {
+    echo "bootstrap-mac.sh: PAI_EXEC is set but not executable: $PAI_EXEC" >&2
+    exit 2
+  }
+fi
+
+if [ "$(pai_exec uname -s)" != "Darwin" ]; then
   echo "bootstrap-mac.sh: this script is macOS-only (Mac surface setup)." >&2
   echo "The VPS brain is provisioned by infra/terraform + scripts/vps/ instead," >&2
   echo "and it runs Linux — goose itself is not the Mac-only part." >&2
@@ -36,13 +98,10 @@ if [ "$(uname -s)" != "Darwin" ]; then
   exit 1
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-
 echo "==> personal-ai Mac bootstrap (repo: $REPO_ROOT)"
 
 # ---------------------------------------------------------------- Homebrew --
-if ! command -v brew >/dev/null 2>&1; then
+if ! pai_have brew; then
   cat >&2 <<'EOF'
 Homebrew is not installed. Install it first (it will ask for your password):
 
@@ -60,21 +119,21 @@ FORMULAE="block-goose-cli anomalyco/tap/opencode uv node jq"
 
 for formula in $FORMULAE; do
   short="${formula##*/}"   # tap-qualified names: check by short name
-  if brew list --formula --versions "$short" >/dev/null 2>&1; then
+  if pai_exec brew list --formula --versions "$short" >/dev/null 2>&1; then
     echo "==> $short already installed — skipping"
   else
     echo "==> brew install $formula"
-    brew install "$formula"
+    pai_exec brew install "$formula"
   fi
 done
 
 # ----------------------------------------------------------------- Casks ----
 for cask in block-goose tailscale; do
-  if brew list --cask --versions "$cask" >/dev/null 2>&1; then
+  if pai_exec brew list --cask --versions "$cask" >/dev/null 2>&1; then
     echo "==> cask $cask already installed — skipping"
   else
     echo "==> brew install --cask $cask"
-    brew install --cask "$cask"
+    pai_exec brew install --cask "$cask"
   fi
 done
 
@@ -87,11 +146,11 @@ echo "      tailscale' — the two variants conflict."
 # goose releases roughly weekly and 2.0 is in RC churn; the whole setup is
 # built against pinned 1.x. Unpin deliberately (brew unpin block-goose-cli)
 # when you decide to upgrade, and upgrade the brain in the same sitting.
-if brew list --pinned 2>/dev/null | grep -qx "block-goose-cli"; then
+if pai_exec brew list --pinned 2>/dev/null | grep -qx "block-goose-cli"; then
   echo "==> block-goose-cli already pinned"
 else
   echo "==> brew pin block-goose-cli (goose 2.0 churn — upgrades are opt-in)"
-  brew pin block-goose-cli
+  pai_exec brew pin block-goose-cli
 fi
 echo "NOTE: casks can't be pinned; open Goose Desktop's settings and turn OFF"
 echo "      automatic updates so Desktop stays on the same major as the CLI."
@@ -115,7 +174,7 @@ if [ -r "$PIN_FILE" ]; then
   # `goose --version` prints a bare version on 1.x; take the first version-shaped
   # token so a future format change degrades to "cannot tell" rather than a
   # spurious mismatch.
-  HAVE_GOOSE="$(goose --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+  HAVE_GOOSE="$(pai_exec goose --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
   if [ -z "$WANT_GOOSE" ] || [ -z "$HAVE_GOOSE" ]; then
     echo "NOTE: could not compare the goose version against config/pins.yaml"
     echo "      (want='${WANT_GOOSE:-?}' have='${HAVE_GOOSE:-?}') — skipping the check."
