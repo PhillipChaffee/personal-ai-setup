@@ -1,0 +1,121 @@
+---
+# coding-pack — the Cursor port: eleven skills, thirty OpenCode subagents and
+# the global AGENTS.md rules, all copied no-clobber into $HOME.
+#
+# DESCRIBES TODAY. This is the largest footprint of any Mac unit and the one
+# with the least machinery behind it: three glob loops, no verify script, and
+# a runbook that documents the PORT DECISIONS rather than the install.
+id: coding-pack
+manifest_version: 1
+verified_on: "2026-09-07"
+summary: Eleven ported Cursor skills, 30 OpenCode subagents, and the global AGENTS.md rule set.
+host: mac
+tier: default_on
+requires: [opencode]
+
+# Markdown. It bills through whatever model reads it -- the Zen row the
+# opencode unit claims -- so there is no README budget row of its own.
+cost: []
+
+installer:
+  script: scripts/mac/bootstrap-mac.sh
+  function: unit_coding_pack
+  status: planned
+
+# NO check-*.sh COVERS THIS UNIT. docs/cursor-port.md:124 has a "Verifying the
+# port on your Mac" section, and it is a list of things for a HUMAN to type.
+# The eleven skill directories are covered outside that set (see the blocker
+# below); the 30 agents and AGENTS.md are covered NOWHERE, and they are what
+# the skills dispatch into BY NAME -- cursor-port.md:99-100 records that the
+# filenames were kept unchanged for exactly that reason.
+verify: []
+runbook: docs/cursor-port.md
+
+secrets: []
+
+owns:
+  # The eleven Cursor-ported skills, enumerated rather than claimed as
+  # config/skills/ wholesale: connect-service in that same directory is
+  # base-skills'. ONE loop (bootstrap-mac.sh:230) installs both units' skills.
+  - {kind: repo_file, target: config/skills/ci-lint-test}
+  - {kind: repo_file, target: config/skills/clean-plan}
+  - {kind: repo_file, target: config/skills/code-review}
+  - {kind: repo_file, target: config/skills/deep-research}
+  - {kind: repo_file, target: config/skills/looping-code-review}
+  - {kind: repo_file, target: config/skills/looping-plan-review}
+  - {kind: repo_file, target: config/skills/mr-review}
+  - {kind: repo_file, target: config/skills/plan-review}
+  - {kind: repo_file, target: config/skills/pre-mr-checklist}
+  - {kind: repo_file, target: config/skills/refactor-planner}
+  - {kind: repo_file, target: config/skills/ship}
+  # Their destinations. Enumerated for the same reason the sources are: the
+  # parent ~/.agents/skills is created by one mkdir at bootstrap-mac.sh:225
+  # and holds two units' work, so no single unit can claim the directory.
+  - {kind: home_path, target: ~/.agents/skills/ci-lint-test}
+  - {kind: home_path, target: ~/.agents/skills/clean-plan}
+  - {kind: home_path, target: ~/.agents/skills/code-review}
+  - {kind: home_path, target: ~/.agents/skills/deep-research}
+  - {kind: home_path, target: ~/.agents/skills/looping-code-review}
+  - {kind: home_path, target: ~/.agents/skills/looping-plan-review}
+  - {kind: home_path, target: ~/.agents/skills/mr-review}
+  - {kind: home_path, target: ~/.agents/skills/plan-review}
+  - {kind: home_path, target: ~/.agents/skills/pre-mr-checklist}
+  - {kind: home_path, target: ~/.agents/skills/refactor-planner}
+  - {kind: home_path, target: ~/.agents/skills/ship}
+  # The 30 agents are claimed as the directory, not file by file: the glob at
+  # bootstrap-mac.sh:243 copies whatever is in it, and no other unit owns any
+  # part of it -- the same shape base-goose uses for custom_providers/.
+  - {kind: repo_file, target: config/opencode/agents}
+  - {kind: home_path, target: ~/.config/opencode/agents}
+  - {kind: repo_file, target: config/opencode/AGENTS.md}
+  - {kind: home_path, target: ~/.config/opencode/AGENTS.md}
+  # Owned but NEVER INSTALLED, on purpose: bootstrap-mac.sh:249-250 prints
+  # that the per-project rule snippets stay in the repo and are pasted into a
+  # project by hand. It is this unit's file with no destination.
+  - {kind: repo_file, target: config/opencode/project-rules}
+
+manual_steps:
+  - id: paste-project-rules
+    summary: Copy the snippets you want out of config/opencode/project-rules/
+      into a project's own rules file. Nothing installs them; the bootstrap
+      only prints where they live.
+    doc: docs/cursor-port.md#where-everything-landed
+    blocking: false
+
+blockers:
+  - id: no-verify
+    severity: warn
+    detail: "No check-*.sh asserts that 11 skills and 30 agents landed.
+      doctor.py:147-163 (`pai doctor`, which `pai verify` never runs) covers
+      the skills half by comparing config/skills/ against ~/.agents/skills;
+      its roster stops there -- extensions, skills, providers, goosehints --
+      so a half-copied ~/.config/opencode/agents is invisible everywhere. The
+      copy loops keep whatever is already present (bootstrap-mac.sh:233-234
+      prints `kept existing` and moves on), so stale is silent too."
+  - id: runbook-documents-the-port-not-the-install
+    severity: note
+    detail: docs/cursor-port.md is a decision log -- what was ported, adapted
+      and dropped. It is the closest thing to a runbook and it is what this
+      unit points at, but nothing in it tells a reader how to install or
+      re-install the pack.
+  - id: cannot-be-installed-without-base-skills
+    severity: note
+    detail: This unit does not require base-skills, yet one loop
+      (bootstrap-mac.sh:230) installs both units' skill directories. As with
+      the shared FORMULAE string, there is no supported way to take one and
+      leave the other -- the tier and the requires graph both describe intent
+      that the installer cannot yet honour.
+
+uninstall:
+  supported: false
+  reason: "Nothing removes ~/.agents/skills or ~/.config/opencode/agents, and
+    the no-clobber install means this repo cannot tell which entries it wrote
+    from ones you added. Removing the wrong file loses your own work."
+
+notes: >-
+  The 30 agents are 11 cr-*, 12 pr-*, 2 refactor scouts and 5 research agents
+  (docs/cursor-port.md:97-98, which also records that the issue's "31" was a
+  miscount). Filenames equal agent names and the skills dispatch by name, so
+  renaming a file here breaks a cross-reference that nothing checks -- which
+  is the strongest argument on this manifest for the verify script it does
+  not have.

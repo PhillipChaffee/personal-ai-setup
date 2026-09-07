@@ -1,0 +1,105 @@
+---
+# base-skills — the goose-native skill plane: one skill directory copied into
+# ~/.agents/skills, which goose 1.16+ and OpenCode both read.
+#
+# DESCRIBES TODAY, and this unit's honest headline is that NOTHING DOCUMENTS
+# IT: `grep -rln connect-service docs/ README.md` returns zero hits while both
+# config/skills/connect-service/ and recipes/connect-service.yaml ship. So
+# `runbook` is null rather than pointed at a doc that does not cover it —
+# docs/cursor-port.md is the runbook
+# for the ELEVEN Cursor-ported skills (coding-pack), not for this one.
+id: base-skills
+manifest_version: 1
+verified_on: "2026-09-07"
+summary: The connect-service skill, copied into ~/.agents/skills where goose and OpenCode both read it.
+# epic 30's table says `both`. The tree says otherwise: the only thing that
+# copies config/skills/ anywhere is bootstrap-mac.sh:230, into the Mac's $HOME.
+# `grep -n skill scripts/vps/deploy-vps.sh` is empty, so the brain runs goose
+# with no skills at all. `mac` is the checkable claim; the brain-side gap is a
+# blocker below rather than a host value nothing can prove.
+host: mac
+tier: base
+requires: [base-goose]
+
+# A skill is a markdown file. It bills through whatever model reads it, which
+# is base-goose's two README budget rows; nothing on that table is this unit's.
+cost: []
+
+installer:
+  script: scripts/mac/bootstrap-mac.sh
+  function: unit_base_skills
+  status: planned
+
+# NO check-*.sh COVERS THIS UNIT, and `verify` may name only those.
+# check-goose.sh drives goose through the three custom providers and never
+# asks whether a skill is loadable. The real coverage lives outside that set
+# and is named in the blocker below, so this empty list is a statement about
+# where the check is, not a claim that none exists.
+verify: []
+# NO RUNBOOK EXISTS. See the header: neither docs/setup/20-mac-setup.md nor
+# docs/setup/00-overview.md contains the string "skill" at all.
+runbook: null
+
+secrets: []
+
+owns:
+  # The 12th skill and the only one not ported from Cursor. The other eleven
+  # are coding-pack's; ONE loop (bootstrap-mac.sh:230, `for skill_dir in
+  # config/skills/*/`) installs both units' skills, which is why the
+  # destination is enumerated per skill rather than claimed as a directory.
+  - {kind: repo_file, target: config/skills/connect-service}
+  - {kind: home_path, target: ~/.agents/skills/connect-service}
+  # The goose-native half of the same workflow, and the ONE file in recipes/
+  # that no other manifest claims: automations takes morning-brief, inbox-triage
+  # and weekly-review, life-vault takes vault-qa, vault-automations takes
+  # health-followups and budget-checkin. It is deliberately unscheduled --
+  # register-schedules.sh:77's ORDER omits it and the recipe's own header
+  # (recipes/connect-service.yaml:5-10) says so, because a human has to answer
+  # its questions -- so it has no destination and no timer. Claimed here because
+  # this unit owns the skill it wraps; a shipped file claimed by none of the 18
+  # units is the invisible gap this directory exists to end.
+  - {kind: repo_file, target: recipes/connect-service.yaml}
+
+# The install is a no-clobber `cp -R` with nothing left for a human to finish.
+manual_steps: []
+
+blockers:
+  - id: no-verify
+    severity: warn
+    detail: "No scripts/verify/check-*.sh covers this unit, which is all
+      `verify` is allowed to name. It is NOT unchecked: doctor.py:147-163
+      (`pai doctor`) FAILs when a shipped skill is missing from
+      ~/.agents/skills, and test-pai.sh:134 deletes this very skill to prove
+      that check bites. The gap is that `pai verify` never runs it."
+  - id: no-runbook
+    severity: warn
+    detail: connect-service is documented nowhere. `grep -rln connect-service
+      docs/ README.md` returns zero hits while config/skills/connect-service/
+      and recipes/connect-service.yaml both ship, so there is no page to
+      point a reader at.
+  - id: readme-skill-count-is-stale
+    severity: note
+    detail: "README.md:110's repo-tree comment says \"11 skills\". `ls -d
+      config/skills/*/ | wc -l` is 12. This unit is the 12th, so the count
+      went stale the day it landed."
+  - id: brain-never-gets-the-skills
+    severity: warn
+    detail: The brain runs goose (goose-serve.service) but deploy-vps.sh
+      copies no skills, so a skill invoked in a brain chat is simply absent.
+      Only the Mac surface has a skills plane today.
+
+uninstall:
+  supported: false
+  reason: "Nothing removes ~/.agents/skills/connect-service. The install side
+    is deliberately no-clobber, and the counterpart -- knowing which entries
+    this repo put there versus which you wrote -- does not exist."
+
+notes: >-
+  Why this is `base` and not `opt_in`: config/connectors/README.md:9-11 calls
+  config/skills/connect-service/SKILL.md "the generic connect workflow", the
+  thing that reads a connector manifest when one exists and writes one when it
+  does not -- so it is a prerequisite of the connectors unit rather than a
+  preference. It is also the reason `owns` names one skill instead of the
+  directory: config/skills/ is the one tree in this repo whose contents split
+  across two units, and a directory-level claim would silently swallow
+  coding-pack's eleven.

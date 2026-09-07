@@ -1,0 +1,128 @@
+---
+# ntfy-alerts — the failure-alert transport: one topic name, one 79-line
+# script, and an email gateway.
+#
+# DESCRIBES TODAY. There is no account to create, no daemon to install and no
+# package to fetch: an ntfy.sh topic exists the moment you POST to it, which is
+# why `installer: null` here means something different from "unfinished". The
+# work this unit needs is choosing a random name and putting it in two stores,
+# and the only thing that could go wrong silently is that NTFY_TOPIC is unset -
+# in which case notify.sh prints an error to stderr and exits 0 on purpose.
+id: ntfy-alerts
+manifest_version: 1
+verified_on: "2026-09-07"
+summary: notify.sh and the ntfy topic that carries automation failure alerts.
+host: both
+tier: opt_in
+requires: [base-secrets]
+
+# Copied VERBATIM from README.md's budget table (:151). The row is shared with
+# the tailnet - it is one line covering both free-tier services - and the
+# validator's rule is that `line` and `amount` appear on the SAME LINE of the
+# source, not that a row belongs to one unit. Quoting the shared row is
+# accurate; splitting it would be inventing a figure.
+cost:
+  - line: Tailscale (personal plan), ntfy failure-alert emails (free tier)
+    amount: $0
+    source: README.md
+
+# NOTHING INSTALLS THIS UNIT. scripts/common/notify.sh arrives on the brain
+# because the whole repo is cloned there, not because anything installs it,
+# and nothing creates or validates the topic. Legal only because manual_steps
+# below is non-empty.
+installer: null
+
+# NOTHING VERIFIES THIS UNIT. The nearest thing is scripts/verify/fake-ntfy.py,
+# a test double that test-code-agent-manager.sh drives - it proves the MANAGER
+# publishes correctly, against a fake server, and says nothing about whether
+# this deployment's topic works. The only thing anywhere that reads NTFY_TOPIC
+# for presence is deploy-vps.sh:76-83, which refuses to deploy on an EMPTY
+# value and accepts any typo. check-code-agents.sh:253 names the key only to
+# assert a chat container CANNOT read it out of its own environment - the
+# opposite direction, and evidence about isolation rather than about delivery.
+verify: []
+runbook: docs/automations.md#delivery-recipes-email-their-own-results-plus-a-failure-watchdog
+
+secrets:
+  - key: NTFY_TOPIC
+    # base-secrets also claims this key: it is one of the four deploy-vps.sh
+    # hard-requires at :76-83, which is a property of the deploy gate rather
+    # than of this unit. Same key, two units, one store - the validator checks
+    # each entry against the roster its own `store` names.
+    store: vps
+    secret: true
+    optional: false
+  - key: NTFY_EMAIL
+    # Not a secret: it is your own address, and secrets.env.example:25 says so
+    # in as many words. Optional - without it the alert is a plain topic push
+    # that nobody is subscribed to.
+    store: vps
+    secret: false
+    optional: true
+
+owns:
+  - {kind: repo_file, target: scripts/common/notify.sh}
+  # No account, no resource, no API call to provision. The topic name IS the
+  # credential: anyone who knows it can both read and publish.
+  - {kind: manual, target: "ntfy.sh topic (NTFY_TOPIC), created by first use"}
+
+manual_steps:
+  - id: choose-a-topic
+    summary: Generate a random topic name (openssl rand -hex 12) and store it
+      as NTFY_TOPIC in the Keychain on the Mac and in /data/secrets.env on the
+      brain. A guessable name is a public channel.
+    doc: docs/setup/10-accounts.md#6-ntfy-failure-alert-transport
+    blocking: true
+  - id: set-ntfy-email
+    summary: Set NTFY_EMAIL to your own address so ntfy forwards each failure
+      alert by email. Without it the alerts go nowhere you will look.
+    doc: docs/setup/10-accounts.md#6-ntfy-failure-alert-transport
+    blocking: false
+  - id: send-one-test-alert
+    summary: Prove the channel end to end by hand - NTFY_TOPIC=...
+      scripts/common/notify.sh "test" - and confirm the email arrives. Nothing
+      else in the repo will tell you this transport is broken.
+    doc: docs/setup/10-accounts.md#6-ntfy-failure-alert-transport
+    blocking: false
+
+blockers:
+  - id: no-verify
+    severity: warn
+    detail: No check-*.sh posts to the configured topic or asserts an alert can
+      be delivered. A wrong or empty NTFY_TOPIC is invisible until the first
+      automation failure, which is the one moment the channel exists to serve.
+  - id: failure-is-silent-by-design
+    severity: warn
+    detail: notify.sh:56-63 and :70-77 always exit 0 - a missing NTFY_TOPIC or
+      a failed POST prints to stderr and nothing more. That is correct (a lost
+      notification must not fail the run that produced the work) and it means
+      the transport can be dead for months without a single non-zero exit.
+  - id: native-scheduler-runs-are-not-watched
+    severity: note
+    detail: run-recipe.sh:27 is the only caller of notify.sh on the recipe
+      path, and it wraps the systemd fallback timers and manual runs only. A
+      native-scheduler run that crashes before its final email step delivers
+      nothing and alerts nothing - docs/automations.md:149 records exactly that
+      as a documented limitation. The tree's one other caller is
+      code-agent-manager.py:1981 (notify_failure, reached from :1214 and
+      :1281), which covers code-agent launch and wake failures only.
+  - id: email-gateway-caps-at-five-a-day
+    severity: note
+    detail: ntfy.sh's free tier forwards roughly 5 emails/day, which is why
+      content deliberately does not travel this channel. A day of repeated
+      failures will exhaust it and later alerts are dropped by ntfy, not by
+      anything here.
+
+uninstall:
+  supported: false
+  reason: "There is nothing to remove: no account, no subscription, no
+    installed file outside the repo checkout. Abandoning a topic means
+    deleting the two variables by hand, and unsetting NTFY_TOPIC makes
+    deploy-vps.sh:76-83 refuse to deploy at all."
+
+notes: >-
+  NTFY_AGENT_TOPIC is deliberately NOT claimed here. It is a second topic on a
+  different channel - code-agent-manager.py publishes to it directly rather
+  than through notify.sh - and the two must be burnable independently, because
+  the agent topic is the one a phone subscribes to, which turns a read-only
+  leak into a write channel onto a lock screen. It belongs to code-agents.

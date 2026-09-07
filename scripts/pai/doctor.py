@@ -307,23 +307,133 @@ def inventory(repo: Path, home: Path) -> int:
     return 0
 
 
-def catalogue(repo: Path) -> int:
-    """`pai list` -- what the REPO ships. Manifest-driven at #36; a scan today."""
-    checks = sorted(p.name for p in (repo / "scripts" / "verify").glob("check-*.sh"))
-    skills = sorted(p.name for p in (repo / "config" / "skills").glob("*") if p.is_dir())
-    conns = sorted(p.stem for p in (repo / "config" / "connectors").glob("*.yaml"))
-    recipes = sorted(p.stem for p in (repo / "recipes").glob("*.yaml"))
-    for label, items in (
-        ("verify", checks),
-        ("skills", skills),
-        ("connectors", conns),
-        ("recipes", recipes),
-    ):
-        _emit(f"{label:<12} {len(items)}")
-        for item in items:
-            _emit(f"  {item}")
+@dataclass(frozen=True)
+class Unit:
+    """One row of `pai list`, flattened from one config/units/<id>.yaml manifest."""
+
+    id: str
+    tier: str
+    host: str
+    summary: str
+    requires: tuple[str, ...]
+    cost: str
+    manual_steps: int
+    # Not columns -- the two counts in the footer, which are the whole reason
+    # config/units/ exists: a majority of units have nothing that installs them
+    # or nothing that verifies them, and that was invisible until it was
+    # counted. The numbers are deliberately NOT written down here: they are the
+    # directory's, they move with every manifest, and check-units.sh is the
+    # thing that has a verdict about them.
+    has_installer: bool
+    has_verify: bool
+
+
+# One template for the header and every row, so a column added to one cannot
+# drift from the other. Widths are FIXED, not measured: the longest id in
+# epic #30's catalogue is 17 characters and the longest tier is `default_on`,
+# and a `max()` over the rows would be one more thing to get wrong on an empty
+# directory. An over-long value pushes its row right; it is never truncated.
+UNIT_ROW = "{id:<18}  {tier:<11}  {host:<10}  {manual:>6}  {cost:<30}  {requires}"
+
+
+def load_units(repo: Path) -> tuple[list[Unit], list[str]]:
+    """Flatten config/units/*.yaml into rows, plus the stems that would not parse.
+
+    THE RENDERER ASSUMES VALID INPUT. scripts/verify/check-units.sh is the sole
+    validator and it runs in CI on every push; re-checking a field here would
+    add a branch that buys an assertion already made, and this file is the one
+    the 85% per-file coverage floor is measured against. The single exception is
+    a file the gate cannot stop an editor from creating between two of its runs
+    -- a syntax error, or a half-written file that is not a mapping at all.
+    Those stems are listed rather than crashing the menu.
+
+    A missing config/units/ yields ([], []) -- Path.glob on an absent directory
+    is empty, it does not raise.
+    """
+    units: list[Unit] = []
+    unreadable: list[str] = []
+    for path in sorted((repo / "config" / "units").glob("*.yaml")):
+        try:
+            with path.open(encoding="utf-8") as handle:
+                data: Any = yaml.safe_load(handle)
+        except (OSError, yaml.YAMLError):
+            unreadable.append(path.stem)
+            continue
+        if not isinstance(data, dict):
+            # A zero-byte or comment-only manifest -- `touch config/units/x.yaml`
+            # while drafting -- parses to None, and a stray top-level list parses
+            # to a list. Neither raises YAMLError, so the arm above never sees
+            # them and `.get` would traceback out of a read-only menu. Same
+            # class of half-written file, so the same degraded handling.
+            unreadable.append(path.stem)
+            continue
+        units.append(
+            Unit(
+                id=str(data.get("id", path.stem)),
+                tier=str(data.get("tier", "-")),
+                host=str(data.get("host", "-")),
+                summary=str(data.get("summary", "")),
+                requires=tuple(data.get("requires") or ()),
+                # AMOUNTS ONLY. The manifest's sibling `line` is the verbatim
+                # README budget row the validator cross-checks -- a sentence,
+                # not a column. No figure originates here or in the manifest.
+                cost=" + ".join(str(c["amount"]) for c in data.get("cost") or ()) or "-",
+                manual_steps=len(data.get("manual_steps") or ()),
+                has_installer=data.get("installer") is not None,
+                has_verify=bool(data.get("verify")),
+            ),
+        )
+    return units, unreadable
+
+
+def render_catalogue(units: list[Unit], unreadable: list[str]) -> None:
+    """Print the menu: one padded row per unit with its summary underneath.
+
+    `summary` is a line of its own rather than a column. It is up to 120
+    characters by schema, so as a column it would have to be truncated -- and a
+    truncated summary is exactly the kind of almost-right value this catalogue
+    was built to stop shipping.
+    """
+    _emit(
+        UNIT_ROW.format(
+            id="id",
+            tier="tier",
+            host="host",
+            manual="manual",
+            cost="cost",
+            requires="requires",
+        ),
+    )
+    for unit in units:
+        _emit(
+            UNIT_ROW.format(
+                id=unit.id,
+                tier=unit.tier,
+                host=unit.host,
+                manual=unit.manual_steps,
+                cost=unit.cost,
+                requires=", ".join(unit.requires) or "-",
+            ),
+        )
+        _emit(f"    {unit.summary}")
     _emit("")
-    _emit("(derived from the tree; becomes manifest-driven at #36)")
+    _emit(
+        f"{len(units)} units — {sum(1 for u in units if not u.has_installer)} with no "
+        f"installer, {sum(1 for u in units if not u.has_verify)} with no verify script.",
+    )
+    if unreadable:
+        _emit(f"unreadable ({len(unreadable)}): {', '.join(sorted(unreadable))}")
+
+
+def catalogue(repo: Path) -> int:
+    """`pai list` -- the units this repo ships, read from config/units/.
+
+    Always 0: `list` reports what the manifests say, including that a unit has
+    no installer and no verify script. Those absences are the catalogue's
+    content, not its failure -- check-units.sh is what has a verdict about them.
+    """
+    units, unreadable = load_units(repo)
+    render_catalogue(units, unreadable)
     return 0
 
 

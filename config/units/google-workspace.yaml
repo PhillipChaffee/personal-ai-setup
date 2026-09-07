@@ -1,0 +1,146 @@
+---
+# google-workspace — Gmail, Calendar and Tasks reached through
+# taylorwilsdon/google_workspace_mcp, plus the encrypted home for the OAuth
+# tokens it writes.
+#
+# DESCRIBES TODAY. The asymmetry is the point: the brain has a real script
+# region (deploy-vps.sh:282-300 moves the token directory onto the LUKS
+# volume), and the Mac has nothing of its own — base-goose copies the rendered
+# config.yaml and the human does the rest. One installer field cannot say
+# "half", so the script region is named and the Mac gap is a blocker.
+id: google-workspace
+manifest_version: 1
+verified_on: "2026-09-07"
+summary: workspace-mcp extension for Gmail/Calendar/Tasks, and its OAuth tokens on /data.
+host: both
+tier: opt_in
+requires: [base-goose]
+
+# NOTHING ON README.md's BUDGET TABLE IS THIS UNIT'S. A personal Google
+# account is free, the GCP project this needs is free (no billing account is
+# required to publish an OAuth app for your own use), and the model spend the
+# recipes incur is already billed under base-goose's two rows. Quoting one of
+# those rows here would double-count it.
+cost: []
+
+installer:
+  script: scripts/vps/deploy-vps.sh
+  function: unit_google_workspace
+  status: planned
+
+# check-mcp.sh proves the extension can complete one real goose run per
+# authorized account. It cannot prove the OAuth app is published (see the
+# blocker below), because a 7-day refresh token works perfectly on day 1.
+verify:
+  - scripts/verify/check-mcp.sh
+runbook: docs/setup/30-google-oauth.md
+
+# All four names live in config/env/secrets.env.example, which is what
+# store: vps asserts. The OAuth pair is ALSO in keychain-secrets.sh's VARS for
+# the Mac half; the schema allows one store per entry, so the roster that is
+# checked here is the brain's, and the Mac's copy of the same two names is
+# base-secrets' `run-keychain-secrets` step.
+secrets:
+  - key: GOOGLE_OAUTH_CLIENT_ID
+    store: vps
+    secret: true
+    optional: false
+  - key: GOOGLE_OAUTH_CLIENT_SECRET
+    store: vps
+    secret: true
+    optional: false
+  - key: USER_GOOGLE_EMAIL
+    # A value, not a credential: workspace-mcp's default account, and the only
+    # address the recipes send their delivery email from.
+    store: vps
+    secret: false
+    optional: false
+  - key: USER_GOOGLE_EMAILS
+    # The optional multi-account roster. Read by this repo's own wiring
+    # (register-schedules.sh, run-recipe.sh, check-mcp.sh); workspace-mcp
+    # itself never reads it.
+    store: vps
+    secret: false
+    optional: true
+
+owns:
+  # The extension fragment. goose_template.py composes it into
+  # config/goose/config.yaml, which base-goose owns and copies — this unit owns
+  # the SOURCE of the workspace-mcp block, not the assembled artifact.
+  - {kind: repo_file, target: config/goose/extensions.d/workspace-mcp.yaml}
+  - {kind: repo_file, target: config/mcp/workspace-mcp.env.example}
+  # deploy-vps.sh:287-300. The link is created (and an existing real directory
+  # migrated) so the refresh tokens live on the encrypted volume rather than
+  # the root disk. Both ends are this unit's.
+  - {kind: home_path, target: ~/.google_workspace_mcp}
+  - {kind: data_path, target: /data/workspace-mcp}
+  - {kind: manual, target: "Google Cloud project + OAuth client (published In production)"}
+
+manual_steps:
+  - id: create-oauth-app
+    summary: Create your own GCP project, enable the three APIs, and create an
+      OAuth client. Nothing in this repo can do this for you.
+    doc: docs/setup/30-google-oauth.md#1-create-the-gcp-project
+    blocking: true
+  - id: publish-consent-screen
+    summary: Publish the consent screen In production. Left in Testing, every
+      refresh token expires after 7 days and the automations die weekly.
+    doc: docs/setup/30-google-oauth.md#3-consent-screen-and-the-one-trap
+    blocking: true
+  - id: first-run-oauth-dance
+    summary: Complete the browser consent once per Google account on the Mac,
+      which is what writes the token files.
+    doc: docs/setup/30-google-oauth.md#6-the-first-run-oauth-dance-mac
+    blocking: true
+  - id: move-tokens-to-brain
+    summary: Get the token files onto the brain, either by rsync from the Mac
+      or by a one-time consent dance over an ssh tunnel.
+    doc: docs/setup/30-google-oauth.md#7-getting-the-tokens-onto-the-brain-phase-3
+    blocking: true
+  - id: set-primary-email-in-fragment
+    summary: Replace the you@example.com placeholder in the fragment's
+      USER_GOOGLE_EMAIL with your primary Gmail address, then re-render.
+    doc: docs/setup/30-google-oauth.md#5-wire-workspace-mcp-into-goose-mac
+    blocking: true
+
+blockers:
+  - id: mac-half-has-no-script-region
+    severity: warn
+    detail: installer names deploy-vps.sh because that is the only script that
+      does anything unit-specific. On the Mac nothing points
+      ~/.google_workspace_mcp anywhere, so the refresh tokens sit in the
+      unencrypted home directory - the exact placement deploy-vps.sh:282-286
+      explains it is avoiding on the brain.
+  - id: publication-state-is-unverified
+    severity: warn
+    detail: No check asserts the consent screen is published In production.
+      check-mcp.sh passes on a Testing-mode app for the first 7 days and then
+      the same command starts failing with a re-auth prompt, which reads like
+      a token problem rather than a settings one.
+  - id: upstream-version-pinned-in-the-fragment
+    severity: note
+    detail: The fragment pins workspace-mcp@1.25.0 and enumerates the 10 tools
+      that version registers at these permissions. config/pins.yaml has exactly
+      one top-level key (goose), so this pin is checked by nothing except the
+      fragment itself being read.
+  - id: repos-tokens-are-not-inventoried
+    severity: note
+    detail: deploy-vps.sh:283-286 records that ~/.google_workspace_mcp was the
+      upstream default as of 2026-08-20 and asks the operator to verify after
+      the first auth that no token file appears elsewhere. Nothing automates
+      that verification.
+
+uninstall:
+  supported: false
+  reason: "Removing the extension leaves the OAuth grant live on the Google
+    account and the refresh tokens on /data/workspace-mcp. Revoking at
+    myaccount.google.com and deleting the token directory are both manual, and
+    no script does either."
+
+notes: >-
+  check-mcp.sh is claimed here rather than by `connectors` even though it also
+  smoke-tests Todoist and Playwright: its first and only non-optional check is
+  the Gmail run (once per account in USER_GOOGLE_EMAILS), and a verify script
+  may be claimed by at most one unit. `connectors` claims check-connectors.sh,
+  which validates the manifests including this service's vetting record at
+  config/connectors/google-workspace.yaml.

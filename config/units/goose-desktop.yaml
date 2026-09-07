@@ -1,0 +1,96 @@
+---
+# goose-desktop — the human half of Goose Desktop: the auto-update switch and
+# the first-run provider choice.
+#
+# DESCRIBES TODAY, and the point of this unit is the SPLIT. The block-goose
+# cask is installed by the loop at bootstrap-mac.sh:131 and is therefore
+# base-goose's; epic 30's table claimed it twice, and `owns` is checked for
+# exactly-one ownership, so the double claim could not survive. What is left
+# here is real and is entirely manual: two settings inside an app, which no
+# script in this repo can reach.
+id: goose-desktop
+manifest_version: 1
+verified_on: "2026-09-07"
+summary: Human-only, turn OFF Desktop auto-update and pick the custom providers on first run.
+host: mac
+tier: default_on
+requires: [base-goose]
+
+# Desktop runs the same providers the CLI does, so its inference bills against
+# base-goose's two README rows. The app itself is free.
+cost: []
+
+# NOTHING INSTALLS THIS UNIT. bootstrap-mac.sh:155-156 PRINTS "casks can't be
+# pinned; open Goose Desktop's settings and turn OFF automatic updates" and
+# moves on -- and that is the correct behaviour, because the setting lives
+# inside the app's own preferences. Legal here only because manual_steps below
+# is non-empty, which is the schema forcing the absence to be spelled out.
+installer: null
+
+# NOTHING VERIFIES THIS UNIT, and nothing can offline: check-goose.sh drives
+# the goose CLI. Whether Desktop auto-updated itself past the pinned CLI major
+# is visible only in the app's About window.
+verify: []
+runbook: docs/setup/20-mac-setup.md#4-goose-desktop-first-run
+
+secrets: []
+
+owns:
+  # Both targets are settings inside an application, which is what kind:
+  # manual is for. Neither is a file this repo writes or could write.
+  - {kind: manual, target: "Goose Desktop: automatic updates turned OFF"}
+  - {kind: manual, target: "Goose Desktop: first-run provider and model choice"}
+
+manual_steps:
+  - id: disable-auto-update
+    summary: Open Goose Desktop settings and turn OFF automatic updates, so
+      Desktop stays on the same major as the brew-pinned CLI.
+    doc: docs/setup/20-mac-setup.md#4-goose-desktop-first-run
+    blocking: true
+  - id: pick-custom-providers
+    summary: On the first-run provider screen, skip the built-in list and
+      select the custom providers the bootstrap wrote into
+      ~/.config/goose/custom_providers, defaulting to together.
+    doc: docs/setup/20-mac-setup.md#4-goose-desktop-first-run
+    blocking: true
+
+blockers:
+  - id: no-verify
+    severity: warn
+    detail: No check-*.sh can see inside a Mac app's preferences. A Desktop
+      that silently updated to a 2.x while the CLI stays pinned at
+      config/pins.yaml's version is invisible to every gate in this repo.
+  - id: auto-update-is-only-a-printed-warning
+    severity: warn
+    detail: "bootstrap-mac.sh:155-156 echoes the instruction and exits 0
+      whether or not anyone acts on it, so the pin the whole setup is built
+      around (bootstrap-mac.sh:149-154, `brew pin block-goose-cli`) covers the
+      CLI and not the app beside it."
+  - id: runbook-says-the-script-does-it
+    severity: warn
+    detail: "docs/setup/20-mac-setup.md:32-35 tells the reader the bootstrap
+      \"keeps the Desktop cask off auto-update\", which it does not -- :155-156
+      prints a reminder. The runbook anchor both manual steps name (section 4,
+      :96-110) covers the first-run provider screen and never mentions the
+      setting, so the only page that names auto-update at all says there is
+      nothing to do. That is why disable-auto-update is blocking here."
+  - id: desktop-does-not-inherit-the-shell-env
+    severity: note
+    detail: "docs/setup/20-mac-setup.md:112-117 records that an app launched
+      from Finder gets none of the Keychain exports keychain-secrets.sh adds
+      to ~/.zshrc, so Desktop can report a missing API key while the CLI works.
+      The documented workarounds are `open -a Goose` from a terminal or
+      `launchctl setenv`; neither is automated."
+
+uninstall:
+  supported: false
+  reason: "There is nothing to uninstall here -- the cask belongs to
+    base-goose, and these two targets are settings inside an application whose
+    state this repo neither writes nor reads."
+
+notes: >-
+  Why this is a unit at all rather than two manual_steps hung off base-goose:
+  the auto-update switch is the only thing standing between a pinned 1.x CLI
+  and a Desktop that upgrades itself into a different major, and a step buried
+  in another unit's list is a step nobody counts. `pai list` shows this unit
+  as two blocking manual steps and no installer, which is exactly what it is.
