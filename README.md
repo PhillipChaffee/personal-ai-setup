@@ -125,7 +125,7 @@ Siri Shortcut ─────┤            OpenCode CLI (coding, local)      �
 
 The repo is a template; your identity and choices live outside it or in a handful of obvious places:
 
-- **Identity**: `config/goose/goosehints.example` has `<placeholders>` for your name/email/timezone; `infra/terraform/terraform.tfvars.example` for your SSH key, Tailscale auth key, region. Secrets go in your Keychain (Mac) and `/data/secrets.env` (brain) — never in the repo.
+- **Identity**: `config/goose/goosehints.example` has `<placeholders>` for your name/email/timezone; `infra/terraform/terraform.tfvars.example` for your SSH public key and region. Secrets go in your Keychain (Mac) and `/data/secrets.env` (brain) — never in the repo. The two Terraform secrets (Hetzner token, Tailscale auth key) are stored nowhere at all: Terraform prompts for them on each `plan`/`apply`.
 - **Different VPS host**: everything host-specific is confined to `infra/terraform/`. Porting to DigitalOcean/Vultr means rewriting that one directory; nothing else cares.
 - **Different models/providers**: providers are JSON files in `config/goose/custom_providers/`; the job→model routing (and the privacy rules that constrain it) is `docs/model-routing.md`. Any OpenAI- or Anthropic-compatible endpoint slots in.
 - **Different apps**: Gmail/Calendar (and an optional todo app — a disabled Todoist entry ships as the worked example) are MCP servers declared in `config/goose/config.yaml` — swap for your own. The todo and budgeting choices are deliberately undecided (see `docs/roadmap.md`).

@@ -30,14 +30,18 @@ firewall, the data volume, and cloud-init — is declared in
 
    ```bash
    cd infra/terraform
-   cp terraform.tfvars.example terraform.tfvars   # gitignored — real secrets go here
+   cp terraform.tfvars.example terraform.tfvars   # gitignored — NON-SECRET inputs only
    ```
 
-   Edit `terraform.tfvars`: `hcloud_token` (from 10-accounts §5),
-   `ssh_public_key` (your public key, for bootstrap/rescue), `tailscale_authkey`
-   (step 1), plus server type/location/timezone if the defaults don't suit.
-   The **timezone matters**: automation crons fire in the brain's local time
-   ([`docs/automations.md`](../automations.md)).
+   Edit `terraform.tfvars`: `ssh_public_key` (your public key, for
+   bootstrap/rescue), plus server type/location/timezone if the defaults don't
+   suit. The **timezone matters**: automation crons fire in the brain's local
+   time ([`docs/automations.md`](../automations.md)).
+
+   The two secrets do **not** go in that file. `hcloud_token` (from
+   10-accounts §5) and `tailscale_authkey` (step 1) have no default, so
+   Terraform prompts for them — you paste each one at the prompt and neither
+   is ever written to disk.
 3. Apply:
 
    ```bash
@@ -45,6 +49,15 @@ firewall, the data volume, and cloud-init — is declared in
    terraform plan     # read it — it should create a handful of resources, nothing more
    terraform apply
    ```
+
+   Both commands prompt for `hcloud_token` and `tailscale_authkey`; input is
+   not echoed. Have the Tailscale key from step 1 on your clipboard.
+
+   Do **not** save the plan to a file (`terraform plan -out=tfplan`). A saved
+   plan is a ZIP containing every resolved input variable, including both
+   secrets, and it is not human-readable — so a leak inside one is invisible
+   to `grep` and to content-based secret scanners. CI rejects tracked plan and
+   state files by path for exactly this reason.
 
 Cloud-init then runs unattended on first boot: creates the non-root `agent`
 user, sets ufw default-deny, joins the tailnet with the auth key, and

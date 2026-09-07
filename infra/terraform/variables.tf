@@ -1,5 +1,7 @@
+# No default, and deliberately not in terraform.tfvars: Terraform prompts for
+# this on every plan/apply so the token is never written to disk.
 variable "hcloud_token" {
-  description = "Hetzner Cloud API token (Read & Write) for the project that hosts the brain. Create it in the Hetzner Cloud console under Security > API tokens."
+  description = "Hetzner Cloud API token (Read & Write) for the project that hosts the brain. Create it in the Hetzner Cloud console under Security > API tokens. Entered at the interactive prompt — do NOT put it in terraform.tfvars."
   type        = string
   sensitive   = true
 }
@@ -9,8 +11,12 @@ variable "ssh_public_key" {
   type        = string
 }
 
+# Also prompted for, never stored. Note that this key is interpolated into
+# user_data, which is replace-forcing on hcloud_server — see the lifecycle
+# block in main.tf, which is what stops a routine key rotation from rebuilding
+# the machine.
 variable "tailscale_authkey" {
-  description = "Tailscale auth key used by cloud-init to join the server to your tailnet. Create it in the Tailscale admin console (Settings > Keys) as a REUSABLE, PRE-AUTHORIZED, TAGGED key (e.g. tag:server) so the node comes up without manual approval and the key survives a re-provision. Auth keys expire (90 days max) — regenerate before re-applying."
+  description = "Tailscale auth key used by cloud-init to join the server to your tailnet. Create it in the Tailscale admin console (Settings > Keys) as a REUSABLE, PRE-AUTHORIZED, TAGGED key (e.g. tag:server) so the node comes up without manual approval and the key survives a re-provision. Auth keys expire (90 days max) — regenerate before re-applying. Entered at the interactive prompt — do NOT put it in terraform.tfvars."
   type        = string
   sensitive   = true
 }

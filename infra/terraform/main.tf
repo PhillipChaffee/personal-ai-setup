@@ -4,8 +4,14 @@
 # firewall with zero inbound rules, and a separate data volume that later
 # gets LUKS-encrypted and mounted at /data (see scripts/vps/luks-setup.sh).
 #
-# Secrets (API token, Tailscale auth key) come from terraform.tfvars, which
-# is gitignored. See terraform.tfvars.example.
+# Secrets are deliberately NOT stored on disk. `hcloud_token` and
+# `tailscale_authkey` are declared in variables.tf with no default and are
+# absent from terraform.tfvars, so Terraform PROMPTS for them on every
+# plan/apply. That is the design, not an oversight: a key that is never
+# written to a file cannot be committed — and this repo has already leaked a
+# Tailscale auth key once, through a saved plan file.
+#
+# terraform.tfvars holds non-secret inputs only. See terraform.tfvars.example.
 
 terraform {
   required_version = ">= 1.5.0"
@@ -54,6 +60,34 @@ resource "hcloud_server" "brain" {
     timezone             = var.timezone
     agent_ssh_public_key = var.ssh_public_key
   })
+
+  # The brain is a pet, not cattle. `user_data` forces REPLACEMENT on
+  # hcloud_server, and the rendered cloud-init embeds the Tailscale auth key —
+  # so simply typing a NEW key at the prompt (because the old one expired, or
+  # because you rotated it after a leak) changes user_data and would destroy
+  # and rebuild the server. Auth keys expire every 90 days, which means the
+  # single most routine operation here is also the one that silently eats the
+  # machine. /data survives (separate volume, delete_protection = true), but
+  # the root disk does not: goose, the systemd units, /etc, and every
+  # hand-applied fix since provisioning.
+  #
+  # THE TRADE, stated plainly: this guard also hides LEGITIMATE cloud-init
+  # changes. Edit templates/cloud-init.yaml.tftpl and `terraform plan` will
+  # report "No changes" while the running server keeps the old config. That is
+  # a real cost, accepted because cloud-init only ever runs on first boot
+  # anyway — so a plan that offers to "apply" a template edit was always
+  # offering a rebuild, never an update.
+  #
+  # ESCAPE HATCH — the only supported way to re-run cloud-init, and an
+  # explicit, deliberate rebuild of the root disk:
+  #
+  #   terraform apply -replace=hcloud_server.brain
+  #
+  # Before running it, confirm /data is detached-safe and you can re-run
+  # scripts/vps/deploy-vps.sh, because you will be reinstalling the brain.
+  lifecycle {
+    ignore_changes = [user_data]
+  }
 }
 
 # The stateful data volume (/data). Deliberately NOT formatted here: leaving
