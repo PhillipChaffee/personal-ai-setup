@@ -1,0 +1,130 @@
+---
+# vault-automations — the two scheduled recipes whose inputs are files in the
+# private vault, and the prerequisite gate that keeps them unregistered until
+# those files exist.
+#
+# DESCRIBES TODAY. This unit is the reason register-schedules.sh has a PREREQ
+# map at all (:86-94): registering these two on a brain with no vault
+# guarantees a scheduled failure every week - the run dies on the missing file
+# and the watchdog fires an alert - so the script skips them, and unregisters
+# them if an earlier deploy added them. It is installed by the same
+# deploy-vps.sh:381 call as `automations`, conditionally.
+id: vault-automations
+manifest_version: 1
+verified_on: "2026-09-07"
+summary: health-followups and budget-checkin, gated on the vault files they read.
+host: vps
+tier: opt_in
+# Both, and neither is decorative: life-vault supplies the two files the
+# PREREQ gate tests for, and automations supplies register-schedules.sh, the
+# recipes' cron roster and the fallback plane they ride on.
+requires: [life-vault, automations]
+
+# No budget row of its own; the tokens bill to the inference rows base-goose
+# claims. docs/automations.md:33 and :35 name the models these two run on.
+cost: []
+
+# The registration path is real - deploy-vps.sh:381 runs
+# register-schedules.sh, which adds these two the moment their prerequisites
+# exist - so naming the installer here is accurate. `planned` asserts that no
+# unit_vault_automations() function exists in it yet.
+installer:
+  script: scripts/vps/deploy-vps.sh
+  function: unit_vault_automations
+  status: planned
+
+# NOTHING VERIFIES THIS UNIT under its own name - see the blocker below.
+verify: []
+runbook: docs/setup/60-vault-setup.md
+
+# Both recipes reach the vault through the filesystem and deliver through the
+# same Google account `automations` already claims; neither needs a key of its
+# own. health-followups is the one recipe in the roster that PUSHES, and it
+# does that with life-vault's deploy key.
+secrets: []
+
+owns:
+  - {kind: repo_file, target: recipes/health-followups.yaml}
+  - {kind: repo_file, target: recipes/budget-checkin.yaml}
+  # The gate itself, as a claim distinct from the script that hosts it:
+  # `automations` owns register-schedules.sh, this unit owns the PREREQ map
+  # inside it, because the map exists solely to describe these two recipes.
+  # check-brain.sh:159-168 now READS this map rather than duplicating it, so
+  # editing it changes what the brain check expects.
+  - {kind: manual, target: "register-schedules.sh PREREQ gate (:91-94)"}
+  # No systemd_unit is claimed here on purpose: budget-checkin has no fallback
+  # timer to install, and health-followups.timer is installed by the loop
+  # `automations` owns. Listing an artifact this unit does not put anywhere
+  # would be the first invented claim in the file.
+
+manual_steps:
+  - id: create-prerequisite-files
+    summary: Create health/appointments.md and finance/ledger.csv in the vault
+      and push them. Until both exist the two schedules stay unregistered, and
+      the only signal is a line of deploy output.
+    doc: docs/setup/60-vault-setup.md#2-what-goes-where
+    blocking: true
+  - id: rerun-register-schedules
+    summary: Re-run scripts/vps/register-schedules.sh (or re-deploy) after the
+      vault files land - nothing re-evaluates the gate on its own.
+    doc: docs/automations.md#current-roster
+    blocking: true
+  - id: pause-budget-checkin
+    summary: Pause budget-checkin from the Desktop Scheduler UI, or remove it,
+      until a budgeting source is real. goose 1.x has no `schedule pause` CLI,
+      so the script can only print a warning.
+    doc: docs/automations.md#current-roster
+    blocking: false
+  - id: verify-health-followups-end-to-end
+    summary: Fire health-followups once and confirm the commit reached the
+      remote and that the delivery email carries the count line only, no PHI.
+    doc: docs/setup/60-vault-setup.md#8-verify-the-phase-4-checklist
+    blocking: false
+
+blockers:
+  - id: no-verify
+    severity: warn
+    detail: No check-*.sh is claimed by this unit. check-brain.sh:170-204 does
+      the closest thing - it reads the PREREQ map, asks the brain whether each
+      path exists, and NOTEs the gated ids as "not expected yet" instead of
+      failing - but that script is `brain`'s single claim, and a verify script
+      may be claimed by exactly one unit. Nothing asserts that these two ARE
+      registered once their inputs exist.
+  - id: budget-checkin-has-no-fallback-timer
+    severity: warn
+    detail: deploy-vps.sh:309 installs fallback timers for four ids and
+      budget-checkin is not one of them, so if the native scheduler hits the
+      failure mode at docs/automations.md:158-163 there is nothing to flip
+      this recipe to. docs/automations.md:181-182 says to model a new timer on
+      the shipped four.
+  - id: budget-checkin-cannot-be-paused-from-the-cli
+    severity: warn
+    detail: register-schedules.sh:141-155 probes for a `schedule pause`
+      subcommand and prints a NOTE when there is none (goose 1.46.0 has none).
+      So on a brain whose ledger.csv is real, budget-checkin registers ACTIVE
+      and its first fire is the 1st of the month at 09:00 unless a human
+      pauses it in the Desktop UI.
+  - id: health-followups-writes-to-the-vault
+    severity: note
+    detail: This is the only recipe in the roster that commits and pushes
+      (recipes/health-followups.yaml:43-45), so life-vault's deploy key has to
+      be WRITE-enabled - which is why docs/setup/60-vault-setup.md:88-99 tells
+      you to tick "Allow write access" rather than take the narrower scope a
+      read-only key would give. The consequence is recorded nowhere else - the
+      brain holds a key that can rewrite the vault's history, and nothing in
+      scripts/verify/ checks the key's scope or that the push succeeded.
+
+uninstall:
+  supported: false
+  reason: "Removing the vault files is itself the uninstall: the PREREQ gate
+    unregisters both schedules on the next run once their inputs are gone.
+    That is a side effect of a data deletion, not a supported lever, and it
+    leaves the recipe files and any hand-enabled fallback timer in place."
+
+notes: >-
+  The gate is the interesting part of this unit, and it is worth stating what
+  it buys. Without it, Phase 3 (a brain with no vault) registers five
+  schedules, two of which fail on a missing file on every fire - a weekly
+  false alarm that trains its reader to ignore the watchdog. With it, Phase 3
+  is a documented resting point: three schedules, all of which can succeed.
+  REGISTER_ALL=1 overrides the gate and re-buys the false alarms.

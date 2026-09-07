@@ -1,0 +1,101 @@
+---
+# telegram-gateway — the phone's agentic surface: a full goose process on the
+# brain answering one paired Telegram account.
+#
+# DESCRIBES TODAY. The unit file is installed UNCONDITIONALLY at
+# deploy-vps.sh:316 and enabled only when TELEGRAM_BOT_TOKEN is already in
+# /data/secrets.env (:317-322), which is why the token below is `optional` -
+# a brain with no token still has this unit's file on disk, inert.
+id: telegram-gateway
+manifest_version: 1
+verified_on: "2026-09-07"
+summary: goose's Telegram gateway on the brain, installed always and enabled only with a token.
+host: vps
+tier: opt_in
+# brain only. The gateway is a second goose process sharing the server's
+# GOOSE_PATH_ROOT, so everything it writes lands on the LUKS volume that unit
+# creates - and deploy-vps.sh:153-162 stops this unit before moving those
+# directories for exactly that reason.
+requires: [brain]
+
+# No budget row. The Telegram Bot API is free; the tokens a conversation burns
+# bill to the inference rows base-goose claims.
+cost: []
+
+installer:
+  script: scripts/vps/deploy-vps.sh
+  function: unit_telegram_gateway
+  status: planned
+
+# NOTHING VERIFIES THIS UNIT - see the blocker below.
+verify: []
+runbook: docs/setup/40-phone-setup.md#1a-telegram-gateway-the-working-agentic-path
+
+secrets:
+  # optional: true is the literal deploy behaviour, not a softening: the
+  # conditional at deploy-vps.sh:317 greps for a NON-EMPTY value and simply
+  # prints a line when it is absent. The service's own ExecStart re-checks it
+  # (goose-telegram-gateway.service:32) and exits 1 rather than starting a
+  # gateway with no bot.
+  - key: TELEGRAM_BOT_TOKEN
+    store: vps
+    secret: true
+    optional: true
+
+owns:
+  - {kind: repo_file, target: scripts/vps/systemd/goose-telegram-gateway.service}
+  - {kind: systemd_unit, target: goose-telegram-gateway.service}
+
+manual_steps:
+  - id: create-telegram-bot
+    summary: Create the bot with BotFather and put its token in
+      /data/secrets.env. Nothing prompts for it, and a deploy that ran before
+      the token existed leaves the unit installed but disabled.
+    doc: docs/setup/40-phone-setup.md#1a-telegram-gateway-the-working-agentic-path
+    blocking: true
+  - id: pair-telegram-account
+    summary: Run `goose gateway pair telegram` once on the brain so the
+      gateway answers your account and no one else's.
+    doc: docs/setup/40-phone-setup.md#1a-telegram-gateway-the-working-agentic-path
+    blocking: true
+
+blockers:
+  - id: no-verify
+    severity: warn
+    detail: 'No check asserts the unit file is installed, that it is enabled
+      when a token exists, or that the pairing survived - and check-brain.sh,
+      the script a reader would expect to cover it, only checks goose-serve.
+      `grep -rni telegram scripts/verify/` has exactly one hit,
+      check-code-agents.sh:253, and it points the other way: it asserts a
+      code-agent container CANNOT read TELEGRAM_BOT_TOKEN. Nothing anywhere
+      asserts the gateway that legitimately holds it is running.'
+  - id: enable-happens-only-during-a-deploy
+    severity: warn
+    detail: The token gate at deploy-vps.sh:317-322 runs during the deploy and
+      nowhere else. Adding TELEGRAM_BOT_TOKEN to /data/secrets.env afterwards
+      changes nothing until deploy-vps.sh is re-run or the unit is enabled by
+      hand, and the only signal is one line of deploy output that scrolls past.
+  - id: token-is-in-no-document
+    severity: note
+    detail: '`grep -n TELEGRAM docs/security.md docs/setup/20-mac-setup.md`
+      returns NOTHING. The roster at docs/security.md:166-169 calls itself "the
+      full secret roster" and omits this key; the rotation table at :202-214
+      has a row for every other real credential and none for this one; and the
+      Mac runbook at :58-60 does not name it either, though
+      keychain-secrets.sh:12 prompts for it and secrets.env.example:40 holds
+      it. A bot token is a live credential to a chat with an agent.'
+
+uninstall:
+  supported: false
+  reason: "Nothing removes the unit file or disables the service. Backing it
+    out is `sudo systemctl disable --now goose-telegram-gateway.service` plus
+    deleting /etc/systemd/system/goose-telegram-gateway.service by hand - and
+    a subsequent deploy reinstalls the file and re-enables it if the token is
+    still present."
+
+notes: >-
+  This is the only phone path in the repo that is agentic. docs/setup/40-phone-setup.md
+  §1b records that the Goose iOS app is not usable against a headless brain,
+  and §4's Pal Chat is a plain chat client with no tools - so when this unit is
+  not enabled, the phone can talk to a model but cannot reach the brain's
+  extensions at all.

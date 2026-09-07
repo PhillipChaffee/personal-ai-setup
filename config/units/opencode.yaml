@@ -1,0 +1,115 @@
+---
+# opencode — the OpenCode CLI (the coding driver) and the one config file the
+# bootstrap lays down for it.
+#
+# DESCRIBES TODAY. The formula is installed by the same FORMULAE string at
+# bootstrap-mac.sh:118 that serves base-toolchain and base-goose, so there is
+# no way to install this unit alone; that is recorded below rather than
+# implied by a `default_on` tier that suggests a switch exists.
+id: opencode
+manifest_version: 1
+verified_on: "2026-09-07"
+summary: The OpenCode CLI formula from anomalyco/tap plus the shipped ~/.config/opencode/opencode.json.
+host: mac
+tier: default_on
+requires: [base-goose, base-secrets]
+
+# Copied VERBATIM from README.md's budget table. base-goose claims this SAME
+# row, and that is not a double count: it is one Zen account and one bill.
+# goose's three Zen custom providers and this CLI spend against it, so the row
+# is true of both units and must not be summed across them.
+cost:
+  - line: OpenCode Zen inference (PAYG — **disable auto-reload, set a cap**)
+    amount: ~$5–20/mo typical
+    source: README.md
+
+installer:
+  script: scripts/mac/bootstrap-mac.sh
+  function: unit_opencode
+  status: planned
+
+# NO check-*.sh COVERS THIS UNIT. docs/setup/20-mac-setup.md:137 tells a HUMAN
+# to run `opencode run "Say 'opencode wired'"` as verification step 3, and that
+# line is the entire proof: nothing under scripts/verify/ runs opencode, reads
+# ~/.config/opencode/opencode.json, or checks that /connect stored a
+# credential. mock-opencode-server.py exists but serves
+# test-code-agent-manager.sh, which drives the BRAIN's containers, not this CLI.
+verify: []
+runbook: docs/setup/20-mac-setup.md#3-opencode-zen
+
+secrets:
+  # opencode.json:11 reads `{env:TOGETHER_API_KEY}` for the `together`
+  # provider, so this CLI needs the same Keychain entry base-goose needs.
+  # Secrets are not exclusive the way `owns` is -- one credential legitimately
+  # serves several units, and each is checked against its own store's roster.
+  - key: TOGETHER_API_KEY
+    store: mac_keychain
+    secret: true
+    optional: false
+  # store: none, deliberately. `/connect` (20-mac-setup.md:84-85) writes the
+  # Zen key into OpenCode's OWN credential store, which is neither
+  # config/env/secrets.env.example nor keychain-secrets.sh's VARS. It is a
+  # third store this validator cannot read, so claiming `mac_keychain` here
+  # would assert a file location that is not where the key ends up -- even
+  # though the same NAME is in the Keychain roster for goose's sake.
+  - key: OPENCODE_ZEN_API_KEY
+    store: none
+    secret: true
+    optional: false
+
+owns:
+  # From the FORMULAE string at bootstrap-mac.sh:118. The loop strips the tap
+  # prefix for its `brew list` probe (`short="${formula##*/}"`), but the
+  # install uses the tap-qualified name, which is what is claimed here.
+  - {kind: brew_formula, target: anomalyco/tap/opencode}
+  - {kind: repo_file, target: config/opencode/opencode.json}
+  - {kind: home_path, target: ~/.config/opencode/opencode.json}
+
+manual_steps:
+  - id: connect-zen
+    summary: Run `opencode` in any project, type /connect, pick OpenCode Zen
+      and paste the key. The bootstrap never does this -- it only prints the
+      instruction at bootstrap-mac.sh:261-263.
+    doc: docs/setup/20-mac-setup.md#3-opencode-zen
+    blocking: true
+  - id: set-default-model
+    summary: Type /models and set the daily driver to kimi-k2.6 per
+      docs/model-routing.md. opencode.json already pins it, so this is only
+      needed if OpenCode has remembered a different choice.
+    doc: docs/model-routing.md
+    blocking: false
+
+blockers:
+  - id: no-verify
+    severity: warn
+    detail: "No check-*.sh touches OpenCode. The only automated coverage
+      anywhere is doctor.py:249-257, which FAILs when `which -a opencode`
+      resolves more than once -- a PINNING check (a self-updating vendor
+      install shadowing brew's), not a working-install check, and it is
+      skipped entirely unless doctor is inspecting the real $HOME. A Mac where
+      /connect was never run passes everything until a human types `opencode`."
+  - id: formula-line-serves-three-units
+    severity: note
+    detail: "bootstrap-mac.sh:118 installs block-goose-cli, this formula, uv,
+      node and jq from one FORMULAE string, so `default_on` describes intent,
+      not a switch: there is no supported way to bootstrap the Mac without
+      OpenCode today."
+  - id: together-provider-ships-two-model-ids
+    severity: note
+    detail: "opencode.json:14 and :17 hardcode openai/gpt-oss-120b and
+      Qwen/Qwen3.5-397B-A17B for the together provider. sync-models.sh:35
+      rewrites config/goose/custom_providers/*.json and never touches this
+      file, so a model rename lands here only by hand."
+
+uninstall:
+  supported: false
+  reason: "`brew uninstall opencode` would leave ~/.config/opencode and the
+    credential /connect stored behind, and nothing in this repo removes
+    either. Deleting them by hand is safe but undocumented."
+
+notes: >-
+  The tier split with base-goose is about what BILLS, not about what runs:
+  three of goose's four custom providers name OPENCODE_ZEN_API_KEY, so the Zen
+  account is load-bearing for base-goose whether or not this CLI is installed.
+  That is why base-goose keeps the mac_keychain claim on that key and this
+  unit records the separate store /connect actually writes to.

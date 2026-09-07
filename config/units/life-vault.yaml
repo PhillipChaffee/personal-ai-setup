@@ -1,0 +1,122 @@
+---
+# life-vault — the private repository of health, finance and admin documents,
+# cloned onto the brain's encrypted volume, plus the on-demand recipe that
+# reads it without letting anything leave the box.
+#
+# DESCRIBES TODAY, and the headline fact is an absence: `installer: null`.
+# `grep -n vault scripts/vps/deploy-vps.sh` returns NOTHING - the deploy never
+# mentions the vault - while register-schedules.sh:91-94 gates two schedules
+# on files inside it. Every step below is a human at a terminal.
+id: life-vault
+manifest_version: 1
+verified_on: "2026-09-07"
+summary: The private vault repo cloned to /data/life-vault, its template, and vault-qa.
+host: vps
+tier: opt_in
+# brain, for one reason that is not organisational: /data is the LUKS volume,
+# and the whole point of putting the vault there is that it is unreadable at
+# rest and simply ABSENT until luks-unlock.sh runs after a reboot.
+requires: [brain]
+
+# No budget row. A private git repo costs nothing on either host this setup
+# documents, and vault-qa's tokens bill to the inference rows base-goose
+# claims (docs/automations.md:34 names its model).
+cost: []
+
+# NOTHING INSTALLS THIS UNIT. Legal only because manual_steps below is
+# non-empty, which is the schema's way of forcing the absence to be spelled
+# out rather than implied.
+installer: null
+
+# NOTHING VERIFIES IT EITHER - see the blocker below.
+verify: []
+runbook: docs/setup/60-vault-setup.md
+
+# The vault's credential is an SSH deploy key on the brain, not an
+# environment variable, so neither roster the validator knows about can hold
+# it. Recorded as a blocker instead of forced into a shape it does not have.
+secrets: []
+
+owns:
+  # The seed content, copied by hand into the private repo
+  # (docs/setup/60-vault-setup.md:23). Claimed as one target: the directory is
+  # the unit of use, and naming eight files would invite the list to drift
+  # from `ls`.
+  - {kind: repo_file, target: vault-template}
+  # On-demand only, deliberately never scheduled (register-schedules.sh:10).
+  - {kind: repo_file, target: recipes/vault-qa.yaml}
+  # The clone itself, on the encrypted volume. check-code-agents.sh:264
+  # asserts a code-agent container CANNOT see this path, which is the only
+  # automated statement about it anywhere in the tree.
+  - {kind: data_path, target: /data/life-vault}
+  - {kind: manual, target: "private git repository (life-vault) on your git host"}
+  # WRITE-enabled, not read-only: docs/setup/60-vault-setup.md:88-99 requires
+  # push access because health-followups commits back to the vault.
+  - {kind: home_path, target: "~/.ssh/life-vault-deploy (git deploy key on the brain)"}
+
+manual_steps:
+  - id: create-private-repo
+    summary: Create a PRIVATE repository on your git host and seed it from
+      vault-template/. Nothing checks that it is private, and the whole
+      privacy posture of this unit rests on that one setting.
+    doc: docs/setup/60-vault-setup.md#1-create-the-private-repo
+    blocking: true
+  - id: clone-vault-to-brain
+    summary: Generate a deploy key on the brain, register it WITH WRITE ACCESS
+      (health-followups pushes its own commits), add the ~/.ssh/config Host
+      alias, and clone the repo to /data/life-vault.
+    doc: docs/setup/60-vault-setup.md#4-clone-the-vault-to-the-brain
+    blocking: true
+  - id: ingest-documents
+    summary: Convert PDFs to markdown into the vault's folders. This is the
+      step that turns an empty template into inputs the recipes can read.
+    doc: docs/setup/60-vault-setup.md#3-ingesting-documents-pdf-markdown
+    blocking: false
+  - id: read-the-privacy-rules
+    summary: Read the standing privacy rules before the first vault session -
+      they are what keep vault text off the default hub and out of provider
+      logs.
+    doc: docs/setup/60-vault-setup.md#7-standing-privacy-rules-read-before-first-use
+    blocking: true
+
+blockers:
+  - id: no-verify
+    severity: warn
+    detail: No check-*.sh asserts /data/life-vault exists, is a git clone, is
+      current with its remote, or that its permissions are sane.
+      check-brain.sh:170-204 only asks whether two files inside it exist, and
+      that is to decide which schedules it should EXPECT - a brain with an
+      empty vault directory passes every check in the repo.
+  - id: nothing-installs-the-vault
+    severity: warn
+    detail: '`grep -n vault scripts/vps/deploy-vps.sh` returns nothing, so the
+      clone, the deploy key and the SSH host alias are entirely manual while
+      register-schedules.sh:91-94 silently keys two schedules off files inside
+      the result. The failure mode is quiet - the schedules just never appear.'
+  - id: deploy-key-is-outside-both-rosters
+    severity: note
+    detail: The vault credential is an ed25519 deploy key at
+      ~/.ssh/life-vault-deploy plus a Host alias in ~/.ssh/config
+      (docs/setup/60-vault-setup.md:94-104). It is in neither
+      config/env/secrets.env.example nor keychain-secrets.sh's VARS, so no
+      rotation procedure and no roster covers it.
+  - id: backup-is-the-git-remote-only
+    severity: note
+    detail: docs/setup/60-vault-setup.md:132-152 makes the git remote the
+      backup, so anything committed only on the brain exists once, on a volume
+      that is deliberately unreadable until someone types a passphrase.
+
+uninstall:
+  supported: false
+  reason: "Removing this unit means deleting user documents. `rm -rf
+    /data/life-vault` is the whole procedure and nothing in the repo will do
+    it for you - and because the git remote is the only backup, doing it while
+    a commit is unpushed loses that commit."
+
+notes: >-
+  The vault is the reason the sensitive tier exists. docs/setup/60-vault-setup.md:170
+  requires vault sessions to run on the `together` provider rather than the
+  default hub, and recipes/vault-qa.yaml:19 scopes its shell inside
+  /data/life-vault and forbids copying content out (:33). Those are prompt-level
+  and configuration-level rules, not enforced boundaries - which is another way
+  of saying this unit's safety is documented rather than checked.

@@ -1,0 +1,158 @@
+---
+# code-agents — the per-chat OpenCode container plane on the brain: rootless
+# podman, the code-agent:local image, /data/code-agents and the session
+# manager on port 4300.
+#
+# DESCRIBES TODAY. deploy-vps.sh:323-371 is the second-largest region in
+# either installer - only brain's path-root migration at :107-245 is bigger -
+# and, unusually for this catalog, this unit has a real verify script that
+# probes a live plane. What it does NOT have is a
+# unit_code_agents() function - that is #37's job, and status: planned asserts
+# the absence until then.
+id: code-agents
+manifest_version: 1
+verified_on: "2026-09-07"
+summary: Rootless podman, the code-agent image, and the per-chat session manager.
+host: vps
+tier: opt_in
+requires: [brain]
+
+# Copied VERBATIM from README.md's budget table (:153). The row says this unit
+# opens no new account and bills through base-goose's two inference rows -
+# which is exactly why no figure is invented here, even though README.md:155
+# names this the one line item that can move the total on its own.
+cost:
+  - line: Code agents on the brain (containers)
+    amount: no new account — bills to the Zen/Together lines above, plus disk
+    source: README.md
+
+installer:
+  script: scripts/vps/deploy-vps.sh
+  function: unit_code_agents
+  status: planned
+
+# The strongest verify script in the catalog: --probe creates a scratch chat,
+# asserts the container cannot reach /data, asserts the environment carries no
+# stack secrets, exercises stop then wake with state intact, and deletes it.
+verify:
+  - scripts/verify/check-code-agents.sh
+runbook: docs/setup/70-code-agents.md
+
+secrets:
+  - key: OPENCODE_SERVER_PASSWORD
+    # HTTP Basic for the manager gateway AND every per-chat server behind it.
+    # deploy-vps.sh:347-348 enables the unit only when this and the PAT are
+    # both non-empty.
+    store: vps
+    secret: true
+    optional: false
+  - key: GITHUB_CODE_AGENT_PAT
+    # Fine-grained, scoped to the repos in /data/code-agents/repos.json only.
+    # It lives INSIDE the chat container as GH_TOKEN, which is why the probe
+    # checks the container's environment for anything else.
+    store: vps
+    secret: true
+    optional: false
+  - key: NTFY_AGENT_TOPIC
+    # The agent channel, published by code-agent-manager.py directly rather
+    # than through notify.sh. A SECOND topic on purpose: this is the one a
+    # phone subscribes to, so it must be burnable without taking the failure
+    # channel (ntfy-alerts' NTFY_TOPIC) with it. Empty means the feature is
+    # simply off.
+    store: vps
+    secret: true
+    optional: true
+
+owns:
+  - {kind: repo_file, target: config/code-agents/Containerfile}
+  - {kind: repo_file, target: config/code-agents/opencode.json}
+  - {kind: repo_file, target: config/code-agents/repos.example.json}
+  - {kind: repo_file, target: scripts/vps/code-agent-manager.py}
+  - {kind: repo_file, target: scripts/vps/systemd/code-agent-manager.service}
+  - {kind: container_image, target: "code-agent:local"}
+  - {kind: systemd_unit, target: code-agent-manager.service}
+  # deploy-vps.sh:343-344. The directory holds one volume per chat; repos.json
+  # is seeded from the example by install_template, which never clobbers an
+  # existing file.
+  - {kind: data_path, target: /data/code-agents}
+  - {kind: data_path, target: /data/code-agents/repos.json}
+  # Host-level side effects with no file to name, all from deploy-vps.sh:
+  # :329-332 installs the packages, :336-337 grants agent a subordinate id
+  # range, :338 keeps /run/user/1000 alive so a system unit can drive rootless
+  # podman as agent.
+  - {kind: manual, target: "apt packages: podman, uidmap, slirp4netns"}
+  - {kind: manual, target: "subuid/subgid range 100000-165535 for user agent"}
+  - {kind: manual, target: "loginctl linger for user agent"}
+
+manual_steps:
+  - id: create-the-two-secrets
+    summary: Generate OPENCODE_SERVER_PASSWORD and issue a fine-grained GitHub
+      PAT (Contents + Pull requests, selected repos only), then add both to
+      /data/secrets.env. Until both are set the manager is installed but never
+      enabled.
+    doc: docs/setup/70-code-agents.md#1-create-the-two-secrets
+    blocking: true
+  - id: fill-the-repo-allowlist
+    summary: Edit /data/code-agents/repos.json - the deploy seeds it from the
+      example and will not overwrite your copy, so an unedited allowlist means
+      the agents can clone nothing.
+    doc: docs/setup/70-code-agents.md#3-fill-in-the-repo-allowlist
+    blocking: true
+  - id: point-clients-at-the-plane
+    summary: Add the tailnet URL on port 4300 with username opencode and the
+      server password to the phone app, the OpenCode desktop app, or a browser
+      on the tailnet.
+    doc: docs/setup/70-code-agents.md#5-point-your-clients-at-it
+    blocking: false
+
+blockers:
+  - id: deploy-stops-every-running-chat
+    severity: warn
+    detail: deploy-vps.sh:366 restarts the manager rather than starting it, and
+      the unit's ExecStopPost stops everything labelled code-agent=1, which
+      runs during the stop half of a restart. Volumes, agent branches and
+      transcripts survive; an in-flight turn and OpenCode's in-memory
+      permission asks do not. Deploy when nothing is mid-turn.
+  - id: install-is-unconditional-enable-is-not
+    severity: note
+    detail: The packages, the image build, /data/code-agents and the systemd
+      unit are installed on every deploy whether or not the feature is wanted;
+      only enabling is conditional on the two secrets. A brain that will never
+      run code agents still pays the apt install and the image build.
+  - id: chats-share-the-brains-data-volume
+    severity: warn
+    detail: Each chat gets its own volume under /data/code-agents, on the same
+      10 GB LUKS volume as everything else by default.
+      check-code-agents.sh derives its ceiling from the volume at check time
+      (:164-166) using the 75% default at :51, so it FAILs at three quarters
+      full - a gate, not a fix. The remedy is growing data_volume_size or
+      deleting old chats.
+  - id: missing-from-the-setup-phase-table
+    severity: note
+    detail: docs/setup/00-overview.md's phases table has no row for code
+      agents, and `grep -c 70-code-agents docs/setup/00-overview.md` returns 0.
+      The runbook this manifest names is reachable only from
+      docs/code-agents.md and docs/troubleshooting.md, so a reader following
+      the setup docs in order never arrives at it.
+  - id: image-build-is-unpinned-at-the-base
+    severity: note
+    detail: podman build pulls the OpenCode base image on first run
+      (deploy-vps.sh:339-342). config/pins.yaml has exactly one top-level key,
+      goose, so whatever the Containerfile's base resolves to on the day of a
+      deploy is what ships - the same class of drift the workspace-mcp
+      fragment pins away, on a surface nothing here pins.
+
+uninstall:
+  supported: false
+  reason: "Nothing removes the plane. `systemctl disable code-agent-manager`
+    stops new chats, but the podman image, every per-chat volume under
+    /data/code-agents, the subuid range and the linger setting all survive,
+    and the GitHub PAT must be revoked at GitHub."
+
+notes: >-
+  The chat containers are the one part of this setup that hold a credential
+  they can spend without a human in the loop (the PAT, as GH_TOKEN, with
+  push and pull-request rights). That is why the probe's assertions are about
+  ISOLATION - no /data, no stack secrets in the environment - rather than about
+  features, and why check-security.sh is run straight after check-code-agents.sh
+  in the runbook even though a different unit claims it.

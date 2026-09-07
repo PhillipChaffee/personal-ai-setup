@@ -1,0 +1,116 @@
+---
+# tailnet — the Tailscale account and the two admin-console toggles the brain
+# later depends on. The only network path to the brain starts here.
+#
+# DESCRIBES TODAY, and like goose-desktop this unit exists because of a SPLIT:
+# the `tailscale` CASK is installed by the loop at bootstrap-mac.sh:131 and is
+# base-toolchain's, and the VPS side joins the tailnet from cloud-init
+# (infra/terraform/templates/cloud-init.yaml.tftpl:38-39), which is brain's.
+# What is left is an account and two switches in a web console -- nothing this
+# repo installs, and nothing it can.
+id: tailnet
+manifest_version: 1
+verified_on: "2026-09-07"
+summary: Human-only, the Tailscale account, the client sign-ins, and the MagicDNS + HTTPS-cert toggles.
+host: both
+tier: opt_in
+requires: []
+
+# Copied VERBATIM from README.md's budget table. The row bundles Tailscale
+# with ntfy, so the ntfy-alerts unit may quote the same line; both are $0, so
+# no total moves either way.
+cost:
+  - line: Tailscale (personal plan), ntfy failure-alert emails (free tier)
+    amount: $0
+    source: README.md
+
+# NOTHING INSTALLS THIS UNIT. There is no API call and no CLI flag for
+# "create an account" or "enable HTTPS certificates" -- both toggles live at
+# https://login.tailscale.com/admin/dns. Legal only because manual_steps is
+# non-empty. deploy-vps.sh:91 asserts the CLI is present and already joined
+# ("cloud-init should have installed and joined the tailnet") rather than
+# doing any of it.
+installer: null
+
+# NOTHING VERIFIES THIS UNIT DIRECTLY. The closest thing is renew-tls-cert.sh:19,
+# which exits 1 with "no tailnet DNS name (MagicDNS off?)" -- but that is a
+# deploy-time script on the brain, not a scripts/verify/ check, and it runs
+# long after the toggle was needed. check-brain.sh reaches the brain OVER the
+# tailnet, so it presupposes this unit instead of testing it.
+verify: []
+runbook: docs/setup/10-accounts.md#3-tailscale
+
+# The one credential here is the Terraform auth key, and it is deliberately
+# NOT a stored secret: variables.tf:19 says it is entered at the interactive
+# prompt and never written to terraform.tfvars, so it appears in neither
+# config/env/secrets.env.example nor keychain-secrets.sh's VARS. Listing a
+# TAILSCALE_AUTHKEY here would invent an env var name the tree does not use.
+# It is recorded as a manual step instead.
+secrets: []
+
+owns:
+  # All four are account-level state in a web console: kind: manual, because
+  # no file on either host records whether they are set.
+  - {kind: manual, target: "Tailscale account and tailnet (free personal plan)"}
+  - {kind: manual, target: "Tailscale Mac client signed in to the tailnet"}
+  - {kind: manual, target: "Tailscale admin console: MagicDNS enabled"}
+  - {kind: manual, target: "Tailscale admin console: HTTPS Certificates enabled"}
+
+manual_steps:
+  - id: create-account
+    summary: Create a Tailscale account (free personal plan) and pick the
+      identity provider you intend to keep.
+    doc: docs/setup/10-accounts.md#3-tailscale
+    blocking: true
+  - id: sign-in-mac
+    summary: Launch the Tailscale app the bootstrap installed and sign the Mac
+      into your tailnet. If you already run the App Store build, keep it and
+      `brew uninstall --cask tailscale` -- the two variants conflict.
+    doc: docs/setup/10-accounts.md#3-tailscale
+    blocking: true
+  - id: enable-magicdns-and-https
+    summary: In the admin console under DNS, enable MagicDNS AND HTTPS
+      Certificates. MagicDNS gives the brain a stable ts.net name and the cert
+      support is what backs TLS to goose serve.
+    doc: docs/setup/10-accounts.md#3-tailscale
+    blocking: true
+  - id: create-vps-auth-key
+    summary: Before provisioning the brain, create a REUSABLE, PRE-AUTHORIZED,
+      TAGGED auth key (Settings, Keys). Terraform prompts for it at plan/apply
+      and it is never written to a file. Keys expire in 90 days at most.
+    doc: docs/setup/50-vps-brain.md
+    blocking: false
+
+blockers:
+  - id: no-verify
+    severity: warn
+    detail: No check-*.sh asks whether MagicDNS or HTTPS Certificates are on.
+      The failure surfaces weeks later as renew-tls-cert.sh:19 exiting 1 on
+      the brain, or as an iPhone refusing goose serve's self-signed cert.
+  - id: https-prereq-is-recorded-only-in-a-script-header
+    severity: warn
+    detail: "The requirement that both toggles be enabled lives at
+      renew-tls-cert.sh:6-7, a comment in a root-only script on the VPS.
+      docs/setup/10-accounts.md states the toggles but not that
+      tls-cert-renew.timer restarts goose-serve weekly and depends on them."
+  - id: two-tailscale-variants-conflict
+    severity: note
+    detail: "bootstrap-mac.sh:140-143 installs the standalone cask and then
+      prints that an existing Mac App Store install must be removed instead.
+      Nothing detects which variant is present, so the resolution is a human
+      reading terminal output at install time."
+
+uninstall:
+  supported: false
+  reason: "Leaving a tailnet means removing nodes and deleting an account in
+    a web console; nothing in this repo does or should automate that. The Mac
+    app itself belongs to base-toolchain."
+
+notes: >-
+  Tier is opt_in only in the sense that the Mac surface works without it: every
+  VPS unit requires it transitively, because the Hetzner firewall drops all
+  public inbound (infra/terraform/main.tf:51-54 is an hcloud_firewall resource
+  with, in its own words, "Intentionally no `rule` blocks") and Tailscale's
+  outbound-initiated WireGuard is the only way in -- the break-glass is the
+  Hetzner web console. `requires: []` is literal: this unit needs nothing from
+  the repo, which is why it can be finished before anything is installed.

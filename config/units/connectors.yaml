@@ -1,0 +1,146 @@
+---
+# connectors — the vetting registry (config/connectors/) plus the three
+# extension fragments that ship DISABLED: todoist, tavily, playwright.
+#
+# DESCRIBES TODAY, and the headline fact is that adopting a connector is a
+# hand edit. `installer: null` is not a gap in the catalog; it is the accurate
+# description of a unit whose entire install procedure is "flip enabled: true
+# in a fragment, re-render config.yaml, and put the credential somewhere".
+# All three fragments ship `enabled: false`, so the honest reading of this
+# unit's default state is: installed, connected to nothing.
+id: connectors
+manifest_version: 1
+verified_on: "2026-09-07"
+summary: The connector vetting registry and the three disabled extension fragments.
+host: both
+tier: opt_in
+requires: [base-goose, base-skills]
+
+# No row on README.md's budget table is this unit's. Tavily is 1,000 free
+# credits/mo, Todoist has no adopted plan (the entry ships disabled precisely
+# because no todo app has been chosen), and playwright is a local npx process.
+# The one row that mentions a free tier - "Tailscale (personal plan), ntfy
+# failure-alert emails (free tier)" - is about ntfy, not about these.
+cost: []
+
+# NOTHING INSTALLS THIS UNIT. base-goose copies the rendered config.yaml, which
+# CONTAINS all three fragments, but it copies them in their shipped state:
+# disabled, with no credential and (for two of the three) no allowlist. There
+# is no script anywhere that enables a connector, stores its token, or derives
+# its available_tools. Legal only because manual_steps below is non-empty.
+installer: null
+
+# check-connectors.sh is the strongest offline gate in the repo and it still
+# only proves the FILES are right: the ACP contract at the pinned goose tag,
+# every manifest against config/connectors/README.md, and - with --smoke or
+# --acp-roundtrip, neither of which runs offline - the live tool surface.
+verify:
+  - scripts/verify/check-connectors.sh
+runbook: docs/connecting.md
+
+secrets:
+  - key: TODOIST_API_KEY
+    # store: goose_secret_store asserts this key is in NEITHER global roster,
+    # and the validator checks exactly that. It is deliberate: goose resolves
+    # ${TODOIST_API_KEY} per-extension, so connector #1 cannot read connector
+    # #2's credential. Adding it to secrets.env.example would invert the
+    # property this connector was written to have.
+    store: goose_secret_store
+    secret: true
+    optional: true
+  - key: TAVILY_API_KEY
+    # In secrets.env.example (store: vps) AND in keychain-secrets.sh's VARS.
+    # The brain's roster is the one asserted here; the Mac's copy arrives via
+    # base-secrets' run-keychain-secrets step.
+    store: vps
+    secret: true
+    optional: true
+
+owns:
+  # The three fragments. The fourth fragment in that directory,
+  # workspace-mcp.yaml, is google-workspace's.
+  - {kind: repo_file, target: config/goose/extensions.d/todoist.yaml}
+  - {kind: repo_file, target: config/goose/extensions.d/tavily.yaml}
+  - {kind: repo_file, target: config/goose/extensions.d/playwright.yaml}
+  # The whole vetting registry, including google-workspace.yaml. The registry
+  # is validated as one artifact by check-connectors.sh, which this unit
+  # claims, so splitting one entry out to the unit that installs that server
+  # would leave a file no unit's verify script covers.
+  - {kind: repo_file, target: config/connectors/README.md}
+  - {kind: repo_file, target: config/connectors/google-workspace.yaml}
+  - {kind: repo_file, target: config/connectors/todoist.yaml}
+  - {kind: repo_file, target: config/connectors/health-records.yaml}
+  - {kind: repo_file, target: config/connectors/imap-caldav.yaml}
+  - {kind: repo_file, target: config/connectors/proton-mail.yaml}
+  # Only the per-extension entries are this unit's; the file itself is goose's
+  # and holds other units' values too.
+  - {kind: home_path, target: "~/.config/goose/secrets.yaml (per-extension connector entries)"}
+
+manual_steps:
+  - id: enable-a-connector
+    summary: Flip enabled to true in the fragment, re-render
+      config/goose/config.yaml from extensions.d/, and copy it to the Mac and
+      the brain. No script does any of these three.
+    doc: docs/connecting.md#what-connecting-means-in-gooses-own-vocabulary
+    blocking: true
+  - id: derive-available-tools
+    summary: Before enabling tavily or playwright, derive the allowlist with
+      check-connectors.sh --smoke rather than guessing it. An absent or empty
+      available_tools means EVERY tool is allowed.
+    doc: docs/connecting.md#least-privilege-is-a-field-and-it-fails-open
+    blocking: true
+  - id: store-todoist-token
+    summary: Put the Todoist personal API token in goose's own secret store as
+      TODOIST_API_KEY, never in secrets.env.example.
+    doc: docs/setup/10-accounts.md#4-todoist-optional-skip-unless-youve-adopted-it
+    blocking: false
+  - id: write-a-manifest-for-a-new-service
+    summary: Connecting anything not listed here means writing its
+      config/connectors/ manifest, which the connect-service skill does for
+      you when you use it.
+    doc: docs/connecting.md
+    blocking: false
+
+blockers:
+  - id: two-fragments-have-no-manifest
+    severity: warn
+    detail: tavily and playwright ship as extension fragments with no
+      config/connectors/ manifest and therefore no vetting record, no privacy
+      tier and no recorded tool surface. check-connectors.sh validates
+      manifests, so for these two it validates nothing at all - the files that
+      would carry the allowlist a reader is told to derive do not exist.
+  - id: adoption-is-an-unscripted-hand-edit
+    severity: warn
+    detail: Enabling a connector takes an edit to a fragment, a re-render of
+      config/goose/config.yaml, a copy to two hosts and a credential placed in
+      a store that differs per connector. Nothing in scripts/ performs or
+      checks that sequence, which is why installer is null (#37 owns writing
+      unit_connectors, if a scripted adoption is ever wanted).
+  - id: everything-ships-disabled
+    severity: note
+    detail: All three fragments carry enabled false, so this unit's default
+      state is "present and connected to nothing". That is deliberate - the
+      todo app is undecided (docs/roadmap.md) and playwright is heavyweight -
+      but it means a passing check-connectors.sh says nothing about whether
+      any connector actually works.
+  - id: connect-service-skill-is-undocumented
+    severity: note
+    detail: config/skills/connect-service/ and recipes/connect-service.yaml
+      both ship and are the intended path for adding a connector, yet
+      `grep -rln connect-service docs/ README.md` returns zero hits. This
+      unit's runbook cannot point at the workflow that writes its manifests.
+
+uninstall:
+  supported: false
+  reason: "Nothing removes an extension. Flipping enabled back to false and
+    deleting the credential from goose's secret store are both hand edits, and
+    a disabled extension's entry stays in config.yaml on both hosts."
+
+notes: >-
+  requires names base-skills because the connect-service skill is what writes
+  a new manifest, and config/connectors/README.md defines the directory as the
+  accruing half of docs/connecting.md rather than an install roster. That is
+  also why `owns` lists five manifests for three fragments: health-records,
+  imap-caldav and proton-mail are vetting records for services that were
+  investigated and NOT adopted, and a registry that only recorded the yeses
+  would lose the more expensive half of the work.

@@ -1,0 +1,139 @@
+---
+# automations — the three non-vault scheduled recipes, the script that
+# registers them with goose's own scheduler, and the disabled systemd fallback
+# that exists for the days that scheduler misbehaves.
+#
+# DESCRIBES TODAY, and the headline absence is `verify: []`. deploy-vps.sh:381
+# really does run register-schedules.sh on every deploy, so this unit is
+# installed - but nothing in scripts/verify/ is CLAIMED by it, because the one
+# script that asserts the roster (check-brain.sh) belongs to `brain` and a
+# verify script may be claimed by exactly one unit.
+id: automations
+manifest_version: 1
+verified_on: "2026-09-07"
+summary: The three non-vault recipes, register-schedules.sh, and the disabled fallback timers.
+host: vps
+tier: opt_in
+# google-workspace is not optional here in practice - all three recipes read
+# Gmail/Calendar through workspace-mcp and deliver by self-addressed email -
+# and ntfy-alerts is what turns a silently failed fallback run into a message.
+requires: [brain, google-workspace, ntfy-alerts]
+
+# Nothing on README.md's budget table is this unit's. The tokens these recipes
+# burn are billed on the two inference rows base-goose claims (README.md:158
+# names the per-recipe models), and inventing a per-recipe figure here is
+# exactly what the verbatim cross-check exists to prevent.
+cost: []
+
+installer:
+  script: scripts/vps/deploy-vps.sh
+  function: unit_automations
+  status: planned
+
+# NOTHING VERIFIES THIS UNIT under its own name - see the blocker below.
+verify: []
+runbook: docs/automations.md
+
+secrets:
+  # Both are values, not credentials (secret: false), and both are read by
+  # register-schedules.sh - :35-40 sources them out of /data/secrets.env when
+  # the environment does not already carry them, :52-57 warns when the
+  # roster's first entry is not the primary, and :118-119 stores the roster on
+  # each schedule as a `google_accounts` parameter. Optional on purpose: an
+  # empty roster omits --params and single-account behaviour is unchanged.
+  - key: USER_GOOGLE_EMAILS
+    store: vps
+    secret: false
+    optional: true
+  - key: USER_GOOGLE_EMAIL
+    store: vps
+    secret: false
+    optional: true
+
+owns:
+  # The three recipes whose inputs are Gmail and Calendar only. vault-qa.yaml
+  # belongs to life-vault, and health-followups/budget-checkin to
+  # vault-automations, because their inputs are files in the private vault.
+  - {kind: repo_file, target: recipes/morning-brief.yaml}
+  - {kind: repo_file, target: recipes/inbox-triage.yaml}
+  - {kind: repo_file, target: recipes/weekly-review.yaml}
+  # The roster itself. goose 1.x has no update/upsert subcommand, so this
+  # script's idempotency IS remove-then-add (register-schedules.sh:5-8).
+  - {kind: repo_file, target: scripts/vps/register-schedules.sh}
+  # Where the registered roster actually lands, under brain's GOOSE_PATH_ROOT.
+  # goose serve reads it once at startup and does not hot-reload, which is why
+  # deploy-vps.sh:376-381 registers BEFORE it restarts the service.
+  - {kind: data_path, target: /data/goose/data/schedule.json}
+  # The fallback plane: one template service, four timers, installed at
+  # deploy-vps.sh:308-311 as goose-recipe@<id>.timer and NEVER enabled. All of
+  # it drives run-recipe.sh, which is claimed here because
+  # goose-recipe@.service:36 is the only UNIT FILE that invokes it
+  # (check-brain.sh:221 also calls it, for the optional live-fire test).
+  - {kind: repo_file, target: scripts/common/run-recipe.sh}
+  - {kind: repo_file, target: scripts/vps/systemd/fallback/goose-recipe@.service}
+  - {kind: repo_file, target: scripts/vps/systemd/fallback/morning-brief.timer}
+  - {kind: repo_file, target: scripts/vps/systemd/fallback/inbox-triage.timer}
+  - {kind: repo_file, target: scripts/vps/systemd/fallback/weekly-review.timer}
+  # health-followups.timer is installed by the SAME loop and so is listed
+  # here, even though the recipe it fires belongs to vault-automations. The
+  # split is deliberate rather than tidy: whoever edits the loop edits this
+  # unit, and whoever edits the recipe edits that one.
+  - {kind: repo_file, target: scripts/vps/systemd/fallback/health-followups.timer}
+  - {kind: systemd_unit, target: goose-recipe@.service}
+  - {kind: systemd_unit, target: goose-recipe@morning-brief.timer}
+  - {kind: systemd_unit, target: goose-recipe@inbox-triage.timer}
+  - {kind: systemd_unit, target: goose-recipe@weekly-review.timer}
+  - {kind: systemd_unit, target: goose-recipe@health-followups.timer}
+
+manual_steps:
+  - id: flip-to-fallback-timers
+    summary: If scheduled fires stop producing runs, remove the native
+      schedule and `systemctl enable --now goose-recipe@<id>.timer`. The units
+      ship installed but disabled; nothing flips them for you.
+    doc: docs/automations.md#fallback-when-the-native-scheduler-misbehaves
+    blocking: false
+
+blockers:
+  - id: no-verify
+    severity: warn
+    detail: No check-*.sh is claimed by this unit. check-brain.sh:143-204 DOES
+      assert the roster - it derives the expected ids from
+      register-schedules.sh's own ORDER and PREREQ blocks rather than
+      duplicating them - but that script is `brain`'s single claim, and a
+      verify script may be claimed by exactly one unit. Nothing at all checks
+      the fallback plane; the four installed timers and the template service
+      are unverified in every mode.
+  - id: roster-and-fallback-timers-disagree
+    severity: warn
+    detail: register-schedules.sh:75-76 says the crons are "mirrored by ... the
+      fallback timers in scripts/vps/systemd/fallback/", and ORDER at :77 has
+      five ids. That directory holds FOUR timers and deploy-vps.sh:309 loops
+      over the same four - budget-checkin has none. docs/automations.md:181-182
+      records the gap; the script that claims the mirror does not.
+  - id: native-scheduler-has-a-known-failure-mode
+    severity: warn
+    detail: docs/automations.md:158-163 documents goose 1.46 headless creating
+      a scheduled run's session and then never starting the agent - no log, no
+      email, and no alert, because the native path has no watchdog. The
+      fallback timers exist for exactly that, and enabling them is manual.
+  - id: brain-doc-asserts-five-schedules
+    severity: note
+    detail: docs/setup/50-vps-brain.md:251 still describes "the 5-schedule
+      roster" unconditionally, while check-brain.sh derives the count from the
+      PREREQ gate and expects three on a brain with no life vault.
+
+uninstall:
+  supported: false
+  reason: "There is no unregister path. register-schedules.sh only removes a
+    schedule to re-add it (or when its vault prerequisite is missing), so
+    backing this unit out means `goose schedule remove` per id by hand plus
+    `systemctl disable` for any fallback timer that was ever enabled."
+
+notes: >-
+  Two facts about this unit are easy to get backwards. First, registration
+  happens BEFORE the goose-serve restart on purpose (deploy-vps.sh:376-381) -
+  the scheduler reads schedule.json once at startup, so a schedule registered
+  while serve is running stays dormant until the next restart. Second, the
+  fallback timers are not a second scheduler running in parallel - they are
+  installed disabled and drive the same recipes through run-recipe.sh, which
+  adds the retry and the failure alert the native path lacks.

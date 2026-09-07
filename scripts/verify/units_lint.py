@@ -141,12 +141,16 @@ INSTALLER_SCRIPTS: Final[frozenset[str]] = frozenset({
     "scripts/vps/deploy-vps.sh",
 })
 
-# check-*.sh files that no unit can legitimately claim, with the reason. Both
+# check-*.sh files that no unit can legitimately claim, with the reason. These
 # are repo/CI gates rather than unit checks, so demanding an owner for them
 # would mint a fake unit to hold them.
 UNCLAIMABLE: Final[dict[str, str]] = {
     "check-coverage.sh": "a repo-wide coverage gate, not a unit's proof",
     "check-goose-template.sh": "a generated-artifact gate, not a unit's proof",
+    # This file's own driver. A unit claiming it would be asserting that the
+    # validator proves something about that unit, when what it actually does is
+    # validate every manifest including that one.
+    "check-units.sh": "this validator's own driver, not a unit's proof",
 }
 
 # The record shapes. Each entry must be a mapping whose keys are EXACTLY these.

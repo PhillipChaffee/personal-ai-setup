@@ -1,0 +1,124 @@
+---
+# phone-kit — the iPhone half of the setup. Three apps (Telegram, Tailscale,
+# Pal Chat) and a Shortcut, none of which this repo can touch. The fourth app
+# docs/setup/40-phone-setup.md discusses, Goose iOS, gets no step here because
+# it does not work (see the blocker below).
+#
+# DESCRIBES TODAY, and there is very little to describe: `host: checklist` is
+# the schema's word for a unit whose entire footprint is on hardware no script
+# reaches. It is listed as a unit anyway because the alternative is that the
+# phone steps live only in a runbook nobody diffs, and because `pai list`
+# showing four manual steps (three of them blocking) and no installer is a
+# truer picture of this setup than eighteen rows that all claim to install
+# something.
+id: phone-kit
+manifest_version: 1
+verified_on: "2026-09-07"
+summary: iPhone surfaces - Telegram pairing, Tailscale, Pal Chat, a Siri Shortcut.
+host: checklist
+tier: opt_in
+requires: []
+
+# Copied VERBATIM from README.md's budget table (:152). It is the only phone
+# line item and the only one-time cost in the table; everything else here is a
+# free app or an existing account.
+cost:
+  - line: Pal Chat (backup phone client)
+    amount: ~$7 one-time
+    source: README.md
+
+# NOTHING INSTALLS THIS UNIT, and nothing could: App Store installs, an iOS
+# VPN profile and a Shortcuts automation are all outside any script's reach.
+# host: checklist is what makes this legal on its own; manual_steps below is
+# non-empty regardless, because that IS the unit.
+installer: null
+
+# NOTHING VERIFIES THIS UNIT EITHER, for the same reason. See the no-verify
+# blocker: the closest available proof is that the brain-side services these
+# apps talk to are up, which check-brain.sh already asserts for its own unit.
+verify: []
+runbook: docs/setup/40-phone-setup.md
+
+secrets:
+  # store: none is the honest answer for both. These two keys DO exist in the
+  # global rosters - base-goose claims them for the Mac, base-secrets for the
+  # brain - but the copies this unit needs are typed into an iOS app and into
+  # a Shortcut action, where no roster, no Keychain and no env file reaches
+  # them. `none` skips the roster check rather than pretending one applies.
+  - key: TOGETHER_API_KEY
+    store: none
+    secret: true
+    optional: false
+  - key: OPENCODE_ZEN_API_KEY
+    store: none
+    secret: true
+    optional: true
+
+# Nothing. Every artifact of this unit is an app, a profile or a Shortcut on a
+# device the repo cannot see, which is exactly what host: checklist asserts.
+owns: []
+
+manual_steps:
+  - id: pair-telegram-bot
+    summary: Send the pairing code from goose gateway pair telegram to your own
+      bot. This is the phone's only full agentic surface, and the gateway then
+      answers your account alone.
+    doc: docs/setup/40-phone-setup.md#1a-telegram-gateway-the-working-agentic-path
+    blocking: true
+  - id: install-tailscale-ios
+    summary: Install the Tailscale iOS app, sign in with the same identity as
+      the Mac and the brain, and allow the VPN configuration.
+    doc: docs/setup/40-phone-setup.md#3-tailscale-put-the-phone-on-the-tailnet
+    blocking: true
+  - id: configure-pal-chat
+    summary: Add the two custom OpenAI-compatible endpoints (Together and
+      OpenCode Zen) with their keys and model lists. Zen's Anthropic and
+      responses-API models cannot be added here.
+    doc: docs/setup/40-phone-setup.md#4-pal-chat-the-backup-that-works-day-one
+    blocking: true
+  - id: build-siri-shortcut
+    summary: Build the six-action Ask my AI Shortcut that POSTs to Together and
+      speaks the reply.
+    doc: docs/setup/40-phone-setup.md#5-siri-shortcut-voice-one-shots
+    blocking: false
+
+blockers:
+  - id: no-verify
+    severity: warn
+    detail: No check-*.sh can reach an iPhone. Whether Telegram is paired,
+      whether Tailscale is signed in and whether Pal Chat holds a working key
+      are all unobservable from this repo, and the only signal is a human
+      trying it.
+  - id: goose-ios-app-is-unusable
+    severity: note
+    detail: The maintainer-published Goose AI app connects to a headless brain
+      and then 404s on every chat action - it expects goosed's REST API, which
+      goose serve does not expose - and its QR pairing flow was removed
+      upstream. Verified at goose 1.46 / app 1.1.6 on 2026-08-21. Telegram is
+      the phone's agentic path until that changes.
+  - id: shortcut-stores-a-key-in-cleartext
+    severity: warn
+    detail: The Siri Shortcut carries the Together API key inside the shortcut
+      body, readable by anyone who can unlock the phone. Accepted deliberately
+      for a low-balance PAYG key with a documented rotation, and recorded here
+      so it is a decision rather than a surprise.
+  - id: chatbox-ios-is-a-trap
+    severity: note
+    detail: Chatbox on iOS strips the auth header from custom OpenAI-compatible
+      endpoints (WKWebView CORS preflight); it works on desktop and fails on
+      iPhone, with an upstream bug open and no fix. Pal Chat is the verified
+      pick, and this is the kind of fact a checklist unit exists to keep.
+
+uninstall:
+  supported: false
+  reason: "Deleting four apps and a Shortcut is a phone operation with no
+    counterpart in this repo. The one part that leaves a trace elsewhere -
+    the Telegram pairing - is unbound on the brain by telegram-gateway, not
+    here."
+
+notes: >-
+  Automation results deliberately need nothing on the phone: every recipe
+  emails its own result, so the inbox is the delivery surface and there is no
+  push app anywhere in the system. That is why this unit is opt_in rather than
+  default_on - skipping it entirely costs you the agentic chat surface and
+  nothing else.
