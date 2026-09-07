@@ -15,6 +15,11 @@ checklist you run before flipping visibility.
   `api_key_env` names like `OPENCODE_ZEN_API_KEY`, never key values),
   `config/opencode/opencode.json`, `config/env/secrets.env.example` (variable names
   only), `config/goose/goosehints.example`.
+  `config/goose/config.yaml` is **generated** from `config/goose/config.base.yaml`
+  plus one fragment per extension in `config/goose/extensions.d/`, and stays
+  committed because the installers copy that path. Edit the sources, then run
+  `scripts/verify/check-goose-template.sh --write`; CI fails on a hand-edited
+  artifact.
 - `infra/terraform/terraform.tfvars.example` (placeholders only).
 - `vault-template/` — the empty skeleton for the separate private vault repo.
 - Placeholders of the form `<YOUR-ZEN-API-KEY>`, `you@example.com`,

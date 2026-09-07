@@ -109,7 +109,12 @@ permanently.
 
 The wiring lives in two template files the bootstrap already put in place:
 
-- `config/goose/config.yaml` — the `workspace-mcp` stdio extension entry:
+- `config/goose/config.yaml` — the `workspace-mcp` stdio extension entry. That
+  file is generated from `config/goose/config.base.yaml` plus
+  `config/goose/extensions.d/`, so edit
+  `config/goose/extensions.d/workspace-mcp.yaml` and re-run
+  `scripts/verify/check-goose-template.sh --write`; editing the generated file
+  directly fails CI.
 
   ```console
   uvx workspace-mcp@1.25.0 --permissions gmail:send calendar:full tasks:manage --tool-tier core

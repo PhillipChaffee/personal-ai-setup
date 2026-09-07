@@ -1,0 +1,56 @@
+extensions:
+  # Todoist first-party remote MCP. https://github.com/Doist/todoist-mcp
+  #
+  # AUTH IS A BEARER TOKEN, NOT OAUTH. Doist's hosted endpoint accepts a Todoist
+  # personal API token directly in an Authorization header, which is why this is
+  # the one connector in the repo that can be finished entirely from the phone —
+  # goose's OAuth path cannot be (the callback binds to the brain's loopback and
+  # the auth URL never leaves it). Put the token in goose's secret store under
+  # TODOIST_API_KEY; ${TODOIST_API_KEY} below is substituted at connect time,
+  # because goose applies ${VAR} to a remote extension's uri/headers/socket.
+  # Full rationale and the vetting record: config/connectors/todoist.yaml.
+  #
+  # DISABLED: no todo app chosen yet. docs/privacy.md already carries the Todoist
+  # row (Tier 2, never a free model), so adopting it is just: store the token,
+  # flip enabled: true. Or swap the uri for your chosen app's MCP server
+  # (docs/roadmap.md) — in which case replace available_tools too, or you ship a
+  # blank cheque.
+  #
+  # available_tools is pre-populated ON PURPOSE. An absent or empty allowlist
+  # means EVERY tool is allowed, so shipping this entry without one would turn
+  # `enabled: true` into a blank cheque. These are the 8 tools the manifest
+  # records: four reads, four non-destructive writes. The endpoint publishes no
+  # delete tool, so nothing destructive is being withheld — there is nothing to
+  # withhold. Want it read-only? Cut the last four and change the manifest's
+  # smoke_test to match.
+  #
+  # Note the spelling asymmetry between this file and a manifest: on disk goose
+  # writes `type: streamable_http` / `uri` / `env_keys` / `headers` as a mapping,
+  # while the ACP wire wants `type: http` / `url` / `envKeys` / headers as a LIST
+  # of {name, value}. Do not copy this block into a manifest verbatim, or the
+  # reverse. config/connectors/README.md has the table.
+  todoist:
+    name: todoist
+    display_name: Todoist
+    type: streamable_http
+    enabled: false
+    uri: https://ai.todoist.net/mcp
+    envs: {}
+    env_keys:
+      # Declared even though the credential travels in the header: at goose
+      # 1.46.0 a missing env key is a hard extension-startup failure, whereas an
+      # unresolved ${VAR} is left LITERAL in the header and earns a 401 that
+      # reads like a Todoist outage rather than a config typo.
+      - TODOIST_API_KEY
+    headers:
+      Authorization: "Bearer ${TODOIST_API_KEY}"
+    available_tools:
+      - get-overview
+      - find-tasks
+      - find-tasks-by-date
+      - find-projects
+      - add-tasks                 # write
+      - update-tasks              # write
+      - complete-tasks            # write
+      - reschedule-tasks          # write
+    timeout: 300

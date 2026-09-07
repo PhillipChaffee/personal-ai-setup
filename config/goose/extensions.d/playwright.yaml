@@ -1,0 +1,29 @@
+extensions:
+  # Browser automation (microsoft/playwright-mcp). Disabled by default:
+  # it is heavyweight (downloads browsers on first run) and only needed for
+  # workflows that actually drive the web.
+  #
+  # BEFORE YOU FLIP enabled: true — add a non-empty snake_case `available_tools`
+  # list, the way workspace-mcp and todoist above have one. An extension with no
+  # allowlist can call EVERY tool its server registers; for a browser driver that
+  # is the whole machine's web surface. Derive the real list instead of guessing:
+  #   scripts/verify/check-connectors.sh --smoke <id>   (or a raw tools/list)
+  # scripts/verify/check-security.sh FAILS on any enabled extension missing one,
+  # so this is enforced rather than merely advised.
+  #
+  # Version pinned for the same reason workspace-mcp is: `@latest` lets an
+  # upstream release widen the tool surface between two runs of the same config.
+  # 0.0.79 was current on 2026-08-23; bump deliberately.
+  playwright:
+    name: playwright
+    display_name: Playwright
+    type: stdio
+    enabled: false
+    cmd: npx
+    args:
+      - -y
+      - "@playwright/mcp@0.0.79"
+    envs: {}
+    env_keys: []
+    # available_tools: [...]   # REQUIRED before enabling — see the note above
+    timeout: 300

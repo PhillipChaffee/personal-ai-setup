@@ -1,0 +1,108 @@
+extensions:
+  # Gmail + Google Calendar + Google Tasks via taylorwilsdon/google_workspace_mcp.
+  # https://github.com/taylorwilsdon/google_workspace_mcp
+  #
+  # VERSION IS PINNED. `uvx workspace-mcp` resolves to whatever is newest at
+  # spawn time, so an upstream release could widen the tool surface and the
+  # OAuth scopes requested at consent without a single line changing here.
+  # Everything below was verified against exactly 1.25.0 on 2026-08-23 by
+  # running the server over stdio and reading `tools/list` back.
+  #
+  # --permissions <service>:<level> is the narrowing flag. Levels are
+  # CUMULATIVE per service (gmail: readonly < organize < drafts < send < full;
+  # calendar: readonly < full; tasks: readonly < manage < full) and they drive
+  # BOTH which service modules load AND which OAuth scopes appear on the
+  # consent screen. `gmail:send` therefore also carries labels/modify/compose
+  # — there is no send-without-read level — but it does drop
+  # gmail.settings.basic, which the old `--tools gmail` asked for.
+  #
+  # The previous `--tool-tier core --tools gmail calendar tasks` was inverted
+  # least privilege: `--tools` selects SERVICES, so consent requested all 14
+  # scopes those three services can use while the recipes need far fewer.
+  # `--permissions` and `--tools` are mutually exclusive upstream — passing
+  # both is a startup error. Never put `--tools` back.
+  #
+  # --tool-tier core caps per-request context. Measured at these permissions on
+  # 2026-08-23: core = 10 tools, extended = 20, complete = 26, and omitting
+  # --tool-tier entirely is the same as `complete`. KNOWN LIMITATION at 1.25.0
+  # — `list_tasks`, `get_task` and `manage_task` all take a REQUIRED
+  # task_list_id, and the only tools that hand one out (list_task_lists,
+  # get_task_list) sit in the `complete` tier, confirmed by the same run.
+  # At core tier Tasks is reachable only through the Google Tasks API's
+  # "@default" list alias. No recipe uses Tasks today; if one starts to, drop
+  # `--tool-tier core` from this entry rather than widening --permissions.
+  #
+  # WRITE POSTURE (decided deliberately; config/connectors/google-workspace.yaml
+  # says the same thing and the two must not drift). This entry is the
+  # INTERACTIVE session — the phone chat and Goose Desktop — and it is
+  # write-capable on Calendar and Tasks: `calendar:full` + `tasks:manage` in the
+  # credential, `manage_event` + `manage_task` in the allowlist. Credential and
+  # allowlist match exactly, which is the point: a tight allowlist over a broad
+  # token would give up the capability and keep the risk. Narrower levels do
+  # exist and were run on 2026-08-23 (`calendar:readonly`, `tasks:readonly` are
+  # both valid), and every UNATTENDED job uses them — each scheduled recipe
+  # declares its own workspace-mcp block with `calendar:readonly` or no calendar
+  # at all, so nothing on cron inherits the reach configured here.
+  #
+  # One consequence, so it is not discovered by surprise: at these args the
+  # server publishes exactly 10 tools and the allowlist grants exactly those 10,
+  # so a tool COUNT can no longer tell "the allowlist bit" apart from "the
+  # allowlist was silently dropped". For this entry the camelCase detector is
+  # the connector validator plus the extensions/add -> extensions/list roundtrip,
+  # NOT the count.
+  #
+  # env_keys are resolved from goose's secret store / process environment —
+  # values never live in this file. See config/mcp/workspace-mcp.env.example
+  # and docs/setup/30-google-oauth.md (publish the OAuth app "In production"
+  # or refresh tokens die every 7 days).
+  workspace-mcp:
+    name: workspace-mcp
+    display_name: Google Workspace
+    type: stdio
+    enabled: true
+    cmd: uvx
+    args:
+      - workspace-mcp@1.25.0
+      - --permissions
+      - gmail:send
+      - calendar:full
+      - tasks:manage
+      - --tool-tier
+      - core
+    envs:
+      # Replace with your PRIMARY Gmail address — the default account for
+      # tool calls that don't name one. More accounts? Run one consent dance
+      # each (docs/setup/30-google-oauth.md §8); tokens store side by side
+      # and any authorized account is reachable per call via the tools'
+      # user_google_email argument — this default stays the primary.
+      USER_GOOGLE_EMAIL: you@example.com
+    env_keys:
+      - GOOGLE_OAUTH_CLIENT_ID
+      - GOOGLE_OAUTH_CLIENT_SECRET
+    # THE SPELLING IS LOAD BEARING: snake_case `available_tools`, never
+    # `availableTools`. goose's GooseExtension carries
+    # #[serde(tag = "type", rename_all = "snake_case")], which renames
+    # VARIANTS, not fields — only env_keys has an explicit rename — and there
+    # is no deny_unknown_fields, so a camelCase key is dropped SILENTLY: no
+    # error, no warning, no key in the written config. An absent or empty
+    # allowlist then means EVERY tool is allowed, so the mistake fails OPEN.
+    # Verified against goose 1.46.0 on 2026-08-23; the empirical proof is in
+    # config/connectors/README.md ("the one field that must not be typed from
+    # memory"). If you edit this list, re-read the file afterwards and check
+    # the key survived.
+    #
+    # These are exactly the 10 tools `--permissions … --tool-tier core`
+    # registers at workspace-mcp 1.25.0, written out so a future upstream
+    # release cannot widen the agent's reach without an explicit edit here.
+    available_tools:
+      - search_gmail_messages
+      - get_gmail_message_content
+      - get_gmail_messages_content_batch
+      - send_gmail_message
+      - list_calendars
+      - get_events
+      - manage_event
+      - list_tasks
+      - get_task
+      - manage_task
+    timeout: 300

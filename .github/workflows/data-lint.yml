@@ -5,17 +5,33 @@
 # yamllint's load-bearing rule is key-duplicates. PyYAML's safe_load -- the
 # idiom scripts/verify/check-connectors.sh uses to validate connector
 # manifests -- accepts a duplicated mapping key silently and keeps the LAST
-# one. config/goose/config.yaml carries two live `available_tools` allowlists
-# and is the file deploy-vps.sh copies onto the brain, so a duplicated key with
-# a wider allowlist would validate clean and ship the wrong tool surface.
-# Verified: safe_load raises nothing on such a file; yamllint reports it.
+# one, so a duplicated key with a wider allowlist would validate clean and ship
+# the wrong tool surface. Verified: safe_load raises nothing on such a file;
+# yamllint reports it. The file that makes it concrete is
+# config/goose/config.yaml, what deploy-vps.sh copies onto the brain.
+#
+# That file is now GENERATED -- config/goose/config.base.yaml plus one fragment
+# per extension in config/goose/extensions.d/ -- so yamllint alone is no longer
+# enough. It still catches a duplicate WITHIN the artifact or within a
+# fragment; it cannot see that two fragments each declaring `todoist` compose
+# into a duplicated key, and it cannot see whether the committed artifact is
+# what those sources compose to at all. check-goose-template.sh, in the yaml
+# job below, is the guard for both.
 #
 # The `connectors` job runs check-connectors.sh --offline, which validates every
 # config/connectors/*.yaml against the contract in that directory's README --
-# 61 checks in about a second. It was written to run on a machine that has never
+# 62 checks in about a second. It was written to run on a machine that has never
 # installed goose, yet nothing invoked it: the only reference to it anywhere in
 # .github/ was the comment above. A manifest could contradict its own README and
 # ship green.
+#
+# The 62nd check is the ACP method contract, and it was a SKIP here until #34:
+# it fetched goose's acp-meta.json from GitHub, and --offline -- the only mode
+# any workflow runs -- refuses to. It now asserts against the capture committed
+# at config/goose/acp-contract.json, so bumping config/pins.yaml's goose.version
+# without re-running `check-connectors.sh --refresh-contract` fails this job,
+# naming any ACP method the new goose no longer publishes. The two negative
+# tests at the end of that job prove both halves can actually fail.
 name: data-lint
 
 on:
@@ -62,6 +78,37 @@ jobs:
           fi
           echo "yamllint correctly rejected a duplicated key."
 
+      # config/goose/config.yaml is a GENERATED artifact: config.base.yaml plus
+      # one fragment per extension in config/goose/extensions.d/. yamllint above
+      # can only see inside one file at a time, so it cannot tell that the
+      # committed artifact is what those sources compose to, nor that two
+      # fragments both declare `todoist`. This is that half of the gate.
+      # yamllint already drags PyYAML in as a dependency; this pins the version
+      # rather than inheriting whatever the resolver picked, and pins it to the
+      # same one the connectors job below installs.
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml==6.0.2
+
+      - name: check-goose-template.sh
+        run: scripts/verify/check-goose-template.sh
+
+      # Proves the gate can actually fail. goose_template.py derives its paths
+      # from __file__, so running a COPY of the tree out of $RUNNER_TEMP
+      # validates that copy and leaves the checkout untouched -- same rule as
+      # the two negative tests above.
+      - name: Negative test — a hand-edited config.yaml must fail
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/goose-template-negative"
+          mkdir -p "$work"
+          git archive HEAD | tar -x -C "$work"
+          printf '    hand_edited: true\n' >> "$work/config/goose/config.yaml"
+          if "$work/scripts/verify/check-goose-template.sh" >/dev/null 2>&1; then
+            echo "::error::check-goose-template.sh accepted a hand-edited config.yaml — the gate is inert"
+            exit 1
+          fi
+          echo "check-goose-template.sh correctly rejected a hand-edited config.yaml."
+
   connectors:
     name: connector manifests (offline)
     runs-on: ubuntu-latest
@@ -102,3 +149,77 @@ jobs:
             exit 1
           fi
           echo "check-connectors.sh correctly rejected a malformed manifest."
+
+      # Proves the PIN gate can actually fail. Bumping goose.version alone is
+      # the realistic mistake: the vendored ACP contract then describes a tag
+      # nobody installs, and nothing offline can re-derive it. Same rule as the
+      # tests above -- a copy of the tree in $RUNNER_TEMP, checkout untouched.
+      - name: Negative test — a pin bump with a stale ACP contract must fail
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/contract-stale"
+          mkdir -p "$work"
+          git archive HEAD | tar -x -C "$work"
+          python3 - "$work/config/pins.yaml" <<'PY'
+          import re
+          import sys
+
+          path = sys.argv[1]
+          text = open(path).read()
+          open(path, "w").write(re.sub(r'version: "[^"]*"', 'version: "9.99.9"', text, count=1))
+          PY
+          if out="$("$work/scripts/verify/check-connectors.sh" --offline 2>&1)"; then
+            echo "::error::a goose pin bump with a stale ACP contract passed --offline — the gate is inert"
+            exit 1
+          fi
+          printf '%s\n' "$out" | grep -q -- "--refresh-contract" || {
+            echo "::error::the stale-contract failure did not name the remedy (--refresh-contract)"
+            printf '%s\n' "$out"
+            exit 1
+          }
+          echo "check-connectors.sh correctly rejected a pin bump with a stale ACP contract."
+
+      # And the half that the issue's acceptance criterion is actually about:
+      # the human DID re-take the capture at the new tag, and a method this repo
+      # calls is gone from it. Failing is not enough -- it has to NAME the
+      # method, because "the ACP contract changed" is not a fixable report.
+      - name: Negative test — a removed ACP method must fail, by name
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/contract-gone"
+          mkdir -p "$work"
+          git archive HEAD | tar -x -C "$work"
+          gone="_goose/unstable/config/extensions/set-enabled"
+          python3 - "$work" "$gone" <<'PY'
+          import hashlib
+          import json
+          import re
+          import sys
+
+          root, gone = sys.argv[1], sys.argv[2]
+          contract = root + "/config/goose/acp-contract.json"
+          doc = json.load(open(contract))
+          doc["tag"] = "v9.99.9"
+          doc["methods"] = [m for m in doc["methods"] if m != gone]
+          text = json.dumps(doc, indent=2) + "\n"
+          open(contract, "w").write(text)
+
+          # Refreshing rewrites the hash too, so a test that skipped this would
+          # only ever prove the hash check fires.
+          pins = root + "/config/pins.yaml"
+          s = open(pins).read()
+          s = re.sub(r'version: "[^"]*"', 'version: "9.99.9"', s, count=1)
+          s = re.sub(r'acp_contract_sha256: "[^"]*"',
+                     'acp_contract_sha256: "%s"' % hashlib.sha256(text.encode()).hexdigest(), s)
+          open(pins, "w").write(s)
+          PY
+          if out="$("$work/scripts/verify/check-connectors.sh" --offline 2>&1)"; then
+            echo "::error::an ACP contract missing a method this repo calls passed --offline — the gate is inert"
+            exit 1
+          fi
+          printf '%s\n' "$out" | grep -q "$gone" || {
+            echo "::error::the gate failed without NAMING the missing method"
+            printf '%s\n' "$out"
+            exit 1
+          }
+          echo "check-connectors.sh correctly named the ACP method a pin bump took away."
