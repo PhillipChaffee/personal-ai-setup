@@ -37,6 +37,9 @@ name: data-lint
 on:
   push:
   pull_request:
+  schedule:
+    # Monthly --strict run for the unit manifests (see the units job).
+    - cron: "0 6 1 * *"
 
 permissions:
   contents: read
@@ -223,3 +226,133 @@ jobs:
             exit 1
           }
           echo "check-connectors.sh correctly named the ACP method a pin bump took away."
+
+  units:
+    name: unit manifests (offline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          # The empty-diff proof below compares against origin/main, which a
+          # depth-1 clone does not have.
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml==6.0.2
+
+      - name: check-units.sh --offline
+        run: scripts/verify/check-units.sh --offline
+
+      # AC#5, discharged by construction rather than by argument. The manifests
+      # describe the installers; they must not touch them. Comment anchors would
+      # have needed an argument about test-base-install.sh's strip_noise(); an
+      # empty diff needs none.
+      - name: The installers are byte-identical to main
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin main
+          if ! git diff --quiet origin/main -- \
+              scripts/mac/bootstrap-mac.sh scripts/vps/deploy-vps.sh; then
+            echo "::error::#36 must not change install behaviour, and an installer changed:"
+            git diff --stat origin/main -- \
+              scripts/mac/bootstrap-mac.sh scripts/vps/deploy-vps.sh
+            exit 1
+          fi
+
+      # NEGATIVE TEST 1 — an unknown TOP-LEVEL key. Deliberately not the
+      # connectors probe's shape: check-connectors.sh makes an unknown top-level
+      # key a NOTE, so a straight port of that rule would let this ship GREEN.
+      #
+      # It greps for the MESSAGE, not just the exit code. The appended file also
+      # duplicates base-goose's owns targets, so an exit-code-only assertion
+      # would go green off the P4 double-claim even if P1 were deleted.
+      - name: Negative test — an unknown top-level key must fail
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/units-negative-key"; mkdir -p "$work"
+          git archive HEAD | tar -x -C "$work"
+          cp "$work/config/units/base-goose.yaml" "$work/config/units/zz-probe.yaml"
+          printf 'id: zz-probe\nnot_a_valid: manifest\n' >> "$work/config/units/zz-probe.yaml"
+          if out="$("$work/scripts/verify/check-units.sh" --offline 2>&1)"; then
+            echo "::error::check-units.sh accepted an unknown top-level key — the gate is inert"
+            exit 1
+          fi
+          printf '%s\n' "$out" | grep -qF "FAIL  unknown top-level key(s) in zz-probe.yaml" || {
+            echo "::error::check-units.sh failed, but not for the unknown key — P1 is inert"
+            printf '%s\n' "$out"
+            exit 1
+          }
+          echo "check-units.sh correctly rejected an unknown top-level key."
+
+      # NEGATIVE TEST 2 — the 180-day arm, which is entirely new code (nothing
+      # in this repo computes an age window today).
+      #
+      # THE GREP IS LOAD-BEARING, not decoration. `--strict` also promotes the
+      # two reverse-closure checks, and those cannot pass until all 18 manifests
+      # exist — measured: `check-units.sh --strict` exits 1 with 16 findings on
+      # a clean tree today. So an exit-code-only assertion here would go green
+      # with the staleness code DELETED. Matching the `FAIL  ` prefix is also
+      # what distinguishes the --strict verdict from the --offline NOTE.
+      - name: Negative test — a stale verified_on must fail under --strict
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/units-negative-stale"; mkdir -p "$work"
+          git archive HEAD | tar -x -C "$work"
+          stale="$(python3 -c 'import datetime as d; print(d.datetime.now(tz=d.UTC).date() - d.timedelta(days=181))')"
+          sed -i "s/^verified_on: .*/verified_on: \"$stale\"/" \
+            "$work/config/units/base-goose.yaml"
+          if out="$("$work/scripts/verify/check-units.sh" --strict 2>&1)"; then
+            echo "::error::check-units.sh accepted a 181-day-old verified_on — the gate is inert"
+            exit 1
+          fi
+          printf '%s\n' "$out" | grep -qE "^FAIL  base-goose\.verified_on $stale is 181 days old" || {
+            echo "::error::--strict failed, but not on the stale date — the staleness gate is inert"
+            printf '%s\n' "$out"
+            exit 1
+          }
+          # And the other half of the design: the SAME date must only be a NOTE
+          # in the required job. If staleness ever hard-FAILs --offline, the
+          # whole catalog goes red on one calendar day for whoever pushes next.
+          "$work/scripts/verify/check-units.sh" --offline >/dev/null 2>&1 || {
+            echo "::error::a stale verified_on FAILED --offline; it must be a NOTE there"
+            exit 1
+          }
+          echo "check-units.sh fails a stale date under --strict and only notes it offline."
+
+      # NEGATIVE TEST 3 — P3, the assertion that runs backwards. `planned` says
+      # the function DOES NOT EXIST, so the control is a manifest claiming
+      # `present` against a tree where no unit_*() has been written yet. This
+      # control passes today and inverts cleanly at #37.
+      - name: Negative test — installer.status present without the function must fail
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/units-negative-installer"; mkdir -p "$work"
+          git archive HEAD | tar -x -C "$work"
+          sed -i "s/^  status: planned/  status: present/" \
+            "$work/config/units/base-goose.yaml"
+          if out="$("$work/scripts/verify/check-units.sh" --offline 2>&1)"; then
+            echo "::error::check-units.sh accepted status: present for a function that does not exist"
+            exit 1
+          fi
+          printf '%s\n' "$out" | grep -qF "unit_base_goose() is defined 0 times" || {
+            echo "::error::the gate failed without naming the missing installer function"
+            printf '%s\n' "$out"
+            exit 1
+          }
+          echo "check-units.sh correctly rejected a 'present' status with no function."
+
+      # The monthly run. continue-on-error until the catalog closes: --strict
+      # also promotes the two REVERSE-closure checks, and every check-*.sh and
+      # every secrets.env.example key is unclaimable until all 18 manifests
+      # exist. A scheduled job that is red on arrival trains people to ignore
+      # it — the same argument that makes staleness a NOTE in the required job.
+      # FLIP THIS TO false IN THE PR THAT ADDS THE REMAINING 15 MANIFESTS; the
+      # three negative tests above are what keep --strict honest until then.
+      - name: check-units.sh --strict (monthly)
+        if: github.event_name == 'schedule'
+        continue-on-error: true
+        run: scripts/verify/check-units.sh --strict
