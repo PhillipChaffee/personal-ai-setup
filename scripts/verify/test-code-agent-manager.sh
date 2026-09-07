@@ -1664,6 +1664,98 @@ CODE="$($CURL --max-time 10 -o /dev/null -w '%{http_code}' "$BASE/chat/$CID/sess
 $CURL -X DELETE "$BASE/api/chats/$CID?purge=1" >/dev/null
 [ ! -d "$WORK/root/chats/$CID" ] && ok "final delete purges" || bad "final purge failed"
 
+# ---- 7b. wake_chat's refusal arms (in-process) ------------------------------
+# Reaching these over HTTP means arranging a full cap, a container that starts
+# but never answers, and an engine that raises — the last two are not states the
+# stub engine can be put into, and the "did not answer" arm costs a real
+# WAIT_FOR_CHAT_SECONDS (90s, not env-tunable) end to end. In-process they cost
+# nothing.
+cat >"$WORK/preflight-wake.py" <<'PY'
+import importlib.util, sys, tempfile, time
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("cam", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+sys.modules["cam"] = mod
+spec.loader.exec_module(mod)
+
+tmp = Path(tempfile.mkdtemp())
+mod.INDEX_PATH = tmp / "index.json"
+mod._reaper_memory.blocked = frozenset()
+
+started = []
+mod.engine = lambda *a, **k: started.append(list(a))
+mod.run_container = lambda c: started.append(["run", c.id])
+mod.notify_failure = lambda m: None
+
+
+def chat(cid):
+    return mod.Chat(id=cid, repo="r", title="t", port=1, branch="b", last_active=time.time())
+
+
+# 1. the cap is full. wait_for_chat MUST be stubbed even though this arm should
+#    never reach it: if the 409 guard regressed, the fall-through would poll a
+#    dead port for a real 90s and turn a clear failure into a hang.
+mod.Index(chats={c: chat(c) for c in ("sleeper", "busy1", "busy2")}).save()
+mod.container_state = lambda cid: "stopped" if cid == "sleeper" else "running"
+mod.wait_for_chat = lambda port: True
+code, msg = mod.wake_chat("sleeper")
+assert code == 409, (code, msg)
+assert "already active" in msg, msg
+# The discriminator: the fall-through would have called engine("start").
+assert started == [], started
+
+# 2. the container starts but opencode never answers.
+mod.Index(chats={"lonely": chat("lonely")}).save()
+mod.container_state = lambda cid: "stopped"
+mod.wait_for_chat = lambda port: False
+started.clear()
+code, msg = mod.wake_chat("lonely")
+assert code == 502, (code, msg)
+assert msg == "chat container started but opencode did not answer", msg
+assert started == [["start", mod.container_name("lonely")]], started
+
+# 3. the engine itself raises. RESET wait_for_chat first -- block 2 left it
+#    returning False, and without the reset this takes block 2's arm instead and
+#    silently stops testing the exception net.
+mod.wait_for_chat = lambda port: True
+told = []
+mod.notify_failure = lambda m: told.append(m)
+
+
+def engine_boom(*a, **k):
+    raise OSError("engine is broken")
+
+
+mod.engine = engine_boom
+code, msg = mod.wake_chat("lonely")
+# `told` is the discriminator, not the status: block 2 also returns 502.
+assert told == ["chat wake failed (lonely)"], told
+assert code == 502 and msg.startswith("wake failed:"), (code, msg)
+
+# 4. touch() on a chat that is no longer in the index writes nothing at all.
+mod.INDEX_PATH.unlink()
+mod.touch("gone")
+assert not mod.INDEX_PATH.exists(), "touch wrote an index for a chat that does not exist"
+
+# ...and touch CAN write, so the assertion above is evidence rather than an
+# artefact of a broken fixture.
+mod.Index(chats={"present": chat("present")}).save()
+before = mod.Index.load().chats["present"].last_active
+time.sleep(0.01)
+mod.touch("present")
+assert mod.Index.load().chats["present"].last_active > before
+PY
+if "${MANAGER_PY[@]}" "$WORK/preflight-wake.py" "$REPO_ROOT/scripts/vps/code-agent-manager.py"
+then
+  ok "a full cap refuses the wake with 409 and starts nothing"
+  ok "a container that starts but never answers is a 502, not a hang"
+  ok "an engine that raises is a 502 and buzzes a failure"
+  ok "touch() on a deleted chat writes nothing, and still writes for a live one"
+else
+  bad "wake_chat refusal arms (see the assertion above)"
+fi
+
 # ---- 8. the request surface nothing has ever sent -------------------------
 # Everything above drives the happy path of a chat's life. This section is the
 # rest of the HTTP surface: the routes, refusals and malformed inputs the
@@ -1814,6 +1906,68 @@ printf '{"chats": "not a dict"}' > "$WORK/root/index.json"
 CODE="$($CURL -o /dev/null -w '%{http_code}' "$BASE/api/health")"
 [ "$CODE" = "200" ] && ok "a malformed index.json degrades to no chats" \
   || bad "malformed index.json: HTTP $CODE"
+
+# ---- 8j. routes addressed to a chat that does not exist ---------------------
+# Every existing merge names $PR_CHAT and every existing DELETE names a live
+# chat, so both "unknown chat" guards have never fired.
+#
+# BOTH conjuncts below are mandatory. A mistyped URL falls through to
+# handle_any's "no route: ..." which is ALSO a 404 — so the status alone is
+# exactly the vacuous assertion this repo has shipped twice. The body is what
+# distinguishes "the guard fired" from "the router never matched".
+# shellcheck disable=SC2086
+CODE="$($CURL -o "$WORK/merge404.json" -w '%{http_code}' -X POST \
+  "$BASE/api/chats/nosuchchat/pulls/1/merge" || echo 000)"
+if [ "$CODE" = "404" ] && grep -q 'unknown chat' "$WORK/merge404.json"; then
+  ok "merging on an unknown chat is 404 'unknown chat', not 'no route'"
+else
+  bad "merge on unknown chat: got $CODE $(cat "$WORK/merge404.json" 2>/dev/null)"
+fi
+# shellcheck disable=SC2086
+CODE="$($CURL -o "$WORK/del404.json" -w '%{http_code}' -X DELETE \
+  "$BASE/api/chats/nosuchchat" || echo 000)"
+if [ "$CODE" = "404" ] && grep -q 'unknown chat' "$WORK/del404.json"; then
+  ok "deleting an unknown chat is 404 'unknown chat', and pops nothing"
+else
+  bad "delete unknown chat: got $CODE $(cat "$WORK/del404.json" 2>/dev/null)"
+fi
+
+# ---- 8k. a declared body larger than the manager will hold -------------------
+# A declared Content-Length is an instruction to allocate that much, so
+# read_body refuses one over MAX_BODY_BYTES (32 MB) BEFORE reading a byte. Only
+# reachable with a raw socket: curl would have to actually send 64 MB.
+if python3 - "$PORT" "$PASS" <<'PY'
+import base64, socket, sys
+
+port, pw = int(sys.argv[1]), sys.argv[2]
+auth = base64.b64encode(f"opencode:{pw}".encode()).decode()
+s = socket.create_connection(("127.0.0.1", port), timeout=10)
+# Declare 64 MB and send ZERO body bytes. Zero is deliberate: with an unsent
+# body the server's receive queue is empty at close, so there is no RST to turn
+# this into a connection error instead of the 413 under test.
+s.sendall(
+    b"POST /api/chats HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+    + f"Authorization: Basic {auth}\r\n".encode()
+    + b"Content-Length: 67108864\r\nConnection: close\r\n\r\n"
+)
+# Read to EOF. send_json writes headers and body as two separate socket writes,
+# so a single recv() can return the status line without the phrase -- a
+# coin-flip false failure that would look like a real one.
+buf = b""
+while True:
+    chunk = s.recv(8192)
+    if not chunk:
+        break
+    buf += chunk
+s.close()
+assert buf.startswith(b"HTTP/1.1 413"), buf[:120]
+assert b"request body is larger than" in buf, buf[:400]
+PY
+then
+  ok "a declared body over the cap is refused 413 before a byte is read"
+else
+  bad "oversized Content-Length was not refused with 413"
+fi
 
 # ---- 9. startup, which the long-lived instance cannot reach ----------------
 # Everything above runs against ONE manager, started once with a good
