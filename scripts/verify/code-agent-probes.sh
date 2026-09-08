@@ -373,7 +373,12 @@ done
 
 # The pseudo-filesystems are pruned rather than walked: nothing stages a marker
 # in them, and /proc alone can cost more wall clock than the whole probe.
-for f in \$(find / -maxdepth $CA_SCAN_DEPTH \\( -path /proc -o -path /sys -o -path /dev \\) -prune -o -name "$CA_MARKER" -type f -print 2>/dev/null || true); do
+# -print into a pipeline, NOT \$(find ...) in a for: an unquoted command
+# substitution word-splits on IFS and glob-expands, so a marker under a path
+# with a space (/var/my data/...) is found by find(1), split into fragments,
+# fails both cats, emits no SCAN line -- and the arm prints its PASS. The own-
+# marker control still fires from a path without a space, so nothing looks wrong.
+find / -maxdepth $CA_SCAN_DEPTH \\( -path /proc -o -path /sys -o -path /dev \\) -prune -o -name "$CA_MARKER" -type f -print 2>/dev/null | while IFS= read -r f; do
   v=\$(cat "\$f" 2>/dev/null || true)
   # A's OWN marker, reached the long way round: the scan's positive control,
   # and the datum that separates "found nothing" from "looked at nothing".
@@ -621,6 +626,19 @@ ca_published_port_verdict() {
     return 0
   fi
 
+  # THE CONTROL FIRED AND THE VECTOR NEVER DID. ROUTE: is printed before NET:
+  # inside the same host loop, so an observation truncated between them (podman
+  # exec killed, container dying mid-script) leaves a route and zero dials at B
+  # -- and every branch above tests $net_*, so it fell through to a PASS earned
+  # by nothing. An empty $nets with a live route is not silence from B; it is
+  # not having asked.
+  if [ -z "$nets" ]; then
+    skip "cross-chat published-port arm INCONCLUSIVE — the route control answered but no dial at chat B was recorded"
+    note "A reached the host via $(printf '%s\n' "$route_ok" | head -n1), so the"
+    note "route is live, but the emitted script produced no NET: line at all."
+    note "Truncated output, not a protected port — re-run before believing either."
+    return 0
+  fi
   pass "chat A reaches the host (via $(printf '%s\n' "$route_ok" | head -n1)) but NOT chat B's published port"
   return 0
 }

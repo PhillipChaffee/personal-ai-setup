@@ -879,7 +879,17 @@ then
   ok "a non-object config template is refused; the model override and push grant apply"
   ok "the container's AGENTS.md is rendered into the chat volume, and a missing one is survivable"
   ok "agent_authored is true/false from the PR body, and absent when GitHub sent none"
-  ok "every VERB+route the dispatcher serves is named in the docstring AND in docs/code-agents.md"
+  # SAY WHAT IS PROVEN, NOT WHAT WOULD BE NICE. The oracle drives handle_any and
+  # the route_* methods and asserts every dispatch site in their BYTECODE fired,
+  # so a literal path, a prefix test or an inline send_json inside them is caught
+  # (four fixtures feed each one in). Two escapes are known and NOT covered:
+  # routing inside a do_<VERB> body (the five one-line bodies today just call
+  # handle_any, and the oracle never sees a comparison made before that call),
+  # and a non-route_* helper that handle_any delegates to. Both were reproduced
+  # against the real manager and both swept clean. Neither is an idiom this file
+  # uses, so the gate holds today -- but a green line that claimed the whole
+  # dispatcher would be the exact overclaim this harness exists to prevent.
+  ok "every VERB+route reachable through handle_any or a route_* method is named in the docstring AND in docs/code-agents.md"
   ok "...and holing any ONE row of either list — path- or verb-shadowed — reports exactly it"
   ok "...and a verb the dispatcher GROWS on an already-listed path is reported too"
   ok "...and a route dispatched from a LITERAL path, which no table names, is reported too"
