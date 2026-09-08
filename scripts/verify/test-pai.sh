@@ -2758,6 +2758,19 @@ else
 fi
 rm -rf "$KC_NOTFILE"
 
+# The other shape of "not a regular file", and no root needed for it: /dev/null
+# is a character device every Mac has. Same guard as the arm above, second
+# input: `-f` is false for both, and a reader who only saw the directory case
+# would reasonably wonder whether the check was `-d`.
+rm -f "$ZSHRC"
+ln -s /dev/null "$ZSHRC"
+kc_run
+if [ "$KC_RC" = "2" ] && printf '%s\n' "$KC_OUT" | grep -qF "/dev/null is not a regular file"; then
+  pass "a link to a device node is refused the same way, naming /dev/null"
+else
+  fail "a link to /dev/null was not refused by name (exit $KC_RC):"$'\n'"$KC_OUT"
+fi
+
 # Back to a plain file: everything below writes through $ZSHRC and must not be
 # reading a link this section happened to leave behind.
 rm -f "$ZSHRC"
