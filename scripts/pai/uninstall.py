@@ -38,11 +38,14 @@ and in the PR that shipped this file. AC #2, #3 and #4 are met in full, for all
 eighteen units, today: every one of them refuses, with its own written reason,
 and names every target it would keep regardless.
 
-THE CLASSIFICATION IS THE FEATURE. Of the eighteen units, ZERO are cleanly
-reversible, two (coding-pack, opencode) are partially reversible with a named
-residue, and sixteen are unsupported with a concrete reason. Every one of those
-reasons is in the manifest, not here — this file has no vocabulary of its own to
-drift from the data.
+THE CLASSIFICATION IS THE FEATURE. All eighteen manifests say
+`uninstall.supported: false`, so all eighteen take the same arm here; what
+differs is WHY, and every one of those reasons is in the manifest, not in this
+file, which has no vocabulary of its own to drift from the data. Two of them
+(coding-pack, opencode) name a concrete residue rather than a machine-global
+side effect, which is where a removing half would start — but nothing in this
+file treats those two differently, and `pai remove coding-pack` prints
+coding-pack.yaml's sentence and nothing else.
 
     pai remove <id>      refuse, with the manifest's reason. Writes nothing.
     pai remove --help    the above, plus the two doctor facts.
@@ -74,9 +77,14 @@ import yaml
 REMOVABLE_KINDS: Final[frozenset[str]] = frozenset({"home_path"})
 
 # Why each non-removable kind is non-removable, one line each. Keyed by every
-# `owns[].kind` outside REMOVABLE_KINDS; `retained()` looks each entry up here,
-# so a kind added to config/units/README.md without a line here is a KeyError at
-# the first manifest that uses it rather than a silently unexplained RETAIN.
+# `owns[].kind` outside REMOVABLE_KINDS.
+#
+# TOTALITY IS ASSERTED IN THE HARNESS, NOT AT RUNTIME. test-pai.sh's remove
+# probe compares `set(RETAIN_REASON) | REMOVABLE_KINDS` against units_lint.py's
+# OWN_KINDS — the schema's own list — so a ninth kind added to
+# config/units/README.md without a line here fails on push. This table is
+# therefore NOT indexed directly; see retain_reason(), and see the comment on
+# UNKNOWN_KIND_REASON for why the runtime arm cannot be a KeyError.
 RETAIN_REASON: Final[dict[str, str]] = {
     "data_path": "user data. Never removed, by design — this is the whole of AC #4",
     "repo_file": "the git checkout; removing it would delete this repo, not the install",
@@ -86,6 +94,34 @@ RETAIN_REASON: Final[dict[str, str]] = {
     "container_image": "a container image shared with every chat that ever ran",
     "manual": "not a thing on disk: an account, a console setting, or a human step",
 }
+
+# The reason printed for a kind RETAIN_REASON has never heard of, and the three
+# words that make this a bug report rather than a shrug.
+#
+# `load_manifest` coerces a missing `kind:` to "" and a typo'd one to itself, on
+# purpose — check-units.sh is the validator, but it cannot stop an editor
+# creating a half-written file between two of its runs, which is the same
+# rationale load_manifest's other degraded arms are written for. Indexing
+# RETAIN_REASON directly made that coercion fatal: `kind: home-path` for
+# `home_path` in any manifest raised KeyError out of retained(), AFTER report()
+# had already printed the refusal, so the RETAINED inventory — the half a reader
+# uses to decide a removal is safe — vanished and the exit code became 1.
+#
+# SKIPPING THE ENTRY WOULD BE WORSE THAN THE CRASH. An unclassifiable target
+# that silently does not appear reads as "this unit does not own that", which is
+# the one wrong answer this command must never give. So it is retained (it is
+# not in REMOVABLE_KINDS, and nothing can establish that something unclassified
+# is safe to touch) and it is named as unknown.
+# One line, like every RETAIN_REASON entry, because report() prints these as
+# unwrapped group headings and a paragraph there would be the widest line in
+# the output.
+UNKNOWN_KIND_REASON: Final = (
+    "UNKNOWN KIND (a typo, or a kind this file has not been taught) — retained, never skipped"
+)
+
+# What an empty `kind:` is called in the output. Distinct from a typo, because
+# "the key is missing" and "the value is wrong" are different edits to make.
+NO_KIND_LABEL: Final = "(no `kind:` field)"
 
 # `~/` followed by path components made only of these characters. NOT a prefix
 # strip and NOT a split on whitespace.
@@ -247,17 +283,38 @@ def refusal_for(manifest: Manifest) -> list[str]:
     return lines
 
 
+def retain_reason(kind: str) -> str:
+    """Why this kind is kept. TOTAL over `str` — there is no input it refuses.
+
+    A kind outside the schema gets UNKNOWN_KIND_REASON rather than a KeyError,
+    for the reason written there: the alternative is a traceback out of the
+    command whose entire job is to refuse safely, with the safety half of its
+    own output already half-printed.
+    """
+    return RETAIN_REASON.get(kind, UNKNOWN_KIND_REASON)
+
+
+def kind_label(kind: str) -> str:
+    """How a kind is spelled in the output. Only "" is renamed."""
+    return kind or NO_KIND_LABEL
+
+
 def retained(manifest: Manifest) -> list[Retained]:
     """Everything this unit owns that a remover would keep even if one existed.
 
     Kind-driven, so the answer for a nineteenth manifest is right before anyone
     has read it: everything outside REMOVABLE_KINDS is retained, and
-    RETAIN_REASON says why for each kind. This is where AC #4 lives — /data,
+    retain_reason() says why for each kind. This is where AC #4 lives — /data,
     /data/goose, /data/code-agents, /data/life-vault and /data/tls are all
     `data_path`, and `data_path` is not a removable kind.
+
+    A kind nothing recognises is retained TOO, and is the reason this filter is
+    `not in REMOVABLE_KINDS` rather than `in RETAIN_REASON`: the two spellings
+    agree on every valid manifest and differ on exactly the broken one, where
+    the second would drop the entry from the inventory without a word.
     """
     return [
-        Retained(item.kind, item.target, RETAIN_REASON[item.kind])
+        Retained(item.kind, item.target, retain_reason(item.kind))
         for item in manifest.owns
         if item.kind not in REMOVABLE_KINDS
     ]
@@ -289,8 +346,13 @@ def report(manifest: Manifest, home: Path) -> None:
     if keep:
         _emit("")
         _emit(f"RETAINED ({len(keep)}), and kept even by a `pai remove` that did remove things:")
-        for kind in dict.fromkeys(item.kind for item in keep):
-            _emit(f"  {kind} — {RETAIN_REASON[kind]}")
+        # The group headings come from the Retained entries themselves, not from
+        # a second RETAIN_REASON lookup: one dict, built in first-appearance
+        # order, is both the dedup and the reason. A `why` that disagreed with
+        # the heading above it would be unreadable, and a second lookup is the
+        # only way to get one.
+        for kind, why in {item.kind: item.why for item in keep}.items():
+            _emit(f"  {kind_label(kind)} — {why}")
             for item in keep:
                 if item.kind == kind:
                     _emit(f"    RETAIN  {item.target}")
@@ -338,10 +400,15 @@ Usage: pai remove <id>
   is no --force and there will not be one until the two facts below stop being
   true.
 
-  All eighteen units refuse today. Sixteen of them are unsupported with a
-  reason in their manifest; two (coding-pack, opencode) are partially
-  reversible, and are refused for these reasons rather than for the absence of
-  code to do it:
+  All eighteen units refuse today, and all eighteen refuse the SAME WAY: every
+  manifest in config/units/ says `uninstall.supported: false`, so what comes
+  back is that manifest's own written reason and nothing this file composed.
+  There is no per-unit special case in here — `pai remove coding-pack` prints
+  coding-pack.yaml's no-clobber sentence and mentions doctor nowhere.
+
+  The two facts below are why the removing half was never written AT ALL. They
+  are about this repo, not about any one unit, which is why they are in this
+  help text and not in a manifest:
 
     * REMOVING FILES LEAVES `pai doctor` PERMANENTLY RED. doctor's check_skills
       FAILs on any config/skills/ directory missing from ~/.agents/skills, and
@@ -381,7 +448,12 @@ def main(argv: list[str]) -> int:
             file=sys.stderr,
         )
         return 2
-    if rest and rest[0] in ("-h", "--help"):
+    # `len(rest) == 1`, not `rest and ...`: without it `pai remove --help extra`
+    # printed the help and exited 0, swallowing an argument it did not
+    # understand — the one input this command accepted without saying anything.
+    # An extra argument now falls through to the arity check below, which is
+    # where every other "that is not one unit id" already lands.
+    if len(rest) == 1 and rest[0] in ("-h", "--help"):
         _emit(USAGE.rstrip("\n"))
         return 0
     if len(rest) != 1:

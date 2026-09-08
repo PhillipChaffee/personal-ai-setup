@@ -562,8 +562,11 @@ fi
 #      was harmless; inside a function it is fatal.
 #   2. EVERY CALL SITE IS A BARE COLUMN-0 LINE — never `if unit_x; then`, never
 #      `unit_x || rc=$?`. A function called from an `if` condition runs its
-#      WHOLE body with errexit disabled. units_lint.py:659 counts `^unit_x$`
-#      and would happily accept the `if` form.
+#      WHOLE body with errexit disabled. units_lint.py:707 — the `called =
+#      function_lines(...)` line in check_installer_status — counts `^unit_x$` and
+#      would happily accept the `if` form. (Written as :659 first; #43 added 48
+#      lines to check_uninstall above it. Nothing in CI resolves a citation from
+#      one script to another — see the note on this in #43.)
 #   3. `[ cond ] || continue` inside loops, never `[ cond ] && action` as a
 #      loop's last statement — the loop inherits that status and the body then
 #      returns false having done all of its work.

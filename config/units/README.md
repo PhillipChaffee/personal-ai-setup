@@ -182,7 +182,7 @@ notes: null                       # free text; nothing reads it
 | `owns` | list[{`kind`,`target`}] | claimed by exactly one unit repo-wide |
 | `manual_steps` | list[{`id`,`summary`,`doc`,`blocking`}] | `doc` resolves like `runbook` |
 | `blockers` | list[{`id`,`severity`,`detail`}] | mappings only; bare strings are invalid |
-| `uninstall` | {`supported`,`reason`} | `supported: false` needs a non-empty `reason` |
+| `uninstall` | {`supported`,`reason`} | `reason` non-empty in **both** states; `supported: true` also needs a non-`base` `tier` and a non-empty `owns`; see below |
 | `notes` | null \| str | free text |
 
 ### Deliberate absences
@@ -201,7 +201,7 @@ notes: null                       # free text; nothing reads it
 
 ---
 
-## The five rules that need their reason written down
+## The six rules that need their reason written down
 
 ### 1. Why `verified_on` is quoted
 
@@ -348,6 +348,32 @@ argument. Negative control: `data-lint.yml`, "a `--dry-run` that writes into `$H
 fail", which breaks that exit path and then asserts both that (f) names the write *and* that
 the runner's own `$HOME` did not gain it — the second is what fails if the throwaway `$HOME`
 is ever dropped.
+
+### 6. Why `uninstall.supported: true` has three preconditions
+
+[`scripts/pai/uninstall.py`](../../scripts/pai/uninstall.py) (`pai remove`) is the reader
+for this block, and it has no vocabulary of its own — the sentence it prints is this
+`reason`, verbatim modulo re-wrapping. These rules are the ones that keep that output from
+becoming decoration.
+
+- **`reason` is non-empty in BOTH states.** Only `supported: false` used to need one, so
+  `{supported: true, reason: ""}` passed — and `pai remove` would print a blank
+  explanation in the one state where a reader most needs to know what is left behind.
+- **`supported: true` is refused on `tier: base`.** A base unit *is* the install; `pai
+  remove` refuses it at the tier arm before it ever reads this block, so a manifest
+  claiming otherwise makes a claim the tool contradicts. `base-skills` is what makes this
+  arm non-trivial: its one `home_path` is as removable as anything in the catalogue, and
+  nothing but the tier stops it.
+- **`supported: true` requires a non-empty `owns`.** A unit that owns nothing has nothing
+  to remove, so removing it is a no-op that reports success. This covers exactly ONE file:
+  P4 already fails an empty `owns` unless `host: checklist`, so `phone-kit.yaml` — four
+  apps and a Shortcut, all on a phone — is the only manifest the arm can reach. A rule
+  whose coverage is one file is worth having only if nobody thinks it is doing more.
+
+Kept honest in both directions: `test-pai.sh`'s remove probe feeds each rejected shape
+through the real `check_uninstall` (so a rule dropped from the lint goes red) **and** greps
+this section for the rule (so a rule dropped from here goes red). P1's advertised property
+is "every manifest matches this README"; nothing else in the repo compares the two.
 
 ---
 
