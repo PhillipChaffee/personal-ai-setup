@@ -371,3 +371,87 @@ jobs:
         if: github.event_name == 'schedule'
         continue-on-error: true
         run: scripts/verify/check-units.sh --strict
+
+  # The rosters that used to be literals, and the harness that keeps them
+  # honest: `pai verify`'s check list (now every manifest's `verify:`),
+  # check-mcp.sh's three hardcoded services (now the live config's enabled MCP
+  # extensions) and check-brain.sh's five schedules (now register-schedules.sh's
+  # ORDER=(). All offline, against generated fixtures, no goose and no network.
+  #
+  # It lives here rather than in a new checks.yml because these are structural
+  # gates over the repo's own data files, which is what this workflow is.
+  rosters:
+    name: derived rosters (offline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml==6.0.2
+
+      - name: test-verify-checks.sh
+        run: scripts/verify/test-verify-checks.sh
+
+      - name: brain's second verify script is in the derived roster
+        run: |
+          set -euo pipefail
+          roster="$(bin/pai units --field verify)"
+          printf '%s\n' "$roster" | grep -qF "scripts/verify/check-security.sh --local" || {
+            echo "::error::brain.yaml's second verify script is not in the derived roster"
+            printf '%s\n' "$roster"
+            exit 1
+          }
+          echo "the roster is derived, and check-security.sh --local is in it."
+
+      # NEGATIVE TESTS, and they grep the MESSAGE rather than only the exit
+      # code. An exit-code-only assertion goes green off some other finding,
+      # which is how a gate becomes inert while still passing — the warning
+      # install-test.yml's two negatives already carry.
+      - name: Negative test — an unreadable manifest must refuse the sweep
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/rosters-negative"; mkdir -p "$work"
+          git archive HEAD | tar -x -C "$work"
+          printf 'this is not yaml: [unclosed\n' > "$work/config/units/zz-broken.yaml"
+          if out="$("$work/bin/pai" verify 2>&1)"; then
+            echo "::error::pai verify swept a roster it could not fully read"
+            printf '%s\n' "$out"
+            exit 1
+          fi
+          printf '%s\n' "$out" | grep -qF "zz-broken" || {
+            echo "::error::the refusal did not name the manifest it could not read"
+            printf '%s\n' "$out"
+            exit 1
+          }
+          echo "pai verify correctly refused a roster with an unreadable manifest."
+
+      - name: Negative test — an enabled MCP extension with no smoke test must fail
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/rosters-negative-mcp"; mkdir -p "$work"
+          cat > "$work/config.yaml" <<'EOF'
+          extensions:
+            zz-new-connector:
+              name: zz-new-connector
+              type: stdio
+              cmd: uvx
+              enabled: true
+          EOF
+          printf '#!/usr/bin/env bash\nexit 0\n' > "$work/goose"
+          chmod +x "$work/goose"
+          if out="$(PAI_GOOSE_CONFIG="$work/config.yaml" GOOSE_BIN="$work/goose" \
+              scripts/verify/check-mcp.sh 2>&1)"; then
+            echo "::error::check-mcp.sh passed an enabled extension it has no smoke test for"
+            printf '%s\n' "$out"
+            exit 1
+          fi
+          printf '%s\n' "$out" | grep -qF "zz-new-connector is enabled and declares an MCP server" || {
+            echo "::error::check-mcp.sh failed, but not for the missing smoke test — the rule is inert"
+            printf '%s\n' "$out"
+            exit 1
+          }
+          echo "check-mcp.sh correctly failed an enabled extension with no smoke test."

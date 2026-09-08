@@ -150,10 +150,19 @@ fi
 # Deriving rather than duplicating follows pin-models.sh, which reads every
 # pinned model out of the files that declare them instead of keeping a list.
 REGISTER_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../vps" && pwd)/register-schedules.sh"
-ROSTER="$(sed -n 's/^ORDER=(\(.*\))$/\1/p' "$REGISTER_SH")"
+# The anchor tolerates leading whitespace. Pinned to column 0, indenting
+# `ORDER=(` by one space made this derivation return NOTHING -- and an empty
+# roster then walked an empty loop and printed "shows all 0 schedule(s) this
+# brain should have" as a PASS. A derived check that reports a pass when its
+# source stopped resolving is worse than the duplicated literal it replaced.
+ROSTER="$(sed -n 's/^[[:space:]]*ORDER=(\(.*\))$/\1/p' "$REGISTER_SH")"
 if [ -z "$ROSTER" ]; then
-  fail "could not read the schedule roster from register-schedules.sh"
-  ROSTER=""
+  # die, not fail: with no roster there is nothing left in this check to run,
+  # and exit 2 is this repo's "the precondition is missing" -- `pai verify`
+  # renders it as a skip and `--require brain` escalates it back to a failure.
+  die 2 "could not read the schedule roster from $REGISTER_SH" \
+    "Expected a line matching \`ORDER=( ... )\`. If that array was renamed or" \
+    "reformatted, this check derives from it and has to be re-anchored."
 fi
 
 # The prerequisite map, read out of the same file's `declare -A PREREQ=(...)`.

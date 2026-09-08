@@ -1835,7 +1835,7 @@ verify_run remote
 # and is their only owner, and the brain is where goose actually runs.
 saw "off-brain: a host:mac unit's check runs" "PASS  check-alpha"
 saw "off-brain: a host:vps unit's check is in the roster too" "SKIP  check-beta"
-saw "an entry's arguments reach the process" "PASS  check-gamma --flavour salty"
+saw "an entry's arguments are in its verdict line" "PASS  check-gamma --flavour salty"
 saw "check-brain.sh is the one off-brain exclusion, and it says so" \
   "SKIP  check-brain (runs on the brain; this is remote)"
 saw "a check no unit claims is reported, not run" "claimed by no unit"
@@ -1846,7 +1846,7 @@ else
   fail "sweep exited $VR_RC:"$'\n'"$VR_OUT"
 fi
 if [ "$(cat "$FR/argv-gamma.log")" = "--flavour salty" ]; then
-  pass "...verbatim, and nothing else on the command line"
+  pass "...and they reach the PROCESS verbatim, with nothing else on its argv"
 else
   fail "check-gamma saw argv: $(cat "$FR/argv-gamma.log")"
 fi
