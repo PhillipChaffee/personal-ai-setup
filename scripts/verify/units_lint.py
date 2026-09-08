@@ -75,7 +75,12 @@ THE EIGHT PROPERTIES, and what each catches that the others do not:
                          one-unit install with no uv while every declaration
                          still matches. So (f) executes `--dry-run --only <id>`
                          for every id and compares what it PRINTS to the
-                         manifests. See dry_run_plan() for why that is safe.
+                         manifests, in a THROWAWAY $HOME it then asserts is
+                         still empty. See dry_run_plan() for both halves.
+                         (a) also rejects a REPEATED id: every other arm here
+                         compares sets, and a doubled UNIT_IDS entry is the one
+                         divergence that survives both the set comparisons and
+                         (f) -- see prop_installer_table().
 
 THE ADVISORY SPLIT. P5-reverse, P6-reverse and P7's age arm are NOTE under
 --offline and FAIL under --strict. Every manifest carries the same
@@ -96,6 +101,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -103,7 +109,7 @@ from typing import TYPE_CHECKING, Final
 import yaml
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
 
 # Derived from __file__, never from the cwd or `git rev-parse`: data-lint.yml's
 # negative tests run a COPY of the tree out of $RUNNER_TEMP and must validate
@@ -211,6 +217,10 @@ OWNS_LINE_RE: Final = re.compile(r"^  (brew formula|brew cask|file) +(\S.*)$")
 # are `while [ $PASS -lt 8 ]`, so --dry-run is milliseconds; anything near this
 # is a hang, and a lint that hangs a CI job is worse than one that fails it.
 DRY_RUN_TIMEOUT: Final = 60
+# How many entries of a polluted throwaway $HOME to name before summarising. The
+# finding is "it wrote at all"; a hundred-line dump of a half-finished install
+# would bury every other finding in the run.
+HOME_INTRUDERS_SHOWN: Final = 5
 
 # check-*.sh files that no unit can legitimately claim, with the reason. These
 # are repo/CI gates rather than unit checks, so demanding an owner for them
@@ -1181,34 +1191,99 @@ def dry_run_plan(uid: str) -> tuple[list[str], list[str], list[str]]:
     makes `--only base-goose` plan a one-unit install with no uv, and the
     declarations still match the manifests perfectly.
 
-    Running it is safe here in a way it would not be for any other subcommand:
+    WHY RUNNING IT IS SAFE, and why that argument is no longer relied on alone.
     `--dry-run` answers from pure computation over the table and exits BEFORE
-    the platform guard, the Homebrew guard and every write, which
-    test-base-install.sh's H2/H2b/H3 assert as "a fresh $HOME stays empty, a
-    populated one stays byte-identical, and no `uname` is ever asked". So this
-    forks a bash, and touches nothing -- on any OS, with or without Homebrew.
+    the platform guard, the Homebrew guard and every write; that is true today,
+    and test-base-install.sh's H2/H2b/H3 assert it as "a fresh $HOME stays
+    empty, a populated one stays byte-identical, and no `uname` is ever asked".
+    But H2/H2b/H3 are a DIFFERENT harness in a DIFFERENT workflow, and this file
+    is a LINTER -- run casually, locally, on somebody's actual Mac. On a tree
+    where that bare `exit 0` has been broken, check-units.sh inheriting the real
+    $HOME would `brew install` and write into ~/.config, five times over,
+    bounded only by DRY_RUN_TIMEOUT. A safety property one workflow proves is
+    not a safety property another workflow may assume.
+
+    So THE CHILD GETS A THROWAWAY $HOME, and check_child_home() asserts
+    afterwards that it is still empty. Defence in depth: the containment no
+    longer depends on the installer being correct, only on it being run here.
+
+    BEHAVIOURALLY FREE, and measured rather than assumed: all five
+    `--dry-run --only <id>` transcripts are byte-identical (stdout, stderr and
+    exit status) under the real $HOME and under a throwaway one, which is empty
+    afterwards in every case. The reason is that nothing before the `exit 0`
+    reads $HOME at all -- the OWNS_* strings carry a LITERAL `~`, which bash
+    does not expand inside the double-quoted assignment and which reaches the
+    plan as a printf argument, so `~/.config/goose/config.yaml` is printed, not
+    resolved. The first `"$HOME/..."` in bootstrap-mac.sh is inside a unit body.
 
     PAI_EXEC is scrubbed from the child's environment: it is the test seam, and
     a developer with it exported would otherwise hit the containment gate's
     exit 2 and see this property fail for a reason that is not about the table.
     """
     env = {k: v for k, v in os.environ.items() if k != "PAI_EXEC"}
-    try:
-        proc = subprocess.run(  # noqa: S603 - fixed argv, no shell, path derived from __file__
-            [str(BOOTSTRAP_MAC), "--dry-run", "--only", uid],
-            capture_output=True, text=True, timeout=DRY_RUN_TIMEOUT, env=env, check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return ([], [], [f"{MAC_INSTALLER} --dry-run --only {uid} could not be run: {exc}"])
-    if proc.returncode != 0:
-        # stderr's FIRST line only. On a non-zero exit stdout still holds the
-        # whole plan, and echoing 25 lines of it buries the complaint that
-        # actually explains the exit -- "unknown unit id", say, or the
-        # containment gate.
-        why = next((line for line in proc.stderr.splitlines() if line.strip()), "(no stderr)")
-        return ([], [], [f"{MAC_INSTALLER} --dry-run --only {uid} exited {proc.returncode}, "
-                         f"not 0: {why}"])
-    return parse_dry_run(uid, proc.stdout)
+    with tempfile.TemporaryDirectory(prefix="units-lint-dry-run-home-") as sandbox:
+        env["HOME"] = sandbox
+        try:
+            proc = subprocess.run(  # noqa: S603 - fixed argv, no shell, path derived from __file__
+                [str(BOOTSTRAP_MAC), "--dry-run", "--only", uid],
+                capture_output=True, text=True, timeout=DRY_RUN_TIMEOUT, env=env, check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return ([], [], [f"{MAC_INSTALLER} --dry-run --only {uid} could not be run: {exc}"])
+        # BEFORE the exit-status check, deliberately. "It wrote into $HOME" is a
+        # worse finding than "it exited 3", and a broken dry-run path that
+        # writes and then fails would otherwise be reported only as the failure.
+        #
+        # PER UNIT, not once for the run, and that is the opposite call from the
+        # os.access() check in check_dispatch(). That one is a fact about the
+        # FILE, so five copies of it are five copies of one sentence. This is a
+        # fact about one CHILD PROCESS: each --only walks its own plan under its
+        # own $HOME, so "which invocation wrote" is the reproducer, and
+        # collapsing them would throw away the only thing that narrows it.
+        if breach := check_child_home(uid, env, sandbox):
+            return ([], [], breach)
+        if proc.returncode != 0:
+            # stderr's FIRST line only. On a non-zero exit stdout still holds the
+            # whole plan, and echoing 25 lines of it buries the complaint that
+            # actually explains the exit -- "unknown unit id", say, or the
+            # containment gate.
+            why = next((line for line in proc.stderr.splitlines() if line.strip()), "(no stderr)")
+            return ([], [], [f"{MAC_INSTALLER} --dry-run --only {uid} exited {proc.returncode}, "
+                             f"not 0: {why}"])
+        return parse_dry_run(uid, proc.stdout)
+
+
+def check_child_home(uid: str, env: Mapping[str, str], sandbox: str) -> list[str]:
+    """Assert the --dry-run child was contained: throwaway $HOME, nothing in it.
+
+    THE FIRST ARM IS WRITTEN AGAINST `env`, the mapping the child was actually
+    handed, and not against `sandbox` alone -- that is the whole point of it.
+    Delete `env["HOME"] = sandbox` in dry_run_plan() and this SAYS SO, where an
+    emptiness check phrased only over `sandbox` would go on inspecting a
+    directory no process ever had and pass forever. An assertion whose subject
+    is not the thing under test is the inert kind, and inert containment reads
+    exactly like real containment right up until the day it matters.
+
+    Negative control: data-lint.yml, "a --dry-run that writes into $HOME must
+    fail". It breaks the dry-run path so it writes a named directory, and then
+    checks BOTH that this reports it AND that the runner's own $HOME did not
+    gain that directory -- so the control fails if the sandbox stops being used,
+    whichever of the two lines above someone removed.
+    """
+    handed = env.get("HOME")
+    if handed != sandbox:
+        return [f"P8(f) ran {MAC_INSTALLER} --dry-run --only {uid} with $HOME={handed!r} rather "
+                f"than the throwaway {sandbox!r} — this is a linter, and it must not point an "
+                f"installer at a real home directory"]
+    intruders = sorted(p.name for p in Path(sandbox).iterdir())
+    if not intruders:
+        return []
+    shown = ", ".join(intruders[:HOME_INTRUDERS_SHOWN])
+    rest = len(intruders) - HOME_INTRUDERS_SHOWN
+    return [f"{MAC_INSTALLER} --dry-run --only {uid} wrote {len(intruders)} entr"
+            f"{'y' if len(intruders) == 1 else 'ies'} into its $HOME ({shown}"
+            f"{f', +{rest} more' if rest > 0 else ''}) — --dry-run must exit before every write, "
+            f"so on a real $HOME this run would have installed something"]
 
 
 def parse_dry_run(uid: str, out: str) -> tuple[list[str], list[str], list[str]]:
@@ -1422,6 +1497,24 @@ def prop_installer_table(units: Sequence[Manifest]) -> Findings:
     # an unclaimed config/skills/ directory says nothing about that table.
     table: list[str] = []
     table.extend(compare_sets("UNIT_IDS", declared, expected))
+    # compare_sets is a SET comparison, so {a, b, a} == {a, b} and a repeated id
+    # walks straight through it. Not academic: UNIT_IDS is the list the plan loop
+    # filters, so doubling `coding-pack` makes the default --dry-run announce
+    # "6 units", print coding-pack twice, and repeat its whole 13-line `would
+    # install` block -- 47 lines where the golden is 33. (f) below cannot see it
+    # either: it compares set(plan) to the closure, and builds the expected owns
+    # list by walking the plan it was handed, so the duplication cancels out on
+    # both sides of that comparison. Measured on this tree before this check
+    # existed: check-units.sh --offline AND --strict both at "8 passed, 0 failed"
+    # against that 47-line dry run. The only gate that caught it was
+    # test-base-install.sh's H1 golden, which runs in a different workflow, so
+    # P8's own "fails on any divergence" was overstated until this arm existed.
+    table.extend(
+        f"UNIT_IDS lists {uid} {declared.count(uid)} times — the plan loop filters this "
+        f"list rather than re-deriving one, so a repeated id is announced and printed twice"
+        for uid in sorted(set(declared))
+        if declared.count(uid) > 1
+    )
     by_stem = {unit.stem: unit for unit in units}
     requires: dict[str, list[str]] = {
         uid: [dep for dep in strings(by_stem[uid].data.get("requires")) if dep in expected]

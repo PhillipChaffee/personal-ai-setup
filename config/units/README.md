@@ -328,11 +328,26 @@ what makes `--dry-run`'s "would install" list a claim about *this catalog* rathe
 restatement of that script — mechanically, by (d) for the declarations and by (f) for the
 code that prints them.
 
-Running the installer from a linter is safe only because of what `--dry-run` is: pure
+Running the installer from a linter is safe because of what `--dry-run` is: pure
 computation over the table, answered before the platform guard, the Homebrew guard and
 every write. `test-base-install.sh`'s H2/H2b/H3 assert exactly that — a fresh `$HOME` stays
 empty, a populated one stays byte-identical, and no `uname` is ever asked — so (f) forks a
 bash and touches nothing, on any OS, with or without Homebrew.
+
+That argument is correct today, and it is no longer the only thing holding. H2/H2b/H3 are a
+**different harness in a different workflow**, while `check-units.sh` is a linter people run
+locally and casually on their own Mac. On a tree where that bare `exit 0` has been broken,
+inheriting the real `$HOME` would have the linter `brew install` and write into `~/.config`,
+five times over, bounded only by the 60-second dry-run timeout. So (f) hands each child a
+**throwaway `$HOME`** and asserts afterwards that it is still empty. That is behaviourally
+free — all five transcripts are byte-identical (stdout, stderr, exit status) under a real
+`$HOME` and under a throwaway one, which stays empty — because nothing before the `exit 0`
+reads `$HOME` at all: the `OWNS_*` strings carry a **literal `~`**, which bash does not
+expand inside the double-quoted assignment and which reaches the plan as a `printf`
+argument. Negative control: `data-lint.yml`, "a `--dry-run` that writes into `$HOME` must
+fail", which breaks that exit path and then asserts both that (f) names the write *and* that
+the runner's own `$HOME` did not gain it — the second is what fails if the throwaway `$HOME`
+is ever dropped.
 
 ---
 
@@ -358,8 +373,10 @@ below, because an assertion that cannot fail is the only kind that is never noti
 7. **Freshness** — `verified_on` parses, is not in the future, and is not stale.
 8. **Installer table** — `bootstrap-mac.sh`'s copy of this catalog (§5 above) matches it:
    (a) `UNIT_IDS` is exactly the units whose installer is that script with
-   `status: present`; (b) that list is a topological order of their `requires` graph,
-   because the script's call order *is* that list, filtered; (c) each `REQUIRES_<ID>`
+   `status: present`, **listed once each** — the comparison behind it is over sets, so a
+   repeat is called out on its own; (b) that list is a topological order of their
+   `requires` graph, because the script's call order *is* that list, filtered;
+   (c) each `REQUIRES_<ID>`
    equals the manifest's `requires` **intersected with `UNIT_IDS`**, so `base-goose`
    dropping `base-secrets` (which has `installer: null`) is asserted rather than assumed;
    (d) each `OWNS_<ID>` equals the manifest's `brew_formula` / `brew_cask` / `home_path`
@@ -376,6 +393,18 @@ It is skipped when (a)–(d) already failed — running `--only` against a table
 match the manifests would restate that divergence in a message about the dispatch, which
 is not where the fault is. Negative control: `data-lint.yml`, "a case arm that ignores its
 REQUIRES_* must fail".
+
+8(a)'s "listed once each" is the one divergence neither the set comparisons nor 8(f) could
+see. Doubling `coding-pack` in `UNIT_IDS` makes the default `--dry-run` announce "6 units",
+list it twice and repeat its whole 13-line `would install` block — 47 lines where the golden
+is 33 — and 8(f) compares `set(plan)` to the closure and derives the expected `owns` list by
+walking the plan it was handed, so the duplication cancels on both sides. Measured on this
+tree before the check existed: `check-units.sh` at "8 passed, 0 failed" in *both* modes
+against that 47-line dry run. `test-base-install.sh`'s H1 golden did catch it, but that is a
+different workflow, so "P8 fails on any divergence" was true only of the divergences P8 was
+looking for. No separate negative control: the mutation is one word in `UNIT_IDS`, and what
+would be at risk of going inert is P8 as a whole, which "a case arm that ignores its
+REQUIRES_* must fail" already covers.
 
 8(e) is the totality gate. The installer enumerates skills per unit by name rather than
 globbing `config/skills/`, precisely so `--without opencode` cannot quietly install a
