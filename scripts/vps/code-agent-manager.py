@@ -18,20 +18,34 @@ HTTP surface (all authed with HTTP Basic, password = OPENCODE_SERVER_PASSWORD,
 username free-form; `?auth_token=<base64(user:pass)>` accepted for
 EventSource/browser contexts; TLS via the brain's tailnet cert when present):
 
+THE COMPLETE LIST, and it is checked. Issue #17 C1 says the manager "exposes
+exactly" five things (list, create, wake, delete, routing); the dispatcher
+serves twelve API routes plus the proxy, and this docstring was itself missing
+three of them (/api/permissions and both pull-request routes) until the gate
+below existed. test-code-agent-manager.sh derives the routes from API_READS and
+the ROUTE_* patterns and fails if any is unnamed here, so the next route to be
+added cannot go undocumented the same way.
+
     GET    /api/health                  liveness + engine/image/chat counts
     GET    /api/repos                   the allowlist (names + flags)
     GET    /api/repos/<name>/branches   a repo's branches, default marked
     GET    /api/chats                   index merged with live container state
+    GET    /api/permissions             asks parked on every running chat
     GET    /api/pulls                   every chat's pull requests, from the
                                         manager's own cache — one request in
                                         place of the app's client-side fan-out
+    GET    /api/chats/<id>/pulls        one chat's pull requests, live from
+                                        GitHub (the interactive one)
     POST   /api/chats                   {"repo","task"?,"title"?,"model"?,"base"?}
     POST   /api/chats/<id>/wake         start a stopped chat's container
     POST   /api/chats/<id>/stop         stop a running chat's container
+    POST   /api/chats/<id>/pulls/<n>/merge   merge one of that chat's pulls
     DELETE /api/chats/<id>[?purge=1]    remove container (purge: volume too)
     *      /chat/<id>/<path>            reverse proxy to the chat's opencode
                                         server (wakes it first if stopped;
-                                        SSE-safe streaming)
+                                        SSE-safe streaming). A WILDCARD: every
+                                        path under it is forwarded verbatim,
+                                        with no route allowlist of its own.
 
 Environment (from /data/secrets.env via the systemd unit):
     OPENCODE_SERVER_PASSWORD  required — auth for this gateway AND the
@@ -146,6 +160,14 @@ NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh")
 NTFY_TIMEOUT = 5
 
 CONFIG_TEMPLATE = Path(__file__).resolve().parents[2] / "config" / "code-agents" / "opencode.json"
+# The container's standing instructions, rendered beside the config so opencode
+# picks them up as GLOBAL instructions via $HOME. Convention, not control: see
+# the file's own header and docs/code-agents.md.
+AGENTS_TEMPLATE = CONFIG_TEMPLATE.parent / "AGENTS.md"
+# The line those instructions tell the agent to put first in a pull-request
+# body. Matched case-insensitively on the PREFIX only: the sentence after it is
+# prose and will drift, the label is the contract.
+AGENT_PR_MARKER = "agent-authored:"
 
 # Per-chat opencode ports: 4310, 4311, ... on 127.0.0.1.
 #
@@ -720,6 +742,17 @@ def pull_to_wire(slug: str, raw: dict[str, Any], *, with_checks: bool = True) ->
         # hand: a malformed answer must not arrive on a screen as "1 commit".
         if isinstance(count, int) and not isinstance(count, bool):
             wire[key] = count
+    # Issue #17 C3, and the honest version of it. The agent writes its own PR
+    # body, so nothing here can MAKE a pull request say it is agent-authored —
+    # config/code-agents/AGENTS.md instructs it to and that is a convention.
+    # What this does is make the convention OBSERVABLE: a body without the
+    # marker reads `agent_authored: false` on /api/pulls, so the day the model
+    # quietly stops including the line is a visible day rather than an assumed
+    # one. Present only when GitHub actually sent a body — the same rule as
+    # DETAIL_ONLY_COUNTS above, because "we did not ask" is not "it is absent".
+    body = raw.get("body")
+    if isinstance(body, str):
+        wire["agent_authored"] = AGENT_PR_MARKER in body.lower()
     return wire
 
 
@@ -1077,6 +1110,25 @@ def render_chat_config(chat_dir: Path, model: str | None, *, allow_push: bool) -
     dst_dir.mkdir(parents=True, exist_ok=True)
     with (dst_dir / "opencode.json").open("w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
+    render_agent_instructions(dst_dir)
+
+
+def render_agent_instructions(dst_dir: Path) -> None:
+    """Copy the container's standing AGENTS.md beside the chat's config.
+
+    The config template's `instructions` key names this file by its
+    in-container path, so the two move together and a chat created before this
+    existed simply carries neither.
+
+    A MISSING TEMPLATE IS NOT A CREATE FAILURE. These instructions are a
+    convention — they change what the agent is TOLD, not what it is ALLOWED to
+    do — and refusing to start a chat because a markdown file went missing
+    would trade a documented convention for an outage. It is logged instead.
+    """
+    if not AGENTS_TEMPLATE.is_file():
+        log(f"agent instructions template missing: {AGENTS_TEMPLATE}")
+        return
+    shutil.copyfile(AGENTS_TEMPLATE, dst_dir / "AGENTS.md")
 
 
 def seed_auth(chat_dir: Path) -> None:

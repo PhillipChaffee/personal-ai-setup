@@ -68,6 +68,10 @@ secrets:
 owns:
   - {kind: repo_file, target: config/code-agents/Containerfile}
   - {kind: repo_file, target: config/code-agents/opencode.json}
+  # The container's standing instructions, rendered into every chat volume
+  # beside the opencode config. A CONVENTION and nothing more - see the
+  # agent-authored-pr-body blocker below.
+  - {kind: repo_file, target: config/code-agents/AGENTS.md}
   - {kind: repo_file, target: config/code-agents/repos.example.json}
   - {kind: repo_file, target: scripts/vps/code-agent-manager.py}
   - {kind: repo_file, target: scripts/vps/systemd/code-agent-manager.service}
@@ -151,6 +155,31 @@ blockers:
       not there yet". Selecting the unit with an empty OPENCODE_SERVER_PASSWORD
       or GITHUB_CODE_AGENT_PAT still installs everything and leaves the manager
       disabled, exactly as before.
+  - id: agent-authored-pr-body-is-a-convention
+    severity: note
+    detail: "config/code-agents/AGENTS.md tells the agent to put an
+      `Agent-authored:` line first in every pull-request body, and nothing
+      enforces it: the agent writes the body, and the manager performs no git
+      operation after create-time. There is an OBSERVABLE rather than a
+      control - pull_to_wire reports `agent_authored` on /api/pulls and
+      /api/chats/<id>/pulls, absent when GitHub sent no body - so a convention
+      that stopped being followed is visible instead of assumed. A check that
+      the instruction FILE contains the sentence would assert something about
+      this repo and nothing about any pull request, which is why there is not
+      one."
+  - id: sandbox-probes-need-a-real-brain
+    severity: note
+    detail: "check-code-agents.sh --probe now covers the three properties B1
+      and B5 name - /share refused, external_directory denied, and another
+      chat's volume out of reach by host path, traversal, a bounded filesystem
+      search and the network. All three read the RUNNING container rather than
+      the template in this repo, so all three need podman and a live gateway;
+      CI drives the same functions in scripts/verify/code-agent-probes.sh
+      against fixtures (test-verify-checks.sh section 5), which proves the
+      probes FIRE and proves nothing about isolation. The external_directory
+      arm is weaker than the other two by construction: it reads the policy the
+      server resolved, not a denied tool call, so it says the policy is loaded
+      and not that it is enforced."
   - id: image-build-is-unpinned-at-the-base
     severity: note
     detail: podman build pulls the OpenCode base image on first run

@@ -420,14 +420,77 @@ written = json.loads((chat_dir / "home" / ".config" / "opencode" / "opencode.jso
 assert written["model"] == "opencode/chosen-model", written
 assert "_readme" not in written, "the template readme leaked into a chat config"
 assert written["permission"]["bash"]["git push*"] == "allow", written
+
+# --- the container's standing instructions land beside the config (#17 C3) ---
+# The repo's real AGENTS.md, byte for byte: the config template names it by its
+# in-container path, so a chat whose copy is stale or absent is a chat that was
+# never told the delivery convention.
+rendered = chat_dir / "home" / ".config" / "opencode" / "AGENTS.md"
+assert rendered.is_file(), "AGENTS.md was not rendered into the chat volume"
+assert rendered.read_bytes() == mod.AGENTS_TEMPLATE.read_bytes(), "AGENTS.md was altered"
+assert mod.AGENT_PR_MARKER in rendered.read_text().lower(), \
+    "the instructions no longer name the marker pull_to_wire looks for"
+
+# A MISSING TEMPLATE MUST NOT FAIL A CREATE. Instructions are a convention;
+# trading one for an outage would be the wrong direction.
+mod.AGENTS_TEMPLATE = tmp / "no-such-AGENTS.md"
+chat_dir_c = tmp / "chatC"
+mod.render_chat_config(chat_dir_c, None, allow_push=False)
+assert (chat_dir_c / "home" / ".config" / "opencode" / "opencode.json").is_file()
+assert not (chat_dir_c / "home" / ".config" / "opencode" / "AGENTS.md").exists()
+
+# --- agent_authored: the OBSERVABLE, not an enforcement (#17 C3) -------------
+# Nothing can make the agent write the line. What must hold is that a body
+# carrying it reads true, a body without it reads FALSE rather than absent
+# (absent would render as "unknown" and hide the regression), and a pull GitHub
+# sent no body for carries no claim at all.
+marked = mod.pull_to_wire("o/n", {"number": 1, "body": "Agent-authored: opened by a code-agent chat."},
+                          with_checks=False)
+assert marked["agent_authored"] is True, marked
+plain = mod.pull_to_wire("o/n", {"number": 2, "body": "Fixes the thing."}, with_checks=False)
+assert plain["agent_authored"] is False, plain
+none = mod.pull_to_wire("o/n", {"number": 3, "body": None}, with_checks=False)
+assert "agent_authored" not in none, none
+
+# --- every route the dispatcher serves is named in the module docstring ------
+# Issue #17 C1's "exposes exactly" list named five things; the dispatcher
+# serves twelve API routes plus the proxy, and the docstring had drifted three
+# routes behind. Derived from the dispatch tables so the NEXT route cannot.
+def readable(pattern):
+    text = pattern.lstrip("^").rstrip("$")
+    for regex, shown in (("([a-zA-Z0-9-]+)", "<id>"), ("([0-9]+)", "<n>"),
+                         ("([^/]+)", "<name>"), ("(/.*|$)", "/<path>")):
+        text = text.replace(regex, shown)
+    if "(wake|stop)" in text:
+        return [text.replace("(wake|stop)", "wake"), text.replace("(wake|stop)", "stop")]
+    return [text]
+
+def undocumented(doc):
+    routes = list(mod.Handler.API_READS)
+    for name in dir(mod.Handler):
+        if name.startswith("ROUTE_"):
+            routes.extend(readable(getattr(mod.Handler, name).pattern))
+    return sorted(r for r in routes if r not in doc)
+
+missing = undocumented(mod.__doc__)
+assert not missing, f"routes served but not in the module docstring: {missing}"
+# The gate's own falsifiability, fed in once: drop one documented route and it
+# has to be named. Without this, a `readable()` that produced nothing would
+# report a clean sweep forever.
+mutilated = "\n".join(l for l in mod.__doc__.splitlines() if "/api/permissions" not in l)
+assert undocumented(mutilated) == ["/api/permissions"], undocumented(mutilated)
 PY
 if "${MANAGER_PY[@]}" "$WORK/preflight-shapes.py" "$REPO_ROOT/scripts/vps/code-agent-manager.py"
 then
   ok "a hand-mangled index.json or repos.json degrades instead of raising"
   ok "the notification handle memory is bounded and evicts oldest-first"
   ok "a non-object config template is refused; the model override and push grant apply"
+  ok "the container's AGENTS.md is rendered into the chat volume, and a missing one is survivable"
+  ok "agent_authored is true/false from the PR body, and absent when GitHub sent none"
+  ok "every route the dispatcher serves is named in the module docstring"
 else
-  bad "state-shape / config-template checks (see the assertion above)"
+  bag="state-shape / config-template / instructions / route-doc checks"
+  bad "$bag (see the assertion above)"
 fi
 
 # ---- 0c. the probes, when the thing they probe is not there (unit) ----------
