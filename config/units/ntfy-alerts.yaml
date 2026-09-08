@@ -45,8 +45,8 @@ runbook: docs/automations.md#delivery-recipes-email-their-own-results-plus-a-fai
 
 secrets:
   - key: NTFY_TOPIC
-    # base-secrets also claims this key: it is one of the four deploy-vps.sh
-    # hard-requires at :76-83, which is a property of the deploy gate rather
+    # base-secrets also claims this key: it is one of the four hard-requires at
+    # deploy-vps.sh:344-350, which is a property of the deploy gate rather
     # than of this unit. Same key, two units, one store - the validator checks
     # each entry against the roster its own `store` names.
     store: vps

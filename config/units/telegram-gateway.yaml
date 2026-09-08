@@ -4,9 +4,10 @@
 #
 # DESCRIBES TODAY. The unit file is installed by unit_telegram_gateway() at
 # deploy-vps.sh:639-640 and enabled only when TELEGRAM_BOT_TOKEN is already in
-# /data/secrets.env (:649-655), which is why the token below is `optional` -
-# a brain with a selected unit and no token still has this unit's file on disk,
-# inert. `--without telegram-gateway` skips the install as well as the enable.
+# /data/secrets.env (deploy-vps.sh:649-655), which is why the token below is
+# `optional` - a brain with a selected unit and no token still has this unit's
+# file on disk, inert. `--without telegram-gateway` skips the install as well
+# as the enable.
 id: telegram-gateway
 manifest_version: 1
 verified_on: "2026-09-07"

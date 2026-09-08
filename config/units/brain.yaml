@@ -3,12 +3,13 @@
 # volume everything stateful lives on, goose's whole path root moved onto it,
 # and the always-on `goose serve` that Desktop and the phone talk to.
 #
-# DESCRIBES TODAY. This is the largest single region of deploy-vps.sh
-# (:314-516 preflight + migration, :606-634 systemd, :722-784 start and the
-# /status gate) and it STILL has no unit_brain() function, so installer.status
-# is `planned` — an assertion that the function does NOT exist. Four of its
-# neighbours now do have one; see the blocker below for why this one does
-# not, and why writing it would be a mistake rather than a to-do.
+# DESCRIBES TODAY. This is the largest single region of deploy-vps.sh —
+# deploy-vps.sh:314-516 (preflight + migration), deploy-vps.sh:606-634
+# (systemd) and deploy-vps.sh:722-784 (the start and the /status gate) — and it
+# STILL has no unit_brain() function, so installer.status is `planned`, an
+# assertion that the function does NOT exist. Four of its neighbours now do
+# have one; see the blocker below for why this one does not, and why writing
+# it would be a mistake rather than a to-do.
 #
 # tls-cert-renew.{service,timer} is FOLDED IN here rather than made a
 # nineteenth unit: it is two files, one `enable --now` at deploy-vps.sh:634,
@@ -23,7 +24,11 @@ host: vps
 tier: opt_in
 # tailnet before base-secrets on purpose: cloud-init joins the tailnet at
 # first boot, and deploy-vps.sh:357 refuses to run without the tailscale CLI,
-# then :400 needs a tailnet IPv4 before it can probe /status at all.
+# then deploy-vps.sh:764 needs a tailnet IPv4 before it can probe /status at
+# all. Both refs name the file: a bare continuation is invisible to the
+# `grep -rn 'deploy-vps.sh:[0-9]'` sweep that re-anchors these after a carve,
+# which is how the second one here spent a whole PR pointing at unrelated code.
+# units_lint.py's P5 now refuses bare continuations of an installer reference.
 requires: [tailnet, base-secrets]
 
 # Copied VERBATIM from README.md's budget table (:148). The inference lines on
@@ -160,10 +165,13 @@ blockers:
     severity: warn
     detail: "scripts/verify/test-deploy-vps.sh now executes deploy-vps.sh
       against scripts/verify/fake-host.sh, so the claims in this manifest about
-      ORDER and ARGV are observed rather than read: the privileged sequence,
-      the file tree it writes byte for byte, the EXIT trap, idempotence, and a
-      differential against the pre-carve script. It proves NOTHING about a real
-      brain. podman, apt-get, systemd, loginctl and tailscale are modelled, so
+      ORDER and ARGV are observed rather than read: the privileged sequence IN
+      ORDER (V1 compares the two invocation logs unsorted, against a two-edit
+      allowlist; an earlier version sorted them and a whole unit call site could
+      move without reddening it), the file tree it writes byte for byte, the
+      EXIT trap, idempotence, and a differential against the pre-carve script.
+      It proves NOTHING about a real brain. podman, apt-get, systemd, loginctl
+      and tailscale are modelled, so
       it cannot tell you that `podman build` succeeds, that rootless subuid
       ranges or linger work, that `systemctl enable --now` on a stale unit is a
       no-op (it asserts only that the reload was ISSUED), or that goose serve
@@ -193,6 +201,6 @@ notes: >-
   encrypted volume; config/ (config.yaml, memory/, secrets.yaml) and state/
   (logs/llm_request.*.jsonl - the RAW request and response bodies exchanged
   with providers, i.e. whole emails) sat on the unencrypted root disk. The
-  script says so itself at :242-244, and it says the freed blocks are not
-  wiped: a brain deployed before that block ran may still have recoverable
-  plaintext on the root disk.
+  script says so itself at deploy-vps.sh:513-515, and it says the freed blocks
+  are not wiped: a brain deployed before that block ran may still have
+  recoverable plaintext on the root disk.

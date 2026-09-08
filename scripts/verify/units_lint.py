@@ -41,6 +41,10 @@ THE EIGHT PROPERTIES, and what each catches that the others do not:
                          is claimed. Runbook and manual-step docs resolve,
                          `#anchor` included. `verify: []` demands a `no-verify`
                          blocker; `runbook: null` demands a `no-runbook` one.
+                         Installer LINE references must be in range and must
+                         never be continued as a bare `:400` — a carve
+                         renumbers them and only a written-out filename is
+                         findable by the sweep that re-anchors them.
   P6 secrets             CONDITIONED ON `store`. A blanket "every key appears
                          in secrets.env.example" rule would force a false entry
                          for TODOIST_API_KEY, which routes through goose's
@@ -742,6 +746,88 @@ def check_docs(unit: Manifest) -> list[str]:
     return out
 
 
+# THE INSTALLER LINE REFERENCES. Manifests cite the installers by line
+# (`deploy-vps.sh:634`), and a carve renumbers the whole file — so every one of
+# those citations has to be re-anchored by hand, and the sweep that finds them
+# is `grep -rn 'deploy-vps.sh:[0-9]'`. A CONTINUATION written as a bare `:400`
+# is invisible to that sweep, which is not a hypothetical: #37 and #41 both
+# re-anchored every prefixed reference and left the bare ones pointing at
+# unrelated code (`:400`, once the migration block moved, became a comment
+# about stopping goose units). Both halves are checked here:
+#
+#   * a bare `:N`/`:N-M` whose nearest preceding filename is an installer must
+#     be written out in full, and
+#   * an explicit `<installer>:N`/`:N-M` must be IN RANGE for that file.
+#
+# Range is the weaker half by a distance — it cannot tell a right line from a
+# wrong one — so it is the ban on bare continuations that does the work.
+#
+# SCOPED TO THE TWO INSTALLERS deliberately. Manifests carry bare continuations
+# for README.md budget rows, notify.sh, opencode.json and a dozen others, and
+# those files do not get carved; a repo-wide ban would be 27 more edits for a
+# risk that has never fired.
+#
+# AND NEAREST-PRECEDING-FILENAME IS THE WHOLE ATTRIBUTION RULE, which means one
+# shape gets through: a bare ref that follows some OTHER filename, even though
+# the reference it continues is an installer's. Measured against #41's own
+# mistakes — of the eleven bare installer continuations this rule was written
+# for, it flags ten; brain.yaml's `the script says so itself at :242-244` is the
+# eleventh, and it is missed because `secrets.yaml` and `config.yaml` appear
+# between it and the `deploy-vps.sh:390-516` it continues. The obvious widening
+# — flag a bare ref whenever an installer appears anywhere earlier in the same
+# paragraph — was tried and rejected: on this tree it fires on eight refs, of
+# which exactly one is that bug and seven are correct references to cli.sh,
+# check-code-agents.sh, opencode.json, secrets.env.example and security.md. Ten
+# of eleven with no false positives beats eleven of eleven with seven.
+_FILENAME: Final = (
+    r"[\w@][\w./@-]*\."
+    r"(?:sh|py|ya?ml|md|json|txt|service|timer|tftpl|example|toml|cfg|conf|lock)"
+)
+# The lookbehind is what keeps URLs (`https://brain.ts.net:3284`), clock times
+# and `§6-10` out of it: a bare reference's colon follows whitespace or an
+# opening bracket, never a word, dot, slash or hyphen.
+LINE_REF_RE: Final = re.compile(
+    rf"(?P<file>{_FILENAME})(?P<explicit>:\d+(?:-\d+)?)?"
+    r"|(?P<bare>(?<![\w./#-]):\d+(?:-\d+)?)",
+)
+
+
+def installer_line_counts() -> dict[str, int]:
+    """Line count per installer BASENAME, for the range half of the check."""
+    counts: dict[str, int] = {}
+    for rel in INSTALLER_SCRIPTS:
+        path = REPO_ROOT / rel
+        if path.is_file():
+            counts[Path(rel).name] = len(path.read_text(encoding="utf-8").splitlines())
+    return counts
+
+
+def check_line_refs(unit: Manifest, counts: dict[str, int]) -> list[str]:
+    """Bare `:NNN` continuations of an installer reference, and out-of-range refs."""
+    text = unit.path.read_text(encoding="utf-8")
+    installers = {Path(rel).name for rel in INSTALLER_SCRIPTS}
+    out: list[str] = []
+    context = ""
+    for match in LINE_REF_RE.finditer(text):
+        line_no = text.count("\n", 0, match.start()) + 1
+        name = match.group("file")
+        if name:
+            context = Path(name).name
+            span = match.group("explicit")
+            if span and context in counts:
+                first, _, last = span[1:].partition("-")
+                lo, hi = int(first), int(last or first)
+                if lo < 1 or hi < lo or hi > counts[context]:
+                    out.append(f"{unit.stem}.yaml:{line_no} cites {context}{span}, which is "
+                               f"out of range — {context} has {counts[context]} lines")
+            continue
+        if context in installers:
+            out.append(f"{unit.stem}.yaml:{line_no} continues a {context} reference as a bare "
+                       f"'{match.group('bare')}' — write it as {context}{match.group('bare')}, "
+                       f"or a carve will renumber it and no sweep will find it")
+    return out
+
+
 def collect_verify(unit: Manifest, claimed: dict[str, list[str]]) -> list[str]:
     """Check one unit's `verify` list and record what it claims.
 
@@ -781,9 +867,11 @@ def collect_verify(unit: Manifest, claimed: dict[str, list[str]]) -> list[str]:
 def prop_references(units: Sequence[Manifest], *, strict: bool) -> Findings:
     result = Findings()
     claimed: dict[str, list[str]] = {}
+    counts = installer_line_counts()
     for unit in units:
         result.hard.extend(collect_verify(unit, claimed))
         result.hard.extend(check_docs(unit))
+        result.hard.extend(check_line_refs(unit, counts))
     for name, owners in sorted(claimed.items()):
         if len(owners) > 1:
             result.hard.append(f"{name} is claimed by {len(owners)} units: "
@@ -1197,7 +1285,7 @@ PROPERTY_LABELS: Final[tuple[str, ...]] = (
     "P2 graph: every `requires` resolves and the graph is acyclic",
     "P3 installer: every installer.status matches the installers as they are",
     "P4 footprint: every (kind, target) is claimed by exactly one unit",
-    "P5 references: verify scripts and runbooks resolve, and absences are recorded",
+    "P5 references: verify scripts, runbooks and installer line refs resolve",
     "P6 secrets: every key matches the roster its `store` names",
     "P7 freshness: every verified_on parses and is not in the future",
     "P8 installer table: bootstrap-mac.sh's unit table matches the manifests",

@@ -4,12 +4,13 @@
 # manager on port 4300.
 #
 # DESCRIBES TODAY. deploy-vps.sh:661-720 is the second-largest region in
-# either installer - only brain's path-root migration at :390-516 is bigger -
-# and, unusually for this catalog, this unit has a real verify script that
-# probes a live plane. It is now unit_code_agents(), gated by
+# either installer - only brain's path-root migration at deploy-vps.sh:390-516
+# is bigger - and, unusually for this catalog, this unit has a real verify
+# script that probes a live plane. It is now unit_code_agents(), gated by
 # `deploy-vps.sh --with/--without/--only code-agents`, which is the one
 # selection in this catalog that saves real time and real disk: an apt install
-# and a multi-minute image build that every brain used to pay for.
+# on the first deploy (guarded by `command -v podman`) and a multi-minute image
+# build on EVERY deploy, both of which every brain used to pay for.
 id: code-agents
 manifest_version: 1
 verified_on: "2026-09-07"
@@ -78,9 +79,9 @@ owns:
   - {kind: data_path, target: /data/code-agents}
   - {kind: data_path, target: /data/code-agents/repos.json}
   # Host-level side effects with no file to name, all from deploy-vps.sh:
-  # :672-675 installs the packages, :679-680 grants agent a subordinate id
-  # range, :681 keeps /run/user/1000 alive so a system unit can drive rootless
-  # podman as agent.
+  # deploy-vps.sh:672-675 installs the packages, deploy-vps.sh:679-680 grants
+  # agent a subordinate id range, and deploy-vps.sh:681 keeps /run/user/1000
+  # alive so a system unit can drive rootless podman as agent.
   - {kind: manual, target: "apt packages: podman, uidmap, slirp4netns"}
   - {kind: manual, target: "subuid/subgid range 100000-165535 for user agent"}
   - {kind: manual, target: "loginctl linger for user agent"}
