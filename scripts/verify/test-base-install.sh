@@ -32,9 +32,9 @@
 # newcomer moved. Every row #38 shipped is here, in order, with an I: I0, I0b,
 # I1..I12. install-test.yml's third negative test greps `^FAIL  I1:`.
 #
-# Every assertion carries its id from the spec (A1..A16, B1..B4, C1, D1..D6,
+# Every assertion carries its id from the spec (A1..A17, B1..B4, C1, D1..D6,
 # E1..E2, F1..F6, G1..G6, H1..H4, I0..I12) so a failure names the thing the
-# installer did not do, rather than the line that happened to notice. Eight ids
+# installer did not do, rather than the line that happened to notice. Ten ids
 # are this file's own: E1b, because E1 as written cannot fail the way its
 # negative control claims (see phase E); D-deny, which extends the deny-PATH
 # invariant over the check-goose step; A9, the no-flag run's zero-skip guard;
@@ -44,9 +44,20 @@
 # precondition arm; I9, which fails when a new env seam is not taken out of the
 # environment here; I10/I11, the fixtures C7's and C8's symlink arms never had;
 # and I12, which stops the installer's epilogue denying a manual step the
-# manifest keeps. A14
+# manifest keeps; A14b0 and A17, which are #111's, and which assert the two
+# preconditions A14b cannot assert for itself. A14
 # is now A14a + A14b -- the seam's SHAPE and the installer's OUTPUT are two
 # claims, and #37 makes only the first of them expressible as a diff of source.
+#
+# A DIFFERENTIAL THAT CAN SKIP IS A DIFFERENTIAL THAT CAN STOP ASSERTING (#111).
+# A14b reads a pre-carve blob out of git history by pinned sha, and every way of
+# losing that blob used to be one counted SKIP -- while the exit gate below reads
+# $FAIL_COUNT only, so the run stayed green. A14b0 now splits those causes apart
+# and only a genuinely shallow clone may skip; A17 asserts the `fetch-depth: 0`
+# that keeps CI out of the shallow case; the skip allowlist at $SKIPPABLE makes
+# "which assertions may skip" an enumerated decision; and refs/tags/mac-pre-carve
+# keeps the pinned object reachable through a squash. See install-test.yml's last
+# four negative tests, one per arm.
 #
 # THE BREW GOLDEN IS HAND-WRITTEN, and that is not a style choice. It is typed
 # out below from the shapes bootstrap-mac.sh is supposed to emit, NEVER derived
@@ -156,7 +167,43 @@ leg() {
 PASS_COUNT=0; FAIL_COUNT=0; SKIP_COUNT=0
 ok()   { echo "PASS  $1"; PASS_COUNT=$((PASS_COUNT + 1)); }
 bad()  { echo "FAIL  $1"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
-skipped() { echo "SKIP  $1"; SKIP_COUNT=$((SKIP_COUNT + 1)); }
+
+# THE SKIP ALLOWLIST (#111) — the exit gate at the bottom of this file is
+# `[ "$FAIL_COUNT" -eq 0 ]`, and $SKIP_COUNT has never been part of it. That made
+# every skip indistinguishable from a pass to CI, which is how A14b -- the whole
+# safety argument for #105's carve -- could stop asserting anything the day its
+# pinned blob went unreachable, with no check going red.
+#
+# THE FIX IS NOT "ANY SKIP FAILS". This repo has skips that are correct: the
+# runtime checks in scripts/verify/check-*.sh describe a MACHINE, and
+# check-security.sh:281 (no gitleaks), check-mcp.sh:287 (connector not enabled),
+# check-opencode.sh:215 (coding-pack not installed) and check-connectors.sh:2129
+# (no goose CLI) are all "this box does not have that", which is information, not
+# a failure. A blanket rule would either delete those or -- far likelier -- get
+# worked around by an author who stops calling skip() and prints a note instead,
+# which is strictly worse than a counted skip.
+#
+# So the rule is per-ASSERTION and enumerated. This harness builds its own
+# sandbox and its own fakes: there is no machine for it to be conditional about,
+# and exactly one input it cannot fabricate -- git history. An id on this list
+# has been argued for once, in writing, next to the arm that skips; an id that is
+# not on it CANNOT skip, and calling skipped() for it is reported as a FAILURE
+# rather than quietly counted. Adding an id here is a visible, reviewable act in
+# the diff -- which is the property "make SKIP_COUNT fail the build" was reaching
+# for, without the collateral damage.
+#
+#   A14b0  and ONLY on its genuinely-shallow-clone arm, which is self-repairing
+#          (`git fetch --unshallow`) and which CI cannot hit because
+#          install-test.yml sets `fetch-depth: 0` -- itself now asserted, by A17.
+#          Every other way of losing the pre-carve blob is a bad(), not a skip.
+SKIPPABLE="A14b0"
+skipped() {
+  # skipped <id> <message>
+  case " $SKIPPABLE " in
+    *" $1 "*) echo "SKIP  $1: $2"; SKIP_COUNT=$((SKIP_COUNT + 1)) ;;
+    *) bad "$1: $2 [and $1 IS NOT ON THIS HARNESS'S SKIP ALLOWLIST ('$SKIPPABLE'), so this skip is a failure: either fix the condition, or add the id above with the argument for why a skip there is honest]" ;;
+  esac
+}
 # Indented evidence under a failure, the check-goose.sh:121 shape. Only ever fed
 # a file this harness or a fake wrote -- never an environment value.
 # `head` FIRST, and `|| true`: evidence is only ever called from a failure arm,
@@ -1366,20 +1413,69 @@ open(sys.argv[3], "w").write("\n".join(code) + "\n")
   # not something a rule over the file could still find once the carve has
   # landed (every later blob has unit functions in it). Bump it only when the
   # baseline it names is deliberately being moved forward.
+  #
+  # THE TAG refs/tags/mac-pre-carve IS LOAD-BEARING. DO NOT DELETE IT.
+  #
+  # 5f016b3 is an ancestor of main today, but only by ACCIDENT: it is `Merge pull
+  # request #102`, a two-parent commit, and squashing later PRs therefore never
+  # orphaned it. This repo's history is MIXED -- #101-#104 landed as merge
+  # commits, #105/#107/#108/#106/#110 were SQUASHED -- and nothing enforces
+  # either. The day the run of merge commits this pin sits inside is rewritten,
+  # `cat-file -e` starts failing and the differential stops asserting. So the pin
+  # is kept reachable by ARTIFACT rather than by a merge strategy nobody wrote
+  # down:
+  #   git push origin 5f016b3736d7ec017d30e4d98e61197958f3dae9:refs/tags/mac-pre-carve
+  # A tag is a ref, so the object survives any squash, rebase or branch deletion,
+  # and actions/checkout with `fetch-depth: 0` fetches tags
+  # (getRefSpecForAllHistory includes `+refs/tags/*:refs/tags/*`), so CI sees it
+  # too. This is the same artifact #110 pushed for the VPS differential, and
+  # after #110 was squash-merged it is the only reason that one still works.
+  #
+  # AND THERE IS A SECOND ROUTE BACK, unlike the VPS pin. 5f016b3 is a MERGE
+  # commit, and its second parent 1819bdf is refs/pull/102/head -- a ref GitHub
+  # keeps forever -- which carries the IDENTICAL bootstrap-mac.sh (both resolve
+  # to blob ae204b5, checked). So if the tag is ever lost as well, the baseline
+  # can be re-pinned BACKWARDS onto 1819bdf without changing what A14b compares.
+  # The failure text below says so. Backwards is always safe here; forwards is
+  # the move A14b0's shape check exists to refuse.
+  #
+  # PINNED BY SHA RATHER THAN BY TAG NAME, deliberately, exactly as
+  # test-deploy-vps.sh:363 is. A sha is content-addressed; `mac-pre-carve` could
+  # be moved onto a post-carve revision by anyone with push access and the
+  # differential would quietly become the tree against itself. The tag's job is
+  # REACHABILITY; the sha's job is IDENTITY; A14b0 below checks the blob's SHAPE,
+  # so re-pinning has two guards and not one.
   PRE_CARVE_SHA="5f016b3736d7ec017d30e4d98e61197958f3dae9"
 
-  A14B_HAVE_GIT=0
-  if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1 &&
-     git -C "$REPO_ROOT" cat-file -e "$PRE_CARVE_SHA:scripts/mac/bootstrap-mac.sh" 2>/dev/null; then
+  # A14b0 (#111) — THE BASELINE ITSELF, the preflight test-deploy-vps.sh:390
+  # calls V0. Before this existed, all four of the ways below collapsed into one
+  # counted SKIP and the harness still exited 0, so "the carve changed no
+  # behaviour" could stop being asserted with nothing going red. They are
+  # different facts and only ONE of them is recoverable by the person running the
+  # harness, so only that one may skip:
+  #
+  #   reachable + pre-carve shape  -> A14b runs (the only arm that asserts)
+  #   genuinely SHALLOW clone      -> SKIP, exit 0; `git fetch --unshallow` fixes
+  #                                   it, and CI cannot get here (A17)
+  #   unreachable in a FULL clone  -> FAIL: the tag is gone, or this branch was
+  #                                   rebased and the sha was not re-pinned
+  #   not a git work tree at all   -> FAIL: run from a clone, not a git-archive
+  #   reachable but POST-carve     -> FAIL: someone "fixed" a dangling pin by
+  #                                   re-pointing it at the branch head, and the
+  #                                   differential would compare the tree with
+  #                                   itself and could never fail again
+  A14B_HAVE_GIT=0; A14B_SHALLOW=0; A14B_HAVE_BLOB=0
+  if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
     A14B_HAVE_GIT=1
+    [ "$(git -C "$REPO_ROOT" rev-parse --is-shallow-repository 2>/dev/null)" != "true" ] || A14B_SHALLOW=1
+    git -C "$REPO_ROOT" cat-file -e "$PRE_CARVE_SHA:scripts/mac/bootstrap-mac.sh" 2>/dev/null && A14B_HAVE_BLOB=1 || true
   fi
 
-  if [ "$A14B_HAVE_GIT" -ne 1 ]; then
-    # Loud SKIP, never a silent pass: install-test.yml's `fetch-depth: 0` is
-    # what makes this reachable in CI, and a differential that degrades to green
-    # when history is absent proves nothing at the moment it matters most.
-    skipped "A14b: pre-carve blob ${PRE_CARVE_SHA:0:9} is not in this clone (shallow? needs fetch-depth: 0)"
-  else
+  # $A14B_BASELINE stays empty unless the pin is reachable AND pre-carve, and
+  # A14b does not run without it. A14b0 is therefore a real gate and not a
+  # diagnostic: there is no path on which A14b silently asserts nothing.
+  A14B_BASELINE=""
+  if [ "$A14B_HAVE_BLOB" -eq 1 ]; then
     # A SHADOW TREE, entirely inside $WORK: config/ and scripts/verify/ are
     # symlinked to the real ones (the fakes and the templates are inputs to both
     # sides and must be the same inputs), and only scripts/mac/bootstrap-mac.sh
@@ -1402,6 +1498,39 @@ open(sys.argv[3], "w").write("\n".join(code) + "\n")
       >"$SHADOW/scripts/mac/bootstrap-mac.sh"
     chmod 755 "$SHADOW/scripts/mac/bootstrap-mac.sh"
 
+    # THE SHAPE CHECK, and it is the subtle arm. Reachability alone is not
+    # enough: the obvious way to make a dangling pin go green is to re-point it
+    # at the branch head, and a "differential" between HEAD and HEAD passes for
+    # free and can never fail again. So the extracted blob is checked for what a
+    # pre-carve revision must have and for what it must NOT: the PAI_EXEC seam
+    # (#36, which is what makes the pre side runnable against fakes at all), and
+    # zero `unit_*()` definitions -- main has five, and every revision after #105
+    # has at least five. Measured at 5f016b3: seam=1, units=0.
+    #
+    # This is test-deploy-vps.sh:402-404's `PAI_FAKE_ROOT>=1, unit_*()==0` pair,
+    # spelled for the installer instead of the deploy.
+    A14B0_SEAM="$(count_in "$SHADOW/scripts/mac/bootstrap-mac.sh" '^pai_exec\(\) \{')"
+    A14B0_UNITS="$(count_in "$SHADOW/scripts/mac/bootstrap-mac.sh" '^unit_[a-z_]+\(\) \{')"
+    if [ "$A14B0_SEAM" -ge 1 ] && [ "$A14B0_UNITS" -eq 0 ]; then
+      A14B_BASELINE="$SHADOW/scripts/mac/bootstrap-mac.sh"
+      ok "A14b0: the pinned baseline ${PRE_CARVE_SHA:0:9} is reachable, carries the PAI_EXEC seam and defines no unit function"
+    else
+      bad "A14b0: ${PRE_CARVE_SHA:0:9} is reachable but is NOT a pre-carve revision of bootstrap-mac.sh (pai_exec()=$A14B0_SEAM want >=1, unit_*() definitions=$A14B0_UNITS want 0) — A14b did not run. Re-pinning the baseline forward onto a post-carve sha compares the working tree with itself, which passes for free and can never fail. If the pin is dangling, recover the OBJECT (see the UNREACHABLE arm below); do not move the pin."
+    fi
+  elif [ "$A14B_HAVE_GIT" -eq 1 ] && [ "$A14B_SHALLOW" -eq 1 ]; then
+    # THE ONLY SKIP IN THIS HARNESS, and the only id on $SKIPPABLE. It is
+    # distinguishable by construction (`--is-shallow-repository`), it is
+    # self-repairing by one documented command, and CI cannot reach it because
+    # install-test.yml sets `fetch-depth: 0` -- which A17 now asserts, so this
+    # arm cannot become the silent normal case again.
+    skipped "A14b0" "A14b did not run: this is a SHALLOW clone and the pre-carve blob ${PRE_CARVE_SHA:0:9} was never fetched — run 'git fetch --unshallow' (CI uses fetch-depth: 0)"
+  elif [ "$A14B_HAVE_GIT" -eq 1 ]; then
+    bad "A14b0: ${PRE_CARVE_SHA:0:9}:scripts/mac/bootstrap-mac.sh is UNREACHABLE in a FULL clone, so A14b asserted nothing. The tag refs/tags/mac-pre-carve exists to make this impossible, so it has most likely been DELETED (or this branch was rebased past the pin). Fix it, do not skip it: 'git fetch origin refs/tags/mac-pre-carve:refs/tags/mac-pre-carve' first, and re-push it with 'git push origin ${PRE_CARVE_SHA}:refs/tags/mac-pre-carve'. Failing that, ${PRE_CARVE_SHA:0:9} is a MERGE commit and its second parent is refs/pull/102/head, which GitHub keeps forever and which carries the identical blob ae204b5: 'git fetch origin refs/pull/102/head' and re-pin BACKWARDS to that commit. Failing THAT, retire A14b deliberately and say in this file what replaces it. Never re-pin FORWARDS onto a post-carve revision — A14b0 checks for that, and it compares the tree with itself."
+  else
+    bad "A14b0: $REPO_ROOT is not a git work tree, so the pre-carve baseline cannot be read and A14b asserted nothing. Run this harness from a clone, not from a 'git archive' export — install-test.yml's routing negative test uses 'cp -a' for exactly this reason."
+  fi
+
+  if [ -n "$A14B_BASELINE" ]; then
     run_bootstrap_at() {
       # run_bootstrap_at <script> <home> <pai-exec> <tag>; echoes rc.
       # Same seam wiring as run_bootstrap, but with the script, the $HOME and
@@ -1438,7 +1567,7 @@ open(sys.argv[3], "w").write("\n".join(code) + "\n")
       echo "$rc"
     }
 
-    A14B_PRE_RC="$(run_bootstrap_at "$SHADOW/scripts/mac/bootstrap-mac.sh" \
+    A14B_PRE_RC="$(run_bootstrap_at "$A14B_BASELINE" \
       "$WORK/home-pre" "$SHADOW/scripts/verify/fake-exec.sh" "pre")"
     A14B_POST_RC="$(run_bootstrap_at "$REPO_ROOT/scripts/mac/bootstrap-mac.sh" \
       "$WORK/home-post" "$REPO_ROOT/scripts/verify/fake-exec.sh" "post")"
@@ -1492,6 +1621,59 @@ open(sys.argv[3], "w").write("\n".join(code) + "\n")
     bad "A16: the HOME interlock did not stop the run (exit $A16_RC)"
     evidence "$A16_ERR"
   }
+
+  # A17 (#111) — THE DIFFERENTIAL'S CI PRECONDITION, asserted instead of
+  # commented. install-test.yml carries `fetch-depth: 0` twice, once per job,
+  # each under a paragraph explaining that a shallow clone costs the job its
+  # differential. Nothing checked it. actions/checkout DEFAULTS TO DEPTH 1, so
+  # deleting one line was a silent, single-symptom degradation: A14b (or the
+  # deploy job's V0/V1) would take its shallow arm forever, the badge would stay
+  # green, and the file would still read as though history were being fetched.
+  #
+  # A HARNESS ASSERTING ON ITS OWN WORKFLOW is unusual here and deliberate: this
+  # is the one precondition the harness cannot establish for itself and cannot
+  # detect the loss of -- from inside a shallow checkout, "the blob is missing
+  # because CI stopped fetching history" and "the blob is missing because I am on
+  # a laptop with a shallow clone" are the same observation. So it is asserted
+  # from the side that CAN tell them apart: the workflow text.
+  #
+  # BOTH JOBS, and an exact count. base-install's checkout feeds A14b; the
+  # deploy-vps job's feeds test-deploy-vps.sh's V0/V1/V1b, which has the same
+  # dependency for the same reason (#110). A third checkout appearing here is a
+  # deliberate decision about history, so it fails until someone makes it.
+  #
+  # PARSED, not grepped. `grep -c 'fetch-depth: 0'` counts a line in a comment,
+  # and both of these sit directly under a paragraph that spells the string out.
+  # PyYAML is already mandatory above, and this is the same python3 the installer
+  # itself runs.
+  A17_WF="$REPO_ROOT/.github/workflows/install-test.yml"
+  A17_OUT="$WORK/out/a17.txt"; A17_RC=0
+  PATH="$WORK/pathmin" "$WORK/pathmin/python3" -c '
+import sys, yaml
+doc = yaml.safe_load(open(sys.argv[1])) or {}
+seen, bad = 0, []
+for jid, job in sorted((doc.get("jobs") or {}).items()):
+    for step in (job.get("steps") or []):
+        if not str(step.get("uses", "")).startswith("actions/checkout@"):
+            continue
+        seen += 1
+        depth = (step.get("with") or {}).get("fetch-depth")
+        # Two near misses, both of which read as 0 and are not: the quoted
+        # string "0", which actions/checkout treats as its own thing, and the
+        # boolean false, which Python compares EQUAL to 0.
+        if depth != 0 or isinstance(depth, bool):
+            bad.append("%s: fetch-depth=%r" % (jid, depth))
+print(seen)
+print("; ".join(bad))
+' "$A17_WF" >"$A17_OUT" 2>&1 || A17_RC=$?
+  A17_SEEN="$(head -1 "$A17_OUT" 2>/dev/null || true)"
+  A17_BAD="$(tail -n +2 "$A17_OUT" | tr -d '\n' || true)"
+  if [ "$A17_RC" -eq 0 ] && [ "$A17_SEEN" = "2" ] && [ -z "$A17_BAD" ]; then
+    ok "A17: both actions/checkout steps in install-test.yml set fetch-depth: 0, so A14b and V1 have the history they diff against"
+  else
+    bad "A17: install-test.yml no longer fetches full history for every checkout (rc=$A17_RC, checkout steps=${A17_SEEN:-none} want 2, offenders='$A17_BAD') — without it A14b degrades to a SKIP on every CI run and 'the carve changed no behaviour' is asserted on a laptop and nowhere else"
+    evidence "$A17_OUT"
+  fi
 fi
 
 # ==== 12. phase I — the OpenCode unit (#38) ===================================
@@ -1933,4 +2115,25 @@ if [ "$SKIP_COUNT" -eq 0 ]; then
 else
   echo "== summary: $PASS_COUNT passed, $FAIL_COUNT failed, $SKIP_COUNT skipped =="
 fi
+# $SKIP_COUNT IS STILL NOT IN THE GATE, AND THAT IS THE ANSWER TO #111's FOURTH
+# QUESTION, not an omission. Making a nonzero $SKIP_COUNT exit 1 would be the
+# blanket rule; the allowlist at $SKIPPABLE is the same guarantee taken one
+# assertion at a time, and it is strictly stronger here:
+#
+#   * It says WHICH skip is allowed, so the shallow-clone arm can keep exiting 0
+#     for the developer it exists for, while the unreachable, non-git and
+#     post-carve arms -- which used to share that skip -- are failures.
+#   * It cannot be satisfied by deleting the skip. Under a blanket rule the
+#     cheapest way to green is to stop calling skipped() and echo a line
+#     instead, which loses the count AND the message; here an unlisted skip is
+#     reported as a failure that names the id and the list, so the only way out
+#     is to fix the condition or to argue for the id in the diff.
+#   * It leaves the runtime checks alone. scripts/verify/check-*.sh skip because
+#     a machine legitimately does not have gitleaks, or a connector, or a goose
+#     CLI; those skips are the answer, not a degraded one, and a rule that made
+#     them failures would be turned off within a week.
+#
+# So: skips are a per-assertion decision, taken once, in writing, next to the
+# arm that takes them -- and every OTHER skip fails. The count above is left in
+# the summary because a listed skip is still worth seeing.
 [ "$FAIL_COUNT" -eq 0 ] || exit 1
