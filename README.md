@@ -107,7 +107,7 @@ Siri Shortcut ─────┤            OpenCode CLI (coding, local)      �
 │   ├── opencode/AGENTS.md              # global coding/workflow rules template (→ ~/.config/opencode/AGENTS.md)
 │   ├── opencode/agents/                # 30 review/research subagents (→ ~/.config/opencode/agents/)
 │   ├── opencode/project-rules/         # per-project rule snippets (python, django, linear…) — paste-in
-│   ├── skills/                         # 11 skills, Claude-compatible SKILL.md (→ ~/.agents/skills — read by BOTH OpenCode and goose)
+│   ├── skills/                         # 12 skills, Claude-compatible SKILL.md (→ ~/.agents/skills — read by BOTH OpenCode and goose)
 │   ├── code-agents/                    # code-agent image, per-chat opencode config, repo-allowlist template
 │   ├── mcp/workspace-mcp.env.example   # Google Workspace MCP env template
 │   └── env/secrets.env.example         # every secret VAR NAME (no values) — copy to /data/secrets.env

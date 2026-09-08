@@ -331,17 +331,24 @@ jobs:
           }
           echo "check-units.sh fails a stale date under --strict and only notes it offline."
 
-      # NEGATIVE TEST 3 — P3, the assertion that runs backwards. `planned` says
-      # the function DOES NOT EXIST, so the control is a manifest claiming
-      # `present` against a tree where no unit_*() has been written yet. This
-      # control passes today and inverts cleanly at #37.
+      # NEGATIVE TEST 3 — P3, the assertion that runs backwards.
+      #
+      # INVERTED by #37, and it had to be. The old control seded base-goose's
+      # `status: planned` to `present` against a tree where no unit_*() existed
+      # yet. Now that unit_base_goose() exists and the manifest says `present`,
+      # that sed matches nothing, check-units.sh passes, and the step would
+      # report the gate as inert when the only inert thing is the sed. So the
+      # mutation moved to the other side of the assertion: rename the FUNCTION
+      # out of the installer and leave the manifest claiming `present`. The
+      # property under test is identical (a `present` status whose function is
+      # not there must FAIL) and the grep string below is unchanged.
       - name: Negative test — installer.status present without the function must fail
         run: |
           set -euo pipefail
           work="$RUNNER_TEMP/units-negative-installer"; mkdir -p "$work"
           git archive HEAD | tar -x -C "$work"
-          sed -i "s/^  status: planned/  status: present/" \
-            "$work/config/units/base-goose.yaml"
+          sed -i "s/^unit_base_goose() {/unit_base_goose_removed() {/" \
+            "$work/scripts/mac/bootstrap-mac.sh"
           if out="$("$work/scripts/verify/check-units.sh" --offline 2>&1)"; then
             echo "::error::check-units.sh accepted status: present for a function that does not exist"
             exit 1

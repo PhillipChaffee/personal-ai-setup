@@ -6,7 +6,9 @@
 # DESCRIBES TODAY. This is the largest single region of deploy-vps.sh
 # (:47-244 preflight + migration, :302-315 systemd, :373-420 start and the
 # /status gate) and it has no unit_brain() function, so installer.status is
-# `planned` — an assertion that the function does NOT exist, which #37 flips.
+# `planned` — an assertion that the function does NOT exist. #37 carved the
+# MAC installer into unit functions and left this one alone, so the assertion
+# still holds and no deploy-vps.sh unit has an installer function yet.
 #
 # tls-cert-renew.{service,timer} is FOLDED IN here rather than made a
 # nineteenth unit: it is two files, one `enable --now` at deploy-vps.sh:315,

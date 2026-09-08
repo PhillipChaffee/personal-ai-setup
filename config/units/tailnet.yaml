@@ -3,7 +3,7 @@
 # later depends on. The only network path to the brain starts here.
 #
 # DESCRIBES TODAY, and like goose-desktop this unit exists because of a SPLIT:
-# the `tailscale` CASK is installed by the loop at bootstrap-mac.sh:131 and is
+# the `tailscale` CASK is installed by unit_base_toolchain() and is
 # base-toolchain's, and the VPS side joins the tailnet from cloud-init
 # (infra/terraform/templates/cloud-init.yaml.tftpl:38-39), which is brain's.
 # What is left is an account and two switches in a web console -- nothing this
@@ -95,7 +95,7 @@ blockers:
       tls-cert-renew.timer restarts goose-serve weekly and depends on them."
   - id: two-tailscale-variants-conflict
     severity: note
-    detail: "bootstrap-mac.sh:140-143 installs the standalone cask and then
+    detail: "unit_base_toolchain() installs the standalone cask and then
       prints that an existing Mac App Store install must be removed instead.
       Nothing detects which variant is present, so the resolution is a human
       reading terminal output at install time."

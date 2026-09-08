@@ -2,9 +2,10 @@
 # coding-pack — the Cursor port: eleven skills, thirty OpenCode subagents and
 # the global AGENTS.md rules, all copied no-clobber into $HOME.
 #
-# DESCRIBES TODAY. This is the largest footprint of any Mac unit and the one
-# with the least machinery behind it: three glob loops, no verify script, and
-# a runbook that documents the PORT DECISIONS rather than the install.
+# DESCRIBES TODAY. unit_coding_pack() installs it, and it is the largest
+# footprint of any Mac unit and the one with the least machinery behind it: an
+# enumerated skill list, two glob loops, no verify script, and a runbook that
+# documents the PORT DECISIONS rather than the install.
 id: coding-pack
 manifest_version: 1
 verified_on: "2026-09-07"
@@ -20,7 +21,7 @@ cost: []
 installer:
   script: scripts/mac/bootstrap-mac.sh
   function: unit_coding_pack
-  status: planned
+  status: present
 
 # NO check-*.sh COVERS THIS UNIT. docs/cursor-port.md:124 has a "Verifying the
 # port on your Mac" section, and it is a list of things for a HUMAN to type.
@@ -36,7 +37,10 @@ secrets: []
 owns:
   # The eleven Cursor-ported skills, enumerated rather than claimed as
   # config/skills/ wholesale: connect-service in that same directory is
-  # base-skills'. ONE loop (bootstrap-mac.sh:230) installs both units' skills.
+  # base-skills'. These eleven names are also unit_coding_pack()'s install
+  # list (SKILLS_CODING_PACK in bootstrap-mac.sh), by name and not as a
+  # complement -- a twelfth skill neither unit claims installs nowhere rather
+  # than silently landing here.
   - {kind: repo_file, target: config/skills/ci-lint-test}
   - {kind: repo_file, target: config/skills/clean-plan}
   - {kind: repo_file, target: config/skills/code-review}
@@ -49,8 +53,8 @@ owns:
   - {kind: repo_file, target: config/skills/refactor-planner}
   - {kind: repo_file, target: config/skills/ship}
   # Their destinations. Enumerated for the same reason the sources are: the
-  # parent ~/.agents/skills is created by one mkdir at bootstrap-mac.sh:225
-  # and holds two units' work, so no single unit can claim the directory.
+  # parent ~/.agents/skills holds two units' work and is created idempotently
+  # by BOTH of them, so no single unit can claim the directory.
   - {kind: home_path, target: ~/.agents/skills/ci-lint-test}
   - {kind: home_path, target: ~/.agents/skills/clean-plan}
   - {kind: home_path, target: ~/.agents/skills/code-review}
@@ -62,16 +66,16 @@ owns:
   - {kind: home_path, target: ~/.agents/skills/pre-mr-checklist}
   - {kind: home_path, target: ~/.agents/skills/refactor-planner}
   - {kind: home_path, target: ~/.agents/skills/ship}
-  # The 30 agents are claimed as the directory, not file by file: the glob at
-  # bootstrap-mac.sh:243 copies whatever is in it, and no other unit owns any
-  # part of it -- the same shape base-goose uses for custom_providers/.
+  # The 30 agents are claimed as the directory, not file by file:
+  # unit_coding_pack()'s glob copies whatever is in it, and no other unit owns
+  # any part of it -- the same shape base-goose uses for custom_providers/.
   - {kind: repo_file, target: config/opencode/agents}
   - {kind: home_path, target: ~/.config/opencode/agents}
   - {kind: repo_file, target: config/opencode/AGENTS.md}
   - {kind: home_path, target: ~/.config/opencode/AGENTS.md}
-  # Owned but NEVER INSTALLED, on purpose: bootstrap-mac.sh:249-250 prints
-  # that the per-project rule snippets stay in the repo and are pasted into a
-  # project by hand. It is this unit's file with no destination.
+  # Owned but NEVER INSTALLED, on purpose: unit_coding_pack() prints that the
+  # per-project rule snippets stay in the repo and are pasted into a project by
+  # hand. It is this unit's file with no destination.
   - {kind: repo_file, target: config/opencode/project-rules}
 
 manual_steps:
@@ -90,21 +94,22 @@ blockers:
       the skills half by comparing config/skills/ against ~/.agents/skills;
       its roster stops there -- extensions, skills, providers, goosehints --
       so a half-copied ~/.config/opencode/agents is invisible everywhere. The
-      copy loops keep whatever is already present (bootstrap-mac.sh:233-234
-      prints `kept existing` and moves on), so stale is silent too."
+      copy loops keep whatever is already present (copy_no_clobber() prints
+      `kept existing` and moves on), so stale is silent too."
   - id: runbook-documents-the-port-not-the-install
     severity: note
     detail: docs/cursor-port.md is a decision log -- what was ported, adapted
       and dropped. It is the closest thing to a runbook and it is what this
       unit points at, but nothing in it tells a reader how to install or
       re-install the pack.
-  - id: cannot-be-installed-without-base-skills
+  - id: no-switch-for-default-on-yet
     severity: note
-    detail: This unit does not require base-skills, yet one loop
-      (bootstrap-mac.sh:230) installs both units' skill directories. As with
-      the shared FORMULAE string, there is no supported way to take one and
-      leave the other -- the tier and the requires graph both describe intent
-      that the installer cannot yet honour.
+    detail: The shared skills loop is gone -- unit_coding_pack() installs the
+      eleven from its own enumerated list (SKILLS_CODING_PACK) and creates
+      ~/.agents/skills itself, so it no longer depends on base-skills having
+      run. What is still missing is the SELECTION -- the five units are called
+      unconditionally, so `default_on` describes intent until bootstrap-mac.sh
+      grows --with/--without/--only.
 
 uninstall:
   supported: false

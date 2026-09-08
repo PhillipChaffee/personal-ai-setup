@@ -7,8 +7,9 @@
 # either installer - only brain's path-root migration at :107-245 is bigger -
 # and, unusually for this catalog, this unit has a real verify script that
 # probes a live plane. What it does NOT have is a
-# unit_code_agents() function - that is #37's job, and status: planned asserts
-# the absence until then.
+# unit_code_agents() function. #37 carved the MAC installer only, so
+# deploy-vps.sh still has no unit functions at all and status: planned asserts
+# that absence.
 id: code-agents
 manifest_version: 1
 verified_on: "2026-09-07"
