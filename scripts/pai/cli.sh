@@ -30,7 +30,20 @@ Usage: pai <command> [options]
   doctor   what drifted between this machine and the repo's templates
   status   what is installed here
   list     what the repo ships
-  verify   run the scripts/verify/check-*.sh suite, one table, one exit code
+  units    one field of every manifest, one value per line (for scripts)
+  verify   run the checks the manifests claim, one table, one exit code
+
+  verify --require <check>     a check that exits 2 (precondition missing) is a
+                               SKIP in a sweep. Name it here and its skip
+                               becomes a FAILURE — "I know this machine has
+                               connectors; prove it." Repeatable. `check-mcp`,
+                               `check-mcp.sh` and the full path all name the
+                               same check.
+  units --field id|verify      the projection. `verify` is what `pai verify`
+                               itself reads, so the roster has one home.
+  units --host mac|vps|both|checklist
+                               keep only the units that host installs (`both`
+                               counts for every host).
 
 Every command writes nothing, except `doctor --fix`:
 
@@ -53,62 +66,168 @@ Exit: 0 ok, 1 findings, 2 usage/precondition.
 EOF
 }
 
-# PyYAML is not universally present, and this repo already solved that twice —
-# check-connectors.sh:145-159 and check-security.sh. Same ladder, same message.
-py_runner() {
-  if ! command -v python3 >/dev/null 2>&1; then
-    die 2 "python3 not found (needed to read the goose config)"
-  fi
-  if python3 -c 'import yaml' >/dev/null 2>&1; then
-    printf '%s' "python3"
-    return
-  fi
-  if command -v uv >/dev/null 2>&1; then
-    printf '%s' "uv run --quiet --with pyyaml python"
-    return
-  fi
-  die 2 "python3 cannot import yaml (PyYAML)." \
-    "  Mac:   uv is installed by scripts/mac/bootstrap-mac.sh — re-run it," \
-    "         or: python3 -m pip install --user pyyaml" \
-    "  Brain: apt-get install -y python3-yaml"
+# The one check that is EXCLUDED off-brain, and the whole exclusion list.
+#
+# NOT a host filter over `host:`. That was the obvious design and it is a net
+# regression: base-goose is `host: mac` and is the only owner of check-goose.sh
+# and check-providers.sh, so filtering the roster by the machine's host would
+# have LOST both of those on the brain — where goose is the thing that runs —
+# while gaining only check-security.sh. `host:` says where a unit INSTALLS, not
+# where its proof is meaningful.
+#
+# check-brain.sh is the one script that genuinely cannot run off-brain: with no
+# BRAIN_HOST it exits 2 about a placeholder, and with one it SSHes. Everything
+# else either works from either side or reports its own missing precondition,
+# which is what exit 2 is for. Keep this list at one name; if it grows, the
+# reason belongs in the manifest, not here.
+OFF_BRAIN_EXCLUDE="check-brain.sh"
+
+# normalise_check <word> — `mcp`, `check-mcp`, `check-mcp.sh` and
+# `scripts/verify/check-mcp.sh` all name the same check.
+normalise_check() {
+  local n="${1##*/}"
+  case "$n" in check-*) ;; *) n="check-$n" ;; esac
+  case "$n" in *.sh) ;; *) n="$n.sh" ;; esac
+  printf '%s' "$n"
 }
 
 cmd_verify() {
-  # Host-aware roster: running check-brain.sh from a Mac only ever produces an
-  # exit-2 about BRAIN_HOST, which is noise rather than a finding.
-  local mode checks
-  mode="$(pai_mode no)"
-  if [ "$mode" = "local" ]; then
-    checks="providers goose mcp connectors brain code-agents"
-  else
-    checks="providers goose mcp connectors"
+  local mode roster rc=0 required="" entry name label unclaimed="" roster_names="" path
+  local -a argv
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --require)
+        shift
+        [ $# -gt 0 ] || die_usage "--require needs a check name"
+        required="$required $(normalise_check "$1")"
+        ;;
+      *) die_usage "unknown verify option: $1" ;;
+    esac
+    shift
+  done
+
+  # THE ROSTER IS THE MANIFESTS'. It used to be two hardcoded strings here, and
+  # they had drifted: brain.yaml claims check-brain.sh AND check-security.sh,
+  # and only the first was ever run — brain.yaml recorded that as a blocker
+  # rather than as a bug, which is how it survived. Deriving it also means the
+  # next unit to gain a verify script gains it here with no second edit.
+  local -a PY
+  local py_cmd
+  py_cmd="$(py_runner)"
+  read -r -a PY <<<"$py_cmd"
+  roster="$("${PY[@]}" "$REPO_ROOT/scripts/pai/doctor.py" units --field verify)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    die 2 "could not read the verify roster from config/units/*.yaml (exit $rc)" \
+      "Every check this runs is claimed by some manifest's \`verify:\` list;" \
+      "scripts/verify/check-units.sh is what validates them."
   fi
-  echo "== pai verify (host: $mode) =="
-  echo
-  for name in $checks; do
-    local script="$REPO_ROOT/scripts/verify/check-$name.sh"
-    [ -x "$script" ] || { skip "check-$name.sh is not present"; continue; }
-    local rc=0
-    "$script" >/dev/null 2>&1 || rc=$?
-    case "$rc" in
-      0) pass "check-$name" ;;
-      # 2 is "unusable environment" by this repo's convention (missing keys, no
-      # goose). Inside a sweep that is a SKIP; if the user named the check
-      # explicitly it would be a failure, which is the rule
-      # check-connectors.sh:1951 already applies one level down.
-      2) skip "check-$name (exit 2 — precondition missing)" ;;
-      *) fail "check-$name (exit $rc)" ;;
+
+  # Name the roster BEFORE running any of it, so `--require no-such-check` is a
+  # usage error rather than a green sweep whose escalation silently matched
+  # nothing. That failure mode — a flag that reads fine and asserts nothing — is
+  # the one this whole issue exists to stop shipping.
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    read -r -a argv <<<"$entry"
+    roster_names="$roster_names ${argv[0]##*/}"
+  done <<<"$roster"
+  for name in $required; do
+    case " $roster_names " in
+      *" $name "*) ;;
+      *) die_usage "--require $name: no unit's \`verify:\` claims it." \
+           "This roster is:$roster_names" ;;
     esac
   done
+
+  mode="$(pai_mode no)"
+  echo "== pai verify (host: $mode) =="
+  echo
+
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    # An entry is a repo-relative path OPTIONALLY FOLLOWED BY ARGUMENTS —
+    # brain.yaml's is `scripts/verify/check-security.sh --local`, because that
+    # script's two modes are two different checks and the manifest is where a
+    # unit says which one is its proof.
+    read -r -a argv <<<"$entry"
+    name="${argv[0]##*/}"
+    label="${name%.sh}"
+    [ "${#argv[@]}" -eq 1 ] || label="$label ${argv[*]:1}"
+
+    case " $OFF_BRAIN_EXCLUDE " in
+      *" $name "*)
+        if [ "$mode" != "local" ]; then
+          case " $required " in
+            *" $name "*) fail "$label — required, but it only runs ON the brain" ;;
+            *) skip "$label (runs on the brain; this is $mode)" ;;
+          esac
+          continue
+        fi
+        ;;
+    esac
+
+    argv[0]="$REPO_ROOT/${argv[0]}"
+    if [ ! -x "${argv[0]}" ]; then
+      fail "$label — claimed by a manifest but not executable at ${argv[0]}"
+      continue
+    fi
+    rc=0
+    "${argv[@]}" >/dev/null 2>&1 || rc=$?
+    case "$rc" in
+      0) pass "$label" ;;
+      # 2 is "unusable environment" by this repo's convention (missing keys, no
+      # goose). Inside a sweep that is a SKIP. --require escalates it, and that
+      # escalation is NEW CODE with its own negative test in test-pai.sh — the
+      # comment that used to stand here cited check-connectors.sh:1951 as the
+      # precedent it was inheriting, and there is no such precedent: :1949-1962
+      # is the AcpClient AuthError handler, and that script's option vocabulary
+      # has no escalation flag at all.
+      2)
+        case " $required " in
+          *" $name "*) fail "$label (exit 2 — required, so a missing precondition is a failure)" ;;
+          *) skip "$label (exit 2 — precondition missing)" ;;
+        esac
+        ;;
+      *) fail "$label (exit $rc)" ;;
+    esac
+  done <<<"$roster"
+
+  # What is NOT in the roster, derived the same way — the check-*.sh on disk
+  # that no manifest claims. check-units.sh's P5 reverse closure has a verdict
+  # about that; here it is only reported, so a reader can tell "no unit claims
+  # it" from "it ran and passed". check-coverage.sh is the permanent member:
+  # with no coverage.json it exits 2, which inside a sweep would render as a
+  # SKIP indistinguishable from a real missing precondition. It is produced by
+  # .github/workflows/coverage.yml, not runnable here.
+  for path in "$REPO_ROOT"/scripts/verify/check-*.sh; do
+    [ -f "$path" ] || continue
+    name="${path##*/}"
+    case " $roster_names " in *" $name "*) continue ;; esac
+    unclaimed="$unclaimed $name"
+  done
+  if [ -n "$unclaimed" ]; then
+    echo
+    note "claimed by no unit, so not in this roster:$unclaimed"
+    note "(check-coverage.sh is produced by coverage.yml; check-units.sh and"
+    note " check-goose-template.sh are repo gates data-lint.yml runs. A check"
+    note " here that ISN'T one of those is a manifest missing a \`verify:\` entry.)"
+  fi
+
   finish --skips
 }
 
 case "${1:-}" in
   -h|--help|"") usage; exit 0 ;;
-  doctor|status|list)
-    read -r -a PY <<<"$(py_runner)"
+  doctor|status|list|units)
+    # An assignment, not `read -r -a PY <<<"$(py_runner)"`: verified under bash
+    # 3.2.57, a here-string SWALLOWS the subshell's exit, so the version this
+    # replaces printed py_runner's remedy and then exec'd doctor.py as if it
+    # were the interpreter. See py_runner's comment in lib.sh.
+    PY_CMD="$(py_runner)"
+    read -r -a PY <<<"$PY_CMD"
     exec "${PY[@]}" "$REPO_ROOT/scripts/pai/doctor.py" "$@"
     ;;
-  verify) cmd_verify ;;
+  verify) shift; cmd_verify "$@" ;;
   *) die_usage "unknown command: $1" ;;
 esac

@@ -1656,6 +1656,272 @@ else
   fail "--fix planner probe failed:"$'\n'"$PLAN_OUT"
 fi
 
+# ---- 10. the derived rosters -------------------------------------------------
+# `pai verify` used to carry two hardcoded strings, and they had drifted:
+# brain.yaml claims check-brain.sh AND check-security.sh and only the first was
+# ever run. Both halves are asserted here — doctor.py's `units --field`
+# projection in process (that is the measured half), and the SHELL that consumes
+# it through a miniature repo, because the roster's whole point is which
+# processes actually get launched.
+
+# --- 10a. `pai units --field`, in process so it counts toward coverage --------
+cat > "$WORK/probe-units.py" <<'PY'
+import contextlib
+import importlib.util
+import io
+import sys
+from pathlib import Path
+
+doctor_path, work = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("doctor_units", doctor_path)
+assert spec and spec.loader
+mod = importlib.util.module_from_spec(spec)
+sys.modules["doctor_units"] = mod
+spec.loader.exec_module(mod)
+
+
+def run(repo, argv):
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = mod.projection(Path(repo), argv)
+    return rc, out.getvalue().splitlines(), err.getvalue()
+
+
+# The catalogue is written here rather than copied from config/units/, because
+# every assertion below is about a SHAPE the real catalogue does not currently
+# contain: two units naming the same check, an entry carrying arguments, a
+# `checklist` host. Copying the real one would make these assertions true by
+# whatever the repo happens to ship this month.
+repo = Path(work) / "unitsproj"
+(repo / "config/units").mkdir(parents=True)
+for stem, body in {
+    "aa-mac": "id: aa-mac\nhost: mac\nverify:\n  - scripts/verify/check-alpha.sh\n",
+    "bb-vps": "id: bb-vps\nhost: vps\nverify:\n"
+              "  - scripts/verify/check-beta.sh --local\n",
+    # Names check-alpha.sh a SECOND time: the de-duplication arm. Without it the
+    # roster would run one script twice and count its verdict twice.
+    "cc-both": "id: cc-both\nhost: both\nverify:\n  - scripts/verify/check-alpha.sh\n"
+               "  - scripts/verify/check-gamma.sh\n",
+    "dd-list": "id: dd-list\nhost: checklist\nverify: []\n",
+}.items():
+    (repo / "config/units" / f"{stem}.yaml").write_text(body)
+
+ALPHA = "scripts/verify/check-alpha.sh"
+BETA = "scripts/verify/check-beta.sh --local"
+GAMMA = "scripts/verify/check-gamma.sh"
+
+# 1. the union, in manifest order, de-duplicated, arguments carried VERBATIM.
+assert run(repo, ["--field", "verify"]) == (0, [ALPHA, BETA, GAMMA], ""), run(
+    repo, ["--field", "verify"])
+# 2. the other field.
+assert run(repo, ["--field", "id"]) == (
+    0, ["aa-mac", "bb-vps", "cc-both", "dd-list"], ""), run(repo, ["--field", "id"])
+
+# 3. host filtering, all four values. `both` counts for every host, which is why
+#    check-gamma.sh survives --host mac and --host vps alike, and why --host both
+#    keeps only the units every machine has.
+assert run(repo, ["--field", "verify", "--host", "mac"])[1] == [ALPHA, GAMMA]
+assert run(repo, ["--field", "verify", "--host", "vps"])[1] == [BETA, ALPHA, GAMMA]
+assert run(repo, ["--field", "verify", "--host", "both"])[1] == [ALPHA, GAMMA]
+assert run(repo, ["--field", "verify", "--host", "checklist"])[1] == [ALPHA, GAMMA]
+assert run(repo, ["--field", "id", "--host", "checklist"])[1] == ["cc-both", "dd-list"]
+
+# 4. every usage refusal is exit 2 and says what the vocabulary is. A roster
+#    that silently reads as empty is the failure this whole issue is about.
+for argv, needle in (
+    ([], "--field must be one of"),
+    (["--field"], "--field needs a value"),
+    (["--field", "verrify"], "'verrify'"),
+    (["--field", "verify", "--host"], "--host needs a value"),
+    (["--field", "verify", "--host", "brain"], "--host must be one of"),
+    (["--field", "verify", "--nope"], "unknown option '--nope'"),
+):
+    rc, lines, err = run(repo, argv)
+    assert (rc, lines) == (2, []), (argv, rc, lines)
+    assert needle in err, (argv, err)
+
+# 5. a checkout with no config/units/ at all: empty, not a crash and not a raise.
+assert run(Path(work) / "no-such-repo", ["--field", "verify"]) == (0, [], "")
+
+# 6. AN UNREADABLE MANIFEST IS EXIT 1, with the readable values still printed.
+#    `pai list` reports the same stems and returns 0 — a menu that says "this
+#    one is broken" is reporting. A ROSTER cannot: the caller silently loses a
+#    check and nothing tells them. cli.sh turns this non-zero into its own exit
+#    2 rather than sweeping a short roster.
+(repo / "config/units/zz-broken.yaml").write_text("nope: [unclosed\n")
+(repo / "config/units/zz-blank.yaml").write_text("")
+rc, lines, err = run(repo, ["--field", "verify"])
+assert rc == 1, (rc, err)
+assert lines == [ALPHA, BETA, GAMMA], lines
+assert "zz-blank, zz-broken" in err, err
+PY
+if OUT="$("${PAI_PY[@]}" "$WORK/probe-units.py" "$DOCTOR" "$WORK" 2>&1)"; then
+  pass "pai units --field: union, order, de-duplication, host filter, every refusal"
+else
+  fail "units projection probe failed:"$'\n'"$OUT"
+fi
+
+# --- 10b. `pai verify` runs what the manifests name, in a miniature repo ------
+# cli.sh and doctor.py both resolve the repo root from their own path, so a
+# tree with the same four files in the same four places IS a repo as far as they
+# are concerned — no new env seam, and the checks it "runs" are stubs whose exit
+# codes are chosen rather than inherited from this machine's goose install.
+FR="$WORK/rosterrepo"
+mkdir -p "$FR/bin" "$FR/scripts/pai" "$FR/scripts/verify" "$FR/config/units"
+cp "$REPO_ROOT/bin/pai" "$FR/bin/pai"
+cp "$REPO_ROOT/scripts/pai/cli.sh" "$FR/scripts/pai/cli.sh"
+cp "$REPO_ROOT/scripts/pai/doctor.py" "$FR/scripts/pai/doctor.py"
+cp "$REPO_ROOT/scripts/verify/lib.sh" "$FR/scripts/verify/lib.sh"
+chmod +x "$FR/bin/pai" "$FR/scripts/pai/cli.sh" "$FR/scripts/pai/doctor.py"
+
+mk_check() { # mk_check <id> <exit-code> — a stub that records the argv it saw
+  cat > "$FR/scripts/verify/check-$1.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$FR/argv-$1.log"
+exit $2
+EOF
+  chmod +x "$FR/scripts/verify/check-$1.sh"
+  return 0
+}
+mk_unit() { # mk_unit <id> <host> [verify entry...]
+  local id="$1" host="$2" entry
+  shift 2
+  printf 'id: %s\nhost: %s\nverify:\n' "$id" "$host" > "$FR/config/units/$id.yaml"
+  for entry in "$@"; do
+    printf -- '  - %s\n' "$entry" >> "$FR/config/units/$id.yaml"
+  done
+  return 0
+}
+verify_run() { # verify_run <PAI_MODE> [pai verify args...] -> VR_OUT, VR_RC
+  local mode="$1"
+  shift
+  VR_RC=0
+  VR_OUT="$(PAI_MODE="$mode" "$FR/bin/pai" verify "$@" 2>&1)" || VR_RC=$?
+  return 0
+}
+saw() { # saw <label> <needle>  — one verdict line, matched literally
+  if printf '%s\n' "$VR_OUT" | grep -qF -- "$2"; then
+    pass "$1"
+  else
+    fail "$1 — no line matched: $2"$'\n'"$VR_OUT"
+  fi
+  return 0
+}
+missing() { # missing <label> <needle>
+  if printf '%s\n' "$VR_OUT" | grep -qF -- "$2"; then
+    fail "$1 — should not appear: $2"$'\n'"$VR_OUT"
+  else
+    pass "$1"
+  fi
+  return 0
+}
+
+mk_check alpha 0
+mk_check beta 2
+mk_check gamma 0
+mk_check brain 0
+mk_check delta 0   # on disk, claimed by nobody
+mk_unit aa-mac mac scripts/verify/check-alpha.sh
+mk_unit bb-vps vps scripts/verify/check-beta.sh
+mk_unit cc-both both "scripts/verify/check-gamma.sh --flavour salty"
+mk_unit dd-brain vps scripts/verify/check-brain.sh
+mk_unit ee-none mac
+
+verify_run remote
+# THE POINT OF THE WHOLE ISSUE: check-alpha.sh is claimed by a `host: mac` unit
+# and check-beta.sh by a `host: vps` one, and BOTH are in the roster on BOTH
+# hosts. A host filter over `host:` was the obvious design and it loses
+# check-goose.sh and check-providers.sh on the brain — base-goose is `host: mac`
+# and is their only owner, and the brain is where goose actually runs.
+saw "off-brain: a host:mac unit's check runs" "PASS  check-alpha"
+saw "off-brain: a host:vps unit's check is in the roster too" "SKIP  check-beta"
+saw "an entry's arguments reach the process" "PASS  check-gamma --flavour salty"
+saw "check-brain.sh is the one off-brain exclusion, and it says so" \
+  "SKIP  check-brain (runs on the brain; this is remote)"
+saw "a check no unit claims is reported, not run" "claimed by no unit"
+saw "...naming it" "check-delta.sh"
+if [ "$VR_RC" -eq 0 ]; then
+  pass "a sweep of passes and skips exits 0"
+else
+  fail "sweep exited $VR_RC:"$'\n'"$VR_OUT"
+fi
+if [ "$(cat "$FR/argv-gamma.log")" = "--flavour salty" ]; then
+  pass "...verbatim, and nothing else on the command line"
+else
+  fail "check-gamma saw argv: $(cat "$FR/argv-gamma.log")"
+fi
+if [ ! -e "$FR/argv-brain.log" ] && [ ! -e "$FR/argv-delta.log" ]; then
+  pass "neither the excluded check nor the unclaimed one was executed"
+else
+  fail "an excluded check ran anyway"
+fi
+
+verify_run local
+saw "on the brain: the excluded check runs" "PASS  check-brain"
+saw "on the brain: a host:mac unit's check is still in the roster" "PASS  check-alpha"
+
+# --require: NEW CODE, not a port. The comment it replaced cited
+# check-connectors.sh:1951 as the precedent it inherited; :1949-1962 is that
+# script's AcpClient AuthError handler and its option vocabulary has no
+# escalation flag at all. So it owes its own negative test.
+verify_run remote --require beta
+saw "--require turns a precondition skip into a failure" "FAIL  check-beta (exit 2"
+missing "...and the un-required skips stay skips" "FAIL  check-alpha"
+if [ "$VR_RC" -eq 1 ]; then
+  pass "...and the sweep exits 1"
+else
+  fail "--require sweep exited $VR_RC:"$'\n'"$VR_OUT"
+fi
+
+verify_run remote --require check-brain.sh
+saw "--require on the off-brain exclusion is a failure, not a silent skip" \
+  "FAIL  check-brain — required, but it only runs ON the brain"
+
+verify_run remote --require nonesuch
+if [ "$VR_RC" -eq 2 ] && printf '%s\n' "$VR_OUT" | grep -qF "no unit's \`verify:\` claims it"; then
+  pass "--require naming a check outside the roster is a usage error, not a green no-op"
+else
+  fail "--require nonesuch exited $VR_RC:"$'\n'"$VR_OUT"
+fi
+
+# THE ROSTER IS THE MANIFEST'S. Empty one unit's `verify:` and its check is gone
+# from the sweep — this is the assertion the hardcoded string could not make.
+# Asserted at the PROCESS level, not by grepping the output: check-alpha.sh is
+# still on disk, so it correctly moves into the "claimed by no unit" list and a
+# text match for its name would go green either way.
+rm -f "$FR/argv-alpha.log"
+mk_unit aa-mac mac
+verify_run remote
+if [ ! -e "$FR/argv-alpha.log" ]; then
+  pass "emptying a unit's verify: stops its check being executed at all"
+else
+  fail "check-alpha still ran after its manifest stopped claiming it"$'\n'"$VR_OUT"
+fi
+saw "...and it is reported as claimed by no unit" "check-alpha.sh"
+mk_unit aa-mac mac scripts/verify/check-alpha.sh
+
+# An unreadable manifest is a SHORT ROSTER, which must never read as a clean one.
+printf 'nope: [unclosed\n' > "$FR/config/units/zz-broken.yaml"
+verify_run remote
+if [ "$VR_RC" -eq 2 ] && printf '%s\n' "$VR_OUT" | grep -qF "zz-broken"; then
+  pass "an unreadable manifest refuses the sweep (exit 2) instead of shortening it"
+else
+  fail "unreadable manifest gave exit $VR_RC:"$'\n'"$VR_OUT"
+fi
+rm -f "$FR/config/units/zz-broken.yaml"
+
+# The real catalogue, through the real CLI: brain.yaml's second verify script is
+# in the roster now. The blocker it carried said it was in no runner at all.
+if REAL_ROSTER="$("$REPO_ROOT/bin/pai" units --field verify)"; then
+  if printf '%s\n' "$REAL_ROSTER" | grep -qF "scripts/verify/check-security.sh --local"; then
+    pass "the shipped catalogue puts check-security.sh --local in the roster"
+  else
+    fail "check-security.sh is still in no runner:"$'\n'"$REAL_ROSTER"
+  fi
+else
+  fail "bin/pai units --field verify did not exit 0"
+fi
+
 # Nothing sections 8 and 9 spawned may survive them. The trap at the top of this
 # file is the backstop; this is the assertion.
 LEFTOVER="$(find "$GC_WORK/tmp/pai-goosecfg" "$FIX_WORK/tmp/pai-goosecfg" \

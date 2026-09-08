@@ -693,7 +693,20 @@ def check_docs(unit: Manifest) -> list[str]:
 
 
 def collect_verify(unit: Manifest, claimed: dict[str, list[str]]) -> list[str]:
-    """Check one unit's `verify` list and record what it claims."""
+    """Check one unit's `verify` list and record what it claims.
+
+    AN ENTRY IS A PATH PLUS OPTIONAL ARGUMENTS. `pai verify` derives its whole
+    roster from this field, and check-security.sh's two modes are two different
+    checks: bare, it wants a public IP and refuses without one; `--local` is the
+    host-posture pass brain.yaml actually claims. With a bare path as the only
+    legal shape, brain's second verify script could only ever be run by hand.
+
+    The arguments are NOT validated. This gate cannot know a check's option
+    vocabulary without keeping a copy of it, and the script itself already
+    refuses an unknown flag with exit 2 — the copy is the thing worth avoiding.
+    What IS enforced is the head: one repo-relative scripts/verify/check-*.sh
+    that exists, so a typo cannot become a silently absent check.
+    """
     scripts = strings(unit.data.get("verify"))
     if not scripts and "no-verify" not in unit.blocker_ids():
         return [f"{unit.stem}.verify is empty without a blockers entry id: no-verify — "
@@ -701,10 +714,14 @@ def collect_verify(unit: Manifest, claimed: dict[str, list[str]]) -> list[str]:
                 f"stops being invisible"]
     out: list[str] = []
     for ref in scripts:
-        name = Path(ref).name
-        if ref != f"scripts/verify/{name}" or not name.startswith("check-"):
-            out.append(f"{unit.stem}.verify '{ref}' must be a scripts/verify/check-*.sh path")
-        elif not (REPO_ROOT / ref).is_file():
+        # split(), not split(" "): a double space between path and flag would
+        # otherwise make head an empty string and the message unreadable.
+        head = ref.split()[0] if ref.split() else ""
+        name = Path(head).name
+        if head != f"scripts/verify/{name}" or not name.startswith("check-"):
+            out.append(f"{unit.stem}.verify '{ref}' must start with a "
+                       f"scripts/verify/check-*.sh path (arguments may follow)")
+        elif not (REPO_ROOT / head).is_file():
             out.append(f"{unit.stem}.verify '{ref}' does not exist")
         else:
             claimed.setdefault(name, []).append(unit.stem)

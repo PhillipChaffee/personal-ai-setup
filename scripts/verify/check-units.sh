@@ -20,10 +20,13 @@
 # the verdict counting and the exit-code convention are lib.sh's. It also puts
 # units_lint.py under ruff and mypy --strict, which a heredoc forecloses.
 #
-# NOT DISCOVERED BY `pai verify`. cli.sh:59-63's roster is a hardcoded string,
-# not a glob over check-*.sh, so this script is invoked by data-lint.yml and by
-# hand. That is drift, recorded in the issue; changing that roster is #42's
-# scope and is deliberately not done here.
+# STILL NOT IN `pai verify`, and now for a stated reason rather than by
+# accident. That roster is no longer a hardcoded string — cmd_verify derives it
+# from the manifests' `verify:` — but this script is UNCLAIMABLE
+# (units_lint.py's UNCLAIMABLE map): a unit claiming it would be asserting that
+# the validator proves something about that unit, when what it does is validate
+# every manifest including that one. `pai verify` lists it, with the other two
+# unclaimable gates, under "claimed by no unit". data-lint.yml runs it.
 set -euo pipefail
 
 # shellcheck source=scripts/verify/lib.sh
@@ -69,25 +72,12 @@ while [ $# -gt 0 ]; do
 done
 
 # ---- python runner ----------------------------------------------------------
-# Fourth copy of this ladder (check-connectors.sh, scripts/pai/cli.sh,
-# check-goose-template.sh), with the same wording on purpose: a person who hits
-# it in one script should recognise it in the next. Copied rather than reused
-# because cli.sh's py_runner cannot be sourced — cli.sh:83-92 is a top-level
-# `case` that exits 0 on an empty argument, so sourcing it ends this script.
-if ! command -v python3 >/dev/null 2>&1; then
-  die 2 "python3 not found (needed to parse YAML)"
-fi
-PY=(python3)
-if python3 -c 'import yaml' >/dev/null 2>&1; then
-  :
-elif command -v uv >/dev/null 2>&1; then
-  PY=(uv run --quiet --with pyyaml python)
-else
-  die 2 "python3 cannot import yaml (PyYAML)." \
-    "  Mac:   uv is installed by scripts/mac/bootstrap-mac.sh — re-run it," \
-    "         or: python3 -m pip install --user pyyaml" \
-    "  Brain: apt-get install -y python3-yaml"
-fi
+# lib.sh's, not a fourth copy. The comment this replaces explained that cli.sh's
+# py_runner could not be reused because sourcing cli.sh runs a top-level `case`
+# that exits — true, and the answer was to move the function to the file all
+# four of these scripts already source rather than to copy it again.
+PY_CMD="$(py_runner)"
+read -r -a PY <<<"$PY_CMD"
 
 # ---- run --------------------------------------------------------------------
 OUT_FILE="$(mktemp)"

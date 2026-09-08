@@ -196,22 +196,12 @@ GOOSE_VER="${GOOSE_TAG#v}"
 
 # ---- python runner ----------------------------------------------------------
 # python3 is already a dependency of scripts/verify (test-code-agent-manager.sh,
-# stub-engine.sh). PyYAML is not universally present, so fall back to uv, which
-# both bootstrap-mac.sh and cloud-init install.
-if ! command -v python3 >/dev/null 2>&1; then
-  die 2 "python3 not found (needed to parse YAML/JSON)"
-fi
-PY=(python3)
-if ! python3 -c 'import yaml' >/dev/null 2>&1; then
-  if command -v uv >/dev/null 2>&1; then
-    PY=(uv run --quiet --with pyyaml python)
-  else
-    die 2 "python3 cannot import yaml (PyYAML)." \
-      "  Mac:   uv is installed by scripts/mac/bootstrap-mac.sh — re-run it," \
-      "         or: python3 -m pip install --user pyyaml" \
-      "  Brain: apt-get install -y python3-yaml"
-  fi
-fi
+# stub-engine.sh). PyYAML is not universally present, so lib.sh's py_runner
+# falls back to uv, which both bootstrap-mac.sh and cloud-init install. That
+# ladder used to be copied into this file, cli.sh, check-goose-template.sh and
+# check-units.sh; it is one function now.
+PY_CMD="$(py_runner)"
+read -r -a PY <<<"$PY_CMD"
 
 # THE ACP CLIENT IS NOT IN THIS FILE ANY MORE. scripts/pai/goosecfg.py owns the
 # transport, the read-back contract and the method list; the two checkers that

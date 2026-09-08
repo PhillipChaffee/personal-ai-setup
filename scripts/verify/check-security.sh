@@ -120,6 +120,21 @@ if [ "$MODE" = "probe" ]; then
 fi
 
 # ---------------------------------------------------------------- local mode
+# --local IS A ROSTER ENTRY NOW. brain.yaml's `verify:` names it, and `pai
+# verify` derives its roster from that field on every host — so this path runs
+# on a Mac too. Every check below asks about /data, ufw and the `agent` user, so
+# off the brain it would print four confident FAILs describing a machine it is
+# not looking at. Exit 2 instead: this repo's word for "the precondition is
+# missing", which cli.sh renders as a SKIP and `pai verify --require security`
+# escalates back to a failure for someone who believes they ARE on the brain.
+if [ "$(pai_mode no)" != "local" ]; then
+  die 2 "--local runs ON the brain, and this is not one (no /data + systemctl)." \
+    "From here, probe the brain from the outside instead — that is the mode" \
+    "this script has for other machines, and it must run from one:" \
+    "  ./scripts/verify/check-security.sh \"\$(cd infra/terraform && terraform output -raw server_public_ip)\"" \
+    "PAI_MODE=local forces this path (fixtures, and the brain's own CI)."
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 

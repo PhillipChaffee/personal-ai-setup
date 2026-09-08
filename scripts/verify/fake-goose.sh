@@ -60,9 +60,12 @@ sys.exit(0 if any(m.get("name") == sys.argv[2] for m in d["models"]) else 1)' "$
 [ "$#" -gt 0 ] || die "no argv"
 
 if [ "$1" = "--version" ]; then
-  # A bare version and nothing else: bootstrap-mac.sh:118 pipes this through
+  # A bare version and nothing else: bootstrap-mac.sh's unit_base_goose pipes
+  # `pai_exec goose --version` through
   # `grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1`, and the pins comparison it
   # feeds is the one thing routing `goose --version` through the seam buys.
+  # (Cited by text, not by line: the ":118" this replaces pointed at the
+  # Homebrew-missing message after #37 carved the installer into units.)
   [ "$#" -eq 1 ] || die "unhandled argv: $*"
   printf '%s\n' "${FAKE_GOOSE_VERSION:?fake-goose: FAKE_GOOSE_VERSION is required}"
   exit 0

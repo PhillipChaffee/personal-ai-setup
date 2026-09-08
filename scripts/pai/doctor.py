@@ -42,7 +42,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 import yaml
 
@@ -802,7 +802,17 @@ class Unit:
     # directory's, they move with every manifest, and check-units.sh is the
     # thing that has a verdict about them.
     has_installer: bool
-    has_verify: bool
+    # `verify` is the manifest's list VERBATIM, entries included -- an entry may
+    # carry arguments (`scripts/verify/check-security.sh --local`), which is the
+    # whole reason brain.yaml can name the mode its check has to run in. Nothing
+    # here splits or resolves it; `pai verify` does, because it is the thing
+    # that has to run it.
+    verify: tuple[str, ...]
+
+    @property
+    def has_verify(self) -> bool:
+        """Whether this unit claims any verify script. The footer's second count."""
+        return bool(self.verify)
 
 
 # One template for the header and every row, so a column added to one cannot
@@ -857,7 +867,11 @@ def load_units(repo: Path) -> tuple[list[Unit], list[str]]:
                 cost=" + ".join(str(c["amount"]) for c in data.get("cost") or ()) or "-",
                 manual_steps=len(data.get("manual_steps") or ()),
                 has_installer=data.get("installer") is not None,
-                has_verify=bool(data.get("verify")),
+                # str() per entry, not tuple(...): check-units.sh rejects a
+                # non-string entry, but this renderer runs between two of its
+                # runs and a mapping here would reach `pai verify` as a python
+                # repr on a command line.
+                verify=tuple(str(v) for v in data.get("verify") or ()),
             ),
         )
     return units, unreadable
@@ -914,6 +928,99 @@ def catalogue(repo: Path) -> int:
     return 0
 
 
+# `pai units --field <name>` -- the machine-readable projections. Deliberately a
+# CLOSED vocabulary: this is the roster `pai verify` runs, so a misspelt field
+# must be a usage error and never an empty list that reads as "no checks".
+UNIT_FIELDS: Final = ("id", "verify")
+
+# The `host:` vocabulary, and it is config/units/README.md's, not this file's --
+# check-units.sh is the validator. Repeated here only so `--host` can refuse an
+# unknown value rather than silently selecting nothing.
+UNIT_HOSTS: Final = ("mac", "vps", "both", "checklist")
+
+
+def unit_values(units: list[Unit], field: str) -> list[str]:
+    """Flatten one field of every unit into a de-duplicated, ordered list.
+
+    Order is the manifest order load_units already fixed (sorted by filename),
+    and duplicates are dropped at FIRST appearance. Two units may legitimately
+    name the same check -- check-units.sh's P5 forbids it today, but the
+    de-duplication is here so that rule can relax without `pai verify` running
+    the same script twice and double-counting its verdict.
+    """
+    out: list[str] = []
+    for unit in units:
+        for value in (unit.verify if field == "verify" else (unit.id,)):
+            if value not in out:
+                out.append(value)
+    return out
+
+
+def projection(repo: Path, argv: list[str]) -> int:
+    """`pai units --field <field> [--host <host>]` -- one value per line.
+
+    THE POINT IS THAT NOTHING DOWNSTREAM KEEPS ITS OWN COPY. cli.sh's verify
+    roster was a hardcoded string, and it had drifted: it named `check-brain`
+    and `check-code-agents` but not `check-security`, so one of brain's two
+    verify scripts was reachable only by typing its path (brain.yaml recorded
+    that as a blocker). Deriving it means a unit that gains a check gains it in
+    `pai verify` too, with no second edit.
+
+    An unreadable manifest is exit 1 WITH the readable values still on stdout.
+    A roster is the one place where "some of the manifests parsed" must not be
+    silently equivalent to "that is all of them" -- the caller loses a check and
+    nothing says so. `pai list` prints the same stems and returns 0, because a
+    menu reporting a broken manifest is reporting, not failing.
+    """
+    field = ""
+    host = ""
+    rest = list(argv)
+    while rest:
+        flag = rest.pop(0)
+        if flag in ("--field", "--host"):
+            if not rest:
+                print(f"doctor.py: {flag} needs a value", file=sys.stderr)  # noqa: T201
+                return 2
+            value = rest.pop(0)
+            if flag == "--field":
+                field = value
+            else:
+                host = value
+        else:
+            print(f"doctor.py: unknown option {flag!r}", file=sys.stderr)  # noqa: T201
+            return 2
+    if field not in UNIT_FIELDS:
+        print(  # noqa: T201
+            f"doctor.py: units --field must be one of {', '.join(UNIT_FIELDS)} "
+            f"(got {field!r})",
+            file=sys.stderr,
+        )
+        return 2
+    if host and host not in UNIT_HOSTS:
+        print(  # noqa: T201
+            f"doctor.py: units --host must be one of {', '.join(UNIT_HOSTS)} (got {host!r})",
+            file=sys.stderr,
+        )
+        return 2
+    units, unreadable = load_units(repo)
+    if host:
+        # `both` is kept for every host: it is the manifests' word for "this
+        # machine too", so `--host vps` means vps-only PLUS both. Filtering
+        # `--host both` therefore selects exactly the units every machine has,
+        # which is the same rule applied to itself rather than a special case.
+        units = [u for u in units if u.host in (host, "both")]
+    for value in unit_values(units, field):
+        _emit(value)
+    if unreadable:
+        print(  # noqa: T201
+            f"doctor.py: unreadable manifest(s): {', '.join(sorted(unreadable))} — "
+            f"this projection is missing whatever they declare",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
 # Exactly the flags `doctor` accepts. An unknown one is a usage error rather
 # than a silently ignored word: `pai doctor --fx` must not read as a plain,
 # harmless `pai doctor`, and `pai doctor --fix --dry-run` must not read as a
@@ -955,6 +1062,8 @@ def main(argv: list[str]) -> int:
         return inventory(repo, home)
     if command == "list":
         return catalogue(repo)
+    if command == "units":
+        return projection(repo, argv[2:])
     print(f"doctor.py: unknown command {command!r}", file=sys.stderr)  # noqa: T201
     return 2
 
