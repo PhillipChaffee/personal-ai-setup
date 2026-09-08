@@ -28,7 +28,14 @@
 # there are exactly three states and no fourth: no markers (append), one
 # well-formed marked region (replace between them), anything else (refuse, exit
 # 2, name the malformation, touch nothing). Everything outside the markers is
-# copied through unchanged and the file's mode is preserved.
+# copied through unchanged and the mode of the file that is actually written is
+# preserved.
+#
+# ~/.zshrc IS OFTEN A LINK. stow, chezmoi and yadm all leave it as a symlink into
+# a dotfiles repo, and some people hardlink it instead. install_block writes
+# THROUGH the link, so the link survives and the repo copy is the file that
+# changes; see the comment above install_block for why a bare `mv` onto ~/.zshrc
+# is not an option.
 set -euo pipefail
 
 SERVICE="personal-ai"
@@ -100,12 +107,16 @@ fi
 SELECTED_ROSTER="$(mktemp "${TMPDIR:-/tmp}/pai-roster.XXXXXX")"
 FULL_ROSTER="$(mktemp "${TMPDIR:-/tmp}/pai-roster.XXXXXX")"
 BLOCK_FILE="$(mktemp "${TMPDIR:-/tmp}/pai-block.XXXXXX")"
-# Beside ~/.zshrc rather than in $TMPDIR, so the `mv` below is a rename on one
-# filesystem: an interrupted cross-device mv would leave the user's shell init
-# half-written, and this script's whole promise is that it does not damage that
-# file.
-NEW_ZSHRC="$(mktemp "$HOME/.pai-zshrc.XXXXXX")"
-trap 'rm -f "$SELECTED_ROSTER" "$FULL_ROSTER" "$BLOCK_FILE" "$NEW_ZSHRC"' EXIT
+# The staged replacement for the shell init file. install_block creates it, next
+# to the file it is about to become so the `mv` is a rename on ONE filesystem --
+# an interrupted cross-device mv would leave the user's shell init half-written,
+# and this script's whole promise is that it does not damage that file. It
+# cannot be created here because "the file it is about to become" is not known
+# until the symlink chain is resolved: with ~/.zshrc -> ~/dotfiles/zshrc, beside
+# $HOME is the wrong side. install_block clears the name again once the file has
+# been consumed, so the trap is exact rather than best-effort.
+NEW_ZSHRC=""
+trap 'rm -f "$SELECTED_ROSTER" "$FULL_ROSTER" "$BLOCK_FILE" ${NEW_ZSHRC:+"$NEW_ZSHRC"}' EXIT
 
 roster_or_die() { # roster_or_die <outfile> <pai-secrets-args...>
   local out="$1"; shift
@@ -224,18 +235,60 @@ build_block() {
 # file_mode <path> — the two-arm portable stat. GNU first, BSD second; nothing
 # in this repo may assume either, because the same scripts run on a Mac and on
 # ubuntu-latest.
+#
+# -L IS LOAD-BEARING. Both stats default to lstat, so a bare `stat -f %A` on a
+# symlink reports the LINK's mode -- 0755 on every symlink macOS makes -- and
+# chmodding that onto the replacement would publish a file that names every
+# credential this machine holds. install_block already resolves the chain before
+# it calls this, so -L is the second of the two belts.
 file_mode() {
-  stat -c %a "$1" 2>/dev/null || stat -f %A "$1" 2>/dev/null || echo ""
+  stat -Lc %a "$1" 2>/dev/null || stat -Lf %A "$1" 2>/dev/null || echo ""
   return 0
 }
 
-marker_count() { # marker_count <marker>
-  grep -cF -- "$1" "$ZSHRC" 2>/dev/null || true
+# link_count <path> — how many names this inode has. Same two arms. Unknown
+# counts as 1, i.e. as "safe to replace by rename", because that is the only
+# answer that preserves the atomic write on a platform whose stat we do not
+# recognise; the link-preserving branch below is the exception, not the rule.
+link_count() {
+  stat -Lc %h "$1" 2>/dev/null || stat -Lf %l "$1" 2>/dev/null || echo 1
   return 0
 }
 
-marker_line() { # marker_line <marker>
-  grep -nF -- "$1" "$ZSHRC" 2>/dev/null | head -1 | cut -d: -f1 || true
+# resolve_link <path> — the path at the end of a chain of symlinks, printed;
+# nothing at all if the chain never ends. `readlink -f` is one line but macOS
+# only grew it in Monterey and this script is run by whatever /bin/bash the Mac
+# shipped, so the loop is hand-rolled. Only the LAST component is resolved,
+# which is what the caller wants: the staged file has to land in the directory
+# the link names, not in $HOME.
+resolve_link() {
+  local path="$1" target hops=0
+  while [ -L "$path" ]; do
+    hops=$((hops + 1))
+    # ELOOP. A cycle (a -> b -> a) would spin here forever, and a shell script
+    # that hangs on a malformed dotfile is worse than one that refuses.
+    [ "$hops" -le 40 ] || return 0
+    target="$(readlink "$path")"
+    case "$target" in
+      /*) path="$target" ;;
+      *) path="$(dirname "$path")/$target" ;;
+    esac
+  done
+  printf '%s\n' "$path"
+  return 0
+}
+
+# Both take the RESOLVED path, the same one awk reads below. grep follows a
+# symlink and so would see the same bytes either way, but counting markers in
+# one file and rewriting another is the sort of near-miss that only stays
+# harmless by accident.
+marker_count() { # marker_count <marker> <path>
+  grep -cF -- "$1" "$2" 2>/dev/null || true
+  return 0
+}
+
+marker_line() { # marker_line <marker> <path>
+  grep -nF -- "$1" "$2" 2>/dev/null | head -1 | cut -d: -f1 || true
   return 0
 }
 
@@ -248,7 +301,64 @@ refuse() { # refuse <what-is-wrong>
   exit 2
 }
 
+# bail <what-is-wrong> — refuse for a reason that has nothing to do with the
+# markers. Same exit 2 and the same "nothing was written" promise, without
+# refuse()'s marker advice, which would be baffling adjacent to "the link points
+# somewhere I cannot write".
+bail() {
+  echo "keychain-secrets.sh: cannot write $ZSHRC:" >&2
+  echo "    $1" >&2
+  echo "  Nothing was written." >&2
+  exit 2
+}
+
+# stage_for / commit_to — build the replacement file, then put it at a path.
+#
+# TWO WRITE STRATEGIES, and install_block picks between them exactly once.
+#
+#   rename (in_place=0, the default)  atomic. Interrupt the script and the user
+#     has either the whole old shell init or the whole new one, never half of
+#     either. This is the property the script's promise rests on.
+#   truncate in place (in_place=1)    NOT atomic, and used only where a rename
+#     would do damage a crash would not. A rename installs a NEW INODE at the
+#     path, so if the old inode had other names -- `ln ~/dotfiles/zshrc
+#     ~/.zshrc`, which is how the no-symlink half of the dotfiles world does it
+#     -- every other name keeps the old bytes and silently stops tracking. It is
+#     also the only option in a directory we may not create a sibling in.
+#     Inode, mode, owner and every other name survive; the cost is a window in
+#     which a crash leaves the file short.
+
+stage_for() { # stage_for <dir> <in-place?>
+  if [ "$2" -eq 1 ]; then
+    # Never renamed into place, so it is a scratch buffer like the rosters and
+    # can live in $TMPDIR. Names and prompts only, as ever -- no value.
+    NEW_ZSHRC="$(mktemp "${TMPDIR:-/tmp}/pai-zshrc.XXXXXX")"
+  else
+    NEW_ZSHRC="$(mktemp "$1/.pai-zshrc.XXXXXX")"
+  fi
+  return 0
+}
+
+commit_to() { # commit_to <path> <in-place?>
+  if [ "$2" -eq 1 ]; then
+    cat "$NEW_ZSHRC" >"$1"
+    rm -f "$NEW_ZSHRC"
+  else
+    mv "$NEW_ZSHRC" "$1"
+  fi
+  NEW_ZSHRC=""
+  return 0
+}
+
 # install_block — the whole file-writing surface of this script.
+#
+# IT WRITES THROUGH LINKS. ~/.zshrc is a symlink into a dotfiles repo on any
+# machine set up with stow, chezmoi or yadm, and `mv new ~/.zshrc` REPLACES that
+# symlink with a regular file: ~/dotfiles/zshrc is left untouched and now
+# detached, so every later edit the user makes in the repo they think owns the
+# file is silently ignored by every shell. So the symlink chain is resolved
+# first and the write lands on the file at the end of it; the link is never
+# touched, and neither is the mode of anything but the file that changed.
 #
 # Three states, checked in this order, and the third one writes nothing:
 #   0 markers          append the block (after a blank line)
@@ -256,21 +366,54 @@ refuse() { # refuse <what-is-wrong>
 #     BEGIN first
 #   anything else      refuse
 install_block() {
-  local begins ends begin_at end_at mode
-  if [ ! -f "$ZSHRC" ]; then
+  local begins ends begin_at end_at mode target dir in_place=0
+  target="$(resolve_link "$ZSHRC")"
+  [ -n "$target" ] || bail "it is a symlink chain that never reaches a file (a loop?)"
+  dir="$(dirname "$target")"
+
+  # REFUSE RATHER THAN FALL BACK TO REPLACING THE LINK. A dotfiles repo on a
+  # read-only mount, or a root-owned target, would otherwise "succeed": ~/.zshrc
+  # would become a fresh writable regular file holding the block, and the file
+  # the user actually edits and commits would never change again.
+  if [ -e "$target" ]; then
+    [ -w "$target" ] || bail "$target is not writable"
+    [ "$(link_count "$target")" = "1" ] || in_place=1
+  else
+    [ -d "$dir" ] || bail "the link points into $dir, which does not exist"
+  fi
+  if [ ! -w "$dir" ]; then
+    [ -e "$target" ] || bail "$dir is not writable, so the file cannot be created"
+    in_place=1
+  fi
+  if [ "$target" != "$ZSHRC" ]; then
+    echo "==> $ZSHRC is a link to $target — writing through it, so the link survives."
+  fi
+
+  # Not `[ ! -f "$ZSHRC" ]`: -f follows the link, so a DANGLING symlink (the
+  # dotfiles repo is cloned but that file is not in it yet) read as "no file"
+  # and the old code clobbered the link with a regular file. Testing the
+  # resolved path instead creates the file the link names, which is what the
+  # pre-#39 `>>"$ZSHRC"` did.
+  if [ ! -e "$target" ]; then
+    stage_for "$dir" "$in_place"
     cat "$BLOCK_FILE" >"$NEW_ZSHRC"
     # A file we create is ours to set the mode of, and 600 is the right one for
     # a file naming every credential this machine holds.
     chmod 600 "$NEW_ZSHRC"
-    mv "$NEW_ZSHRC" "$ZSHRC"
-    echo "==> Wrote $ZSHRC with the export block (mode 600)."
+    commit_to "$target" "$in_place"
+    echo "==> Wrote $target with the export block (mode 600)."
     return 0
   fi
-  begins="$(marker_count "$MARKER_BEGIN")"
-  ends="$(marker_count "$MARKER_END")"
-  mode="$(file_mode "$ZSHRC")"
+  begins="$(marker_count "$MARKER_BEGIN" "$target")"
+  ends="$(marker_count "$MARKER_END" "$target")"
+  # The TARGET's mode, never the link's: see file_mode's -L.
+  mode="$(file_mode "$target")"
+  # Staged next to the file it replaces, not next to $HOME: with
+  # ~/.zshrc -> /Volumes/dotfiles/zshrc those are different filesystems, and a
+  # cross-device mv is a copy that can be interrupted half-written.
+  stage_for "$dir" "$in_place"
   if [ "$begins" = "0" ] && [ "$ends" = "0" ]; then
-    cp "$ZSHRC" "$NEW_ZSHRC"
+    cp "$target" "$NEW_ZSHRC"
     # Only when one is missing: appending to a file that does not end in a
     # newline would otherwise splice the marker onto the user's last line.
     if [ -s "$NEW_ZSHRC" ] && [ "$(tail -c 1 "$NEW_ZSHRC" | wc -l | tr -d ' ')" = "0" ]; then
@@ -282,8 +425,8 @@ install_block() {
   else
     [ "$begins" = "1" ] || refuse "$begins begin markers (want exactly 1)"
     [ "$ends" = "1" ] || refuse "$ends end markers (want exactly 1)"
-    begin_at="$(marker_line "$MARKER_BEGIN")"
-    end_at="$(marker_line "$MARKER_END")"
+    begin_at="$(marker_line "$MARKER_BEGIN" "$target")"
+    end_at="$(marker_line "$MARKER_END" "$target")"
     [ "$begin_at" -lt "$end_at" ] || \
       refuse "the end marker (line $end_at) comes before the begin marker (line $begin_at)"
     # Everything outside the two marker lines is copied through byte for byte;
@@ -294,11 +437,13 @@ install_block() {
       NR == begin_at { while ((getline line < blk) > 0) print line; close(blk); next }
       NR > begin_at && NR <= end_at { next }
       { print }
-    ' "$ZSHRC" >"$NEW_ZSHRC"
+    ' "$target" >"$NEW_ZSHRC"
     echo "==> Rewrote the export block in $ZSHRC (lines $begin_at-$end_at)."
   fi
+  # A no-op on the in-place branch below (the inode keeps its own mode), and the
+  # whole point on the rename branch, where the staged file was born 0600.
   [ -z "$mode" ] || chmod "$mode" "$NEW_ZSHRC"
-  mv "$NEW_ZSHRC" "$ZSHRC"
+  commit_to "$target" "$in_place"
   return 0
 }
 

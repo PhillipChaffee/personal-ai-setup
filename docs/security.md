@@ -172,11 +172,19 @@ the manifests instead — they are what both the prompts and the checked
 [credential checklist](setup/10-accounts.md#credential-checklist) come from:
 
 ```bash
-pai secrets --host mac      # what this Mac's units keep in the Keychain
-pai secrets --host vps      # what the brain's /data/secrets.env must hold
+pai secrets --host mac                            # the base + default_on roster
+pai secrets --host mac --units google-workspace   # one add-on's Keychain names
+pai secrets --host mac --all                      # every name the catalog can put there
+pai secrets --host vps                            # what /data/secrets.env must hold
 ```
 
-Outside env vars entirely, and therefore outside both rosters: the LUKS passphrase
+**The bare form is not an audit of your Keychain.** It projects the *default* selection
+— every `base` and `default_on` unit — and nothing in it knows which add-ons you actually
+installed, so on a Mac running `google-workspace` and `ntfy-alerts` it still prints two
+names. Name the add-ons with `--units`, or use `--all`, when the question is "does my
+Keychain hold everything it should".
+
+Outside env vars entirely, and therefore outside every roster above: the LUKS passphrase
 (password manager only), the Tailscale auth key (typed at the Terraform prompt, never
 written to `terraform.tfvars`), the `life-vault` deploy key, and the Google OAuth token
 files on `/data`.

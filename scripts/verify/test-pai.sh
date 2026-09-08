@@ -2061,8 +2061,25 @@ names_are "secrets --host vps is deploy-vps.sh's four" \
   "$WANT_VPS_BASE" --host vps
 names_are "an add-on selection is that unit's names only, not the base ones" \
   "GOOGLE_OAUTH_CLIENT_ID GOOGLE_OAUTH_CLIENT_SECRET" --host mac --units google-workspace
-names_are "a unit with no secrets in that store projects to nothing" \
-  "" --host mac --units base-skills
+# THE ONE GOLDEN HERE WHOSE EXPECTED VALUE IS ALSO THE FAILURE VALUE, so it does
+# not go through names_are: secret_names discards the exit code and everything on
+# stderr, and "base-skills keeps nothing in the Keychain" and "the command
+# produced no stdout, for any reason at all" are the same empty string. A `pai
+# secrets` that started exiting 2 on a rowless unit would abort the harness here
+# with no message under `set -e`, and one that merely grumbled to stderr and
+# exited 0 would read as a pass. Assert all three channels instead.
+EMPTY_RC=0
+EMPTY_OUT="$(pai secrets "$CLEAN" --host mac --units base-skills \
+  2>"$WORK/base-skills.err")" || EMPTY_RC=$?
+if [ "$EMPTY_RC" != "0" ]; then
+  fail "a rowless unit exited $EMPTY_RC, not 0:"$'\n'"$(cat "$WORK/base-skills.err")"
+elif [ -n "$EMPTY_OUT" ]; then
+  fail "base-skills projected Keychain rows it has none of:"$'\n'"$EMPTY_OUT"
+elif [ -s "$WORK/base-skills.err" ]; then
+  fail "an empty roster arrived with a complaint on stderr:"$'\n'"$(cat "$WORK/base-skills.err")"
+else
+  pass "a unit with no secrets in that store projects to nothing: exit 0, no stdout, silent"
+fi
 
 # `--host` names the STORE, not the unit's host: `brain` is host: vps and still
 # owns the Mac's copy of the shared secret. Without this arm the projection
@@ -2154,12 +2171,21 @@ KC_BIN="$KC_WORK/bin"
 KC_HOME="$KC_WORK/home"
 mkdir -p "$KC_BIN" "$KC_HOME" "$KC_WORK/state"
 
+# HAND-TYPED, like the name goldens above: reading the marker out of the script
+# under test would compare it with itself, and a rename would stay green.
+KC_MARKER_BEGIN='# >>> personal-ai keychain exports (keychain-secrets.sh) >>>'
+
 # EXPLICITLY /bin/bash where there is one. macOS ships bash 3.2.57 and that is
 # what a reader's `./scripts/mac/keychain-secrets.sh` gets; `command -v bash` on
 # a developer Mac is Homebrew's 5.x, so running only that would let a 4.x-ism
 # (declare -A, mapfile, ${x^^}) ship untested.
 KC_BASH="bash"
-[ -x /bin/bash ] && KC_BASH="/bin/bash"
+# An `if`, not `[ -x /bin/bash ] && KC_BASH=...`: as the AND-list's last (and
+# only) statement that would exit 1 wherever /bin/bash is missing, and under
+# `set -e` at file scope that kills the harness on the spot.
+if [ -x /bin/bash ]; then
+  KC_BASH="/bin/bash"
+fi
 
 # uname is a three-line stub and is GENERATED, not committed: it exists only so
 # the macOS guard passes on ubuntu-latest, and it models nothing. fake-security
@@ -2172,6 +2198,33 @@ exec /usr/bin/uname "$@"
 EOF
 chmod +x "$KC_BIN/uname"
 ln -sf "$REPO_ROOT/scripts/verify/fake-security.sh" "$KC_BIN/security"
+
+# A `rm` THAT QUARANTINES INSTEAD OF DELETING, and the reason the leak sweep
+# below is worth running. keychain-secrets.sh's EXIT trap removes its own scratch
+# files -- the two roster files, the block file, the staged ~/.zshrc -- before
+# this script gets to look at anything, so a value that leaked into one of them
+# would be erased by the time the sweep ran and the sweep would report "clean"
+# over a directory the evidence had been removed from. With this in front of
+# PATH, the trap's `rm -f` moves those files aside and the sweep sees exactly
+# what the script wrote. Generated, not tracked: like `uname` it models nothing
+# and has no contract to keep, and it only ever runs inside kc_env.
+KC_QUARANTINE="$KC_WORK/quarantine"
+mkdir -p "$KC_QUARANTINE"
+cat > "$KC_BIN/rm" <<'EOF'
+#!/bin/sh
+# Not a general rm. Flags are ignored, operands are moved, the exit code is
+# always 0: the point is to let a leak outlive a cleanup trap for one test.
+set -eu
+: "${FAKE_RM_QUARANTINE:?fake rm: FAKE_RM_QUARANTINE is required}"
+mkdir -p "$FAKE_RM_QUARANTINE"
+for arg in "$@"; do
+  case "$arg" in -*) continue ;; esac
+  [ -e "$arg" ] || continue
+  mv "$arg" "$(mktemp "$FAKE_RM_QUARANTINE/rm.XXXXXX")" 2>/dev/null || true
+done
+exit 0
+EOF
+chmod +x "$KC_BIN/rm"
 
 # The pty driver. keychain-secrets.sh refuses to prompt without a terminal --
 # a secret arriving on a pipe came from a file or a history -- so the harness
@@ -2248,7 +2301,8 @@ KC_LOG="$KC_WORK/security.log"
 
 kc_env() { # kc_env <cmd...> -- run cmd with the fake home, PATH and keystore
   env HOME="$KC_HOME" PATH="$KC_BIN:$PATH" \
-    FAKE_SECURITY_LOG="$KC_LOG" FAKE_SECURITY_STATE="$KC_WORK/state" "$@"
+    FAKE_SECURITY_LOG="$KC_LOG" FAKE_SECURITY_STATE="$KC_WORK/state" \
+    FAKE_RM_QUARANTINE="$KC_QUARANTINE" "$@"
 }
 
 kc_run() { # kc_run <flags...> -- headless, no prompts. Sets KC_RC and KC_OUT.
@@ -2338,9 +2392,23 @@ if grep -q "^add s=personal-ai a=TOGETHER_API_KEY" "$KC_LOG"; then
 else
   pass "pressing Enter stores nothing"
 fi
-LEAKED="$(grep -rl -- "$KC_SENTINEL" "$KC_HOME" "$KC_LOG" "$KC_WORK/state" 2>/dev/null || true)"
+# The sweep is only worth its sentence if the quarantine caught something. Three
+# scratch files exist during a run (SELECTED_ROSTER, FULL_ROSTER, BLOCK_FILE);
+# the staged ~/.zshrc is consumed by the rename instead of removed. Without this
+# guard, a stub that silently stopped working would turn the sweep below into a
+# grep over an empty directory.
+KC_QUARANTINED="$(find "$KC_QUARANTINE" -type f 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$KC_QUARANTINED" -ge 3 ] && grep -rqF -- "$KC_MARKER_BEGIN" "$KC_QUARANTINE"; then
+  pass "the script's own scratch files ($KC_QUARANTINED) outlived its cleanup trap"
+else
+  fail "the quarantine holds $KC_QUARANTINED file(s) and no export block — the sweep below is over nothing"
+fi
+# Now the sweep, over the terminal destination AND the scratch files the script
+# builds on the way there.
+LEAKED="$(grep -rl -- "$KC_SENTINEL" "$KC_HOME" "$KC_LOG" "$KC_WORK/state" \
+  "$KC_QUARANTINE" 2>/dev/null || true)"
 if [ -z "$LEAKED" ]; then
-  pass "the typed value is in no file under the fake HOME, the log or the keystore"
+  pass "the typed value is in no file the script wrote: fake HOME, log, keystore, scratch"
 else
   fail "the value leaked into: $LEAKED"
 fi
@@ -2443,7 +2511,7 @@ kc_mangled() { # kc_mangled <label> <needle> <file-builder-command...>
 
 two_begins() {
   cp "$KC_WORK/baseline" "$ZSHRC"
-  printf '%s\n' '# >>> personal-ai keychain exports (keychain-secrets.sh) >>>' >>"$ZSHRC"
+  printf '%s\n' "$KC_MARKER_BEGIN" >>"$ZSHRC"
 }
 no_end() {
   grep -v '^# <<< personal-ai' "$KC_WORK/baseline" >"$ZSHRC"
@@ -2468,10 +2536,208 @@ else
   fail "created ~/.zshrc has mode $(kc_mode "$ZSHRC") (exit $KC_RC)"
 fi
 
+# ---- ~/.zshrc IS OFTEN A LINK -------------------------------------------------
+# EVERY FIXTURE ABOVE BUILDS A PLAIN FILE, and that is why "the mode survives
+# regeneration" and "an edit OUTSIDE the markers survives byte-for-byte" both
+# stayed green while the write path stopped honouring the one shape most people
+# with a dotfiles repo actually have. stow, chezmoi and yadm all leave ~/.zshrc a
+# symlink into that repo; a `mv new ~/.zshrc` REPLACES the link with a regular
+# file, so ~/dotfiles/zshrc keeps the old bytes, stays tracked, stays edited, and
+# is read by no shell ever again. Nothing tells the user. A hardlink loses the
+# same way, one inode at a time.
+#
+# ALL NINE ARMS BELOW GO RED against scripts/mac/keychain-secrets.sh as this PR
+# first wrote it. That was run: one `git checkout` of that one file, one harness
+# run, nine failures. Each has its own reason:
+#   symlink        the link is gone and the dotfiles copy is unchanged
+#   through it     the block is in ~/.zshrc, not in the dotfiles repo
+#   its mode       755 (a symlink's OWN lstat mode, which BSD `stat -f %A`
+#                  reports) chmod'd onto a file naming every credential
+#   rewrite branch the awk arm loses the link exactly like the append arm
+#   hardlink       link count 2 -> 1, peer detached
+#   dangling link  the link is replaced instead of its target being created
+#   unwritable     silently "succeeds" by clobbering the link with a fresh
+#                  writable regular file
+#   read-only dir  the block never reaches the file it was aimed at
+#   symlink loop   walks off into a plain file instead of refusing
+KC_DOTFILES="$KC_WORK/dotfiles"
+mkdir -p "$KC_DOTFILES"
+
+kc_links() { # kc_links <path> -- hard link count, GNU then BSD
+  stat -c %h "$1" 2>/dev/null || stat -f %l "$1" 2>/dev/null
+}
+
+# kc_mode_sourced <path> -- the mode of the file a new shell ACTUALLY READS, so
+# -L. Asserting on the target path instead would be inert here: the pre-fix
+# script never wrote the target at all, so the target kept the fixture's 600 and
+# the assertion passed while ~/.zshrc itself sat at 755.
+kc_mode_sourced() {
+  stat -Lc %a "$1" 2>/dev/null || stat -Lf %A "$1" 2>/dev/null
+}
+
+# --- a symlink into a dotfiles repo, target mode 600 ---
+KC_DOTFILE="$KC_DOTFILES/zshrc"
+rm -f "$ZSHRC"
+printf '# this file lives in a dotfiles repo\nalias g=git\n' >"$KC_DOTFILE"
+chmod 600 "$KC_DOTFILE"
+ln -s "$KC_DOTFILE" "$ZSHRC"
+kc_run
+if [ "$KC_RC" -ne 0 ]; then
+  fail "a symlinked ~/.zshrc exited $KC_RC:"$'\n'"$KC_OUT"
+elif [ ! -L "$ZSHRC" ]; then
+  fail "the symlink was replaced by a $(kc_mode "$ZSHRC") regular file — the dotfiles repo is now detached"
+elif [ "$(readlink "$ZSHRC")" != "$KC_DOTFILE" ]; then
+  fail "the symlink now points at $(readlink "$ZSHRC"), not $KC_DOTFILE"
+else
+  pass "a symlinked ~/.zshrc is still a symlink after a rewrite"
+fi
+if grep -qF -- "$KC_MARKER_BEGIN" "$KC_DOTFILE" && grep -q 'alias g=git' "$KC_DOTFILE"; then
+  pass "the block was written THROUGH the link, under the dotfiles repo's own lines"
+else
+  fail "the dotfiles target did not get the block:"$'\n'"$(cat "$KC_DOTFILE")"
+fi
+# The compounding half of the same bug: `stat -f %A` is lstat, so the mode read
+# off a symlink is the LINK's own 0755 -- every symlink macOS makes is 0755 --
+# and chmodding that onto the replacement published a world-readable file naming
+# every credential on the machine. Read through the link (-L), because that is
+# the file a login shell opens; the pre-fix script leaves 755 sitting there.
+if [ "$(kc_mode_sourced "$ZSHRC")" = "600" ]; then
+  pass "the file a shell actually sources is still 600, not the symlink's own 755"
+else
+  fail "the sourced file's mode is $(kc_mode_sourced "$ZSHRC"), wanted the target's 600"
+fi
+# The first run appended (no markers yet); this one takes the awk replace branch,
+# which is the other half of the write path and regressed identically.
+cp "$KC_DOTFILE" "$KC_WORK/linked-baseline"
+kc_run --units ntfy-alerts
+if [ "$KC_RC" -eq 0 ] && [ -L "$ZSHRC" ] && cmp -s "$KC_WORK/linked-baseline" "$KC_DOTFILE"; then
+  pass "regenerating over a symlink is idempotent and still leaves a symlink"
+else
+  fail "the rewrite branch through a symlink changed something (exit $KC_RC, link: $( [ -L "$ZSHRC" ] && echo yes || echo no )):"$'\n'"$(diff "$KC_WORK/linked-baseline" "$KC_DOTFILE" || true)"
+fi
+
+# --- a hardlink, which resolve-the-symlink alone does not save ---
+# There is no link to follow here: the two names ARE the same inode, so the only
+# way to keep them together is to stop renaming over the path and truncate the
+# inode in place instead.
+KC_HARD="$KC_DOTFILES/hardlinked-zshrc"
+rm -f "$ZSHRC" "$KC_HARD"
+printf '# hardlinked into a dotfiles repo\n' >"$KC_HARD"
+chmod 600 "$KC_HARD"
+ln "$KC_HARD" "$ZSHRC"
+kc_run
+if [ "$KC_RC" -ne 0 ]; then
+  fail "a hardlinked ~/.zshrc exited $KC_RC:"$'\n'"$KC_OUT"
+elif [ "$(kc_links "$ZSHRC")" != "2" ]; then
+  fail "the hardlink was broken: link count is now $(kc_links "$ZSHRC"), wanted 2"
+elif ! cmp -s "$ZSHRC" "$KC_HARD"; then
+  fail "the two names diverged:"$'\n'"$(diff "$ZSHRC" "$KC_HARD" || true)"
+elif ! grep -qF -- "$KC_MARKER_BEGIN" "$KC_HARD"; then
+  fail "the hardlink's peer never got the block:"$'\n'"$(cat "$KC_HARD")"
+else
+  pass "a hardlinked ~/.zshrc keeps both names, and both see the block"
+fi
+# NO MODE ARM HERE, deliberately. An in-place truncate cannot change the mode,
+# and the pre-fix `mv` copied the plain file's own 600 onto the replacement, so
+# "the hardlinked file is still 600" is true before AND after the fix. It would
+# be an assertion with no broken input, which is the defect this file is about.
+# The link count above is what actually closes this case.
+
+# --- a symlink whose target does not exist yet ---
+# `[ -f ~/.zshrc ]` FOLLOWS the link, so a dotfiles repo that is cloned but does
+# not carry a zshrc yet read as "no file at all" and the create branch clobbered
+# the link. The pre-#39 `>>"$ZSHRC"` created the target instead, and so does this.
+KC_DANGLING="$KC_DOTFILES/not-in-the-repo-yet"
+rm -f "$ZSHRC" "$KC_DANGLING"
+ln -s "$KC_DANGLING" "$ZSHRC"
+kc_run
+if [ "$KC_RC" -eq 0 ] && [ -L "$ZSHRC" ] && [ -f "$KC_DANGLING" ] \
+  && [ "$(kc_mode "$KC_DANGLING")" = "600" ]; then
+  pass "a dangling symlink CREATES its target at 600 instead of replacing the link"
+else
+  fail "dangling link: exit $KC_RC, still a link: $( [ -L "$ZSHRC" ] && echo yes || echo no ), target: $(kc_mode "$KC_DANGLING" 2>/dev/null || echo missing)"
+fi
+
+# --- two flavours of "you cannot write there" ---
+# Both need a permission bit to MEAN something, so both are skipped under a uid
+# for which nothing is unwritable. One skip covers the pair.
+KC_RO="$KC_DOTFILES/readonly-zshrc"
+KC_RODIR="$KC_WORK/ro-dotfiles"
+if [ "$(id -u)" = "0" ]; then
+  skip "the two unwritable-dotfiles arms (running as root: every path is writable)"
+else
+  # An unwritable TARGET must REFUSE rather than fall back to replacing the
+  # link: clobbering it would report success while the file the user edits and
+  # commits never changes again.
+  rm -f "$ZSHRC" "$KC_RO"
+  printf '# a read-only dotfiles checkout\n' >"$KC_RO"
+  chmod 444 "$KC_RO"
+  ln -s "$KC_RO" "$ZSHRC"
+  kc_run
+  if [ "$KC_RC" != "2" ]; then
+    fail "an unwritable dotfiles target was not refused (exit $KC_RC):"$'\n'"$KC_OUT"
+  elif [ ! -L "$ZSHRC" ]; then
+    fail "the refusal replaced the link with a regular file anyway"
+  elif ! printf '%s\n' "$KC_OUT" | grep -qF "$KC_RO"; then
+    fail "the refusal did not name the unwritable target:"$'\n'"$KC_OUT"
+  elif ! grep -q 'read-only dotfiles checkout' "$KC_RO"; then
+    fail "the unwritable target was rewritten anyway"
+  else
+    pass "a symlink into an unwritable dotfiles repo is refused, naming the target"
+  fi
+  chmod 644 "$KC_RO"
+
+  # A writable file in a directory you may NOT add files to. There is nowhere to
+  # put the staged sibling, so this is the second thing that forces the in-place
+  # write; without that branch `mktemp "$dir/..."` fails and `set -e` kills the
+  # run with a raw mktemp error and no explanation.
+  rm -rf "$KC_RODIR"
+  mkdir -p "$KC_RODIR"
+  printf '# a dotfiles dir I may not add files to\n' >"$KC_RODIR/zshrc"
+  chmod 600 "$KC_RODIR/zshrc"
+  chmod 555 "$KC_RODIR"
+  rm -f "$ZSHRC"
+  ln -s "$KC_RODIR/zshrc" "$ZSHRC"
+  kc_run
+  if [ "$KC_RC" -ne 0 ]; then
+    fail "a writable file in an unwritable directory exited $KC_RC:"$'\n'"$KC_OUT"
+  elif ! grep -qF -- "$KC_MARKER_BEGIN" "$KC_RODIR/zshrc"; then
+    fail "the block never reached the file in the unwritable directory"
+  elif [ "$(kc_mode "$KC_RODIR/zshrc")" != "600" ]; then
+    fail "its mode became $(kc_mode "$KC_RODIR/zshrc"), wanted 600"
+  else
+    pass "a writable file in an unwritable directory is rewritten in place, keeping its 600"
+  fi
+  chmod 755 "$KC_RODIR"
+fi
+
+# --- a symlink loop ---
+# resolve_link walks the chain itself (macOS only grew `readlink -f` in
+# Monterey), so a -> b -> a is an infinite loop unless the walk is capped. This
+# arm is here because a harness that HANGS is worse than one that fails.
+rm -f "$ZSHRC"
+ln -s "$KC_DOTFILES/loop-b" "$KC_DOTFILES/loop-a"
+ln -s "$KC_DOTFILES/loop-a" "$KC_DOTFILES/loop-b"
+ln -s "$KC_DOTFILES/loop-a" "$ZSHRC"
+kc_run
+if [ "$KC_RC" = "2" ] && printf '%s\n' "$KC_OUT" | grep -qF "never reaches a file"; then
+  pass "a symlink loop is refused instead of spun on"
+else
+  fail "a symlink loop was not refused (exit $KC_RC):"$'\n'"$KC_OUT"
+fi
+
+# Back to a plain file: everything below writes through $ZSHRC and must not be
+# reading a link this section happened to leave behind.
+rm -f "$ZSHRC"
+cp "$KC_WORK/baseline" "$ZSHRC"
+chmod 644 "$ZSHRC"
+
 # ---- minting ----
-# NTFY_TOPIC is the one key in the catalog minted ON THE MAC (10-accounts.md §6
-# step 1), so this is a real path, not a fixture-only branch. Roster order is
-# alphabetical: NTFY_EMAIL first (Enter), then NTFY_TOPIC.
+# NTFY_TOPIC is minted ON THE MAC (10-accounts.md §6 step 1), so this is a real
+# path, not a fixture-only branch. It is not the only one -- code-agents'
+# NTFY_AGENT_TOPIC is minted at §6a the same way -- and ntfy-alerts is picked
+# here only because it is the smaller roster. Roster order is alphabetical:
+# NTFY_EMAIL first (Enter), then NTFY_TOPIC.
 : >"$KC_LOG"
 printf '\ngenerate\n' >"$KC_WORK/answers-mint"
 kc_prompted "$KC_WORK/answers-mint" --units ntfy-alerts
@@ -2516,4 +2782,7 @@ else
   fail "an unknown --units was accepted (exit $KC_RC):"$'\n'"$KC_OUT"
 fi
 
-finish
+# --skips because two arms legitimately skip together: neither unwritable-
+# dotfiles case can be exercised as a uid that may write anything, and a skip
+# that does not appear in the total is a pass by another name.
+finish --skips

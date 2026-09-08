@@ -118,12 +118,16 @@ The names are identical on every platform, and each unit's manifest declares the
 needs, so the roster is a query rather than a list to keep in sync:
 
 ```bash
-pai secrets --host mac      # what a Mac's selected units keep in the Keychain
-pai secrets --host vps      # what /data/secrets.env must hold
+pai secrets --host mac                     # the base + default_on roster (the default)
+pai secrets --host mac --units ntfy-alerts # add an add-on's names when you install it
+pai secrets --host mac --all               # every name the catalog can put in the Keychain
+pai secrets --host vps                     # what /data/secrets.env must hold
 ```
 
 A base install is two names (`OPENCODE_ZEN_API_KEY`, `TOGETHER_API_KEY`); each add-on
-brings its own. The full annotated brain-side file is `config/env/secrets.env.example`,
+brings its own, and you have to *name* it — the projection reads the manifests, not your
+machine, so the bare `--host mac` prints the same two names whether or not you installed
+anything else. The full annotated brain-side file is `config/env/secrets.env.example`,
 and the per-credential table is
 [10-accounts.md](10-accounts.md#credential-checklist).
 
