@@ -209,12 +209,13 @@ agent@brain$ ~/personal-ai-setup/scripts/vps/deploy-vps.sh --without code-agents
 ```
 
 `code-agents` is the one worth a decision. Selected, it apt-installs podman +
-uidmap + slirp4netns, grants the `agent` user a subordinate id range, enables
-linger, and runs a **multi-minute `podman build`** — on every deploy, whether
-or not the feature is ever enabled. Deselected, none of that happens and
-`check-code-agents.sh` reports SKIP rather than FAIL.
+uidmap + slirp4netns and grants the `agent` user a subordinate id range **on
+the first deploy** — both are guarded, so later deploys skip them — and then
+enables linger and runs a **multi-minute `podman build`** on **every** deploy,
+whether or not the feature is ever enabled. Deselected, none of that happens
+and `check-code-agents.sh` reports SKIP rather than FAIL.
 
-Two things to know:
+Three things to know:
 
 - **The brain core is not selectable.** The path-root migration, the goose
   config install, the systemd unit files, the `goose-serve` restart and the
@@ -224,6 +225,18 @@ Two things to know:
   already installed; `--without code-agents` on a brain that already has the
   plane leaves the image, the volumes, the subuid range and the linger setting
   exactly where they are. `pai remove` does not exist yet.
+- **Deselecting is also not freezing.** `--without code-agents` on a brain that
+  already has the plane does not restart `code-agent-manager.service`, so a
+  deploy whose `git pull` shipped new manager code leaves the **old process**
+  serving the new file — with `check-code-agents.sh --probe` still green,
+  because the old process answers `/api/health`, `/api/chats`, stop, wake and
+  delete identically. A route added in that deploy 404s, and a 404 from a stale
+  process is indistinguishable from a route that was never written. This is the
+  same `enable --now`-is-a-no-op failure the explicit `systemctl restart` in the
+  unit body exists to prevent, now reachable by choice rather than by accident.
+  If you deselected the unit and then pulled manager changes, re-run
+  `--only code-agents` (or `sudo systemctl restart code-agent-manager.service`).
+  Deploy when nothing is mid-turn: the restart SIGTERMs every chat container.
 
 If a selected unit fails, the deploy stops there and names it — `ERROR: unit
 'code-agents' failed`, plus which units completed and which never ran — and

@@ -11,9 +11,9 @@
 # unit_code_agents and unit_automations, each the installer named by a manifest
 # in config/units/ (`installer.function`), each gated by --with/--without/--only
 # and each defined immediately above its one call site. `--without code-agents`
-# is the one that pays for itself: without it every brain apt-installs podman,
-# grants a subuid range, enables linger and runs a multi-minute `podman build`
-# for a feature it may never enable.
+# is the one that pays for itself: selected, it apt-installs podman and grants a
+# subuid range ONCE (both are guarded), then enables linger and runs a
+# multi-minute `podman build` on EVERY deploy — for a feature it may never use.
 #
 # THE BRAIN CORE IS NOT A UNIT AND IS NOT SELECTABLE. The path-root migration,
 # the goose config install, the systemd unit files, `goose-serve` and the
@@ -111,7 +111,7 @@ Selectable units (all of them are on by default):
   telegram-gateway   goose-telegram-gateway.service, enabled when the token is set
   code-agents        rootless podman, the code-agent:local image, /data/code-agents
                      and code-agent-manager.service. This is the expensive one:
-                     an apt install and a multi-minute image build on every brain.
+                     a first-deploy apt install, then an image build per deploy.
   automations        register-schedules.sh — the goose scheduler roster
 
   --with ID       select ID. A NO-OP today, because every unit is already on by
@@ -661,8 +661,8 @@ completed telegram-gateway
 # ---------------------------------------------------------- code agents
 # Per-chat OpenCode containers + session manager (docs/code-agents.md,
 # docs/setup/70-code-agents.md). THIS is the unit --without exists for: an apt
-# install, a subuid grant, linger, and a multi-minute `podman build` that used
-# to run on every brain whether or not the feature was ever enabled. The
+# install and a subuid grant on the first deploy (both guarded), plus linger
+# and a multi-minute `podman build` on every deploy, enabled or not. The
 # conditional ENABLE on the two secrets stays exactly as it was — it answers a
 # different question ("are the credentials there?") from the gate ("did you ask
 # for this at all?").
