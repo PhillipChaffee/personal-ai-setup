@@ -429,6 +429,29 @@ jobs:
           }
           echo "pai verify correctly refused a roster with an unreadable manifest."
 
+      # The sweep of NOTHING. `pai units --field verify` exits 0 with empty
+      # stdout when config/units/ is absent, so before the guard this printed
+      # "== summary: 0 passed, 0 failed, 0 skipped ==" and exited 0 — a green
+      # `pai verify` that ran no check at all. The grep is what distinguishes it
+      # from every other exit-2 refusal this command has.
+      - name: Negative test — an empty roster must refuse the sweep
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/rosters-negative-empty"; mkdir -p "$work"
+          git archive HEAD | tar -x -C "$work"
+          rm -rf "$work/config/units"
+          if out="$("$work/bin/pai" verify 2>&1)"; then
+            echo "::error::pai verify reported success with an EMPTY roster — it ran nothing"
+            printf '%s\n' "$out"
+            exit 1
+          fi
+          printf '%s\n' "$out" | grep -qF "is EMPTY" || {
+            echo "::error::pai verify failed, but not about the empty roster"
+            printf '%s\n' "$out"
+            exit 1
+          }
+          echo "pai verify correctly refused an empty roster."
+
       - name: Negative test — an enabled MCP extension with no smoke test must fail
         run: |
           set -euo pipefail

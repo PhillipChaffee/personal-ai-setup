@@ -1832,8 +1832,14 @@ mk_check beta 2
 mk_check gamma 0
 mk_check brain 0
 mk_check delta 0   # on disk, claimed by nobody
+# A SECOND exit-2 check, in the same unit as check-beta.sh and never named by
+# --require. It exists so the escalation has a control: with only one exit-2
+# check in the roster, "--require beta escalated ONLY beta" has nothing to be
+# measured against, and an arm that escalates every skip unconditionally reads
+# identical. See the --require block below.
+mk_check epsilon 2
 mk_unit aa-mac mac scripts/verify/check-alpha.sh
-mk_unit bb-vps vps scripts/verify/check-beta.sh
+mk_unit bb-vps vps scripts/verify/check-beta.sh scripts/verify/check-epsilon.sh
 mk_unit cc-both both "scripts/verify/check-gamma.sh --flavour salty"
 mk_unit dd-brain vps scripts/verify/check-brain.sh
 mk_unit ee-none mac
@@ -1877,7 +1883,15 @@ saw "on the brain: a host:mac unit's check is still in the roster" "PASS  check-
 # escalation flag at all. So it owes its own negative test.
 verify_run remote --require beta
 saw "--require turns a precondition skip into a failure" "FAIL  check-beta (exit 2"
-missing "...and the un-required skips stay skips" "FAIL  check-alpha"
+# THE CONTROL, and it has to be another EXIT-2 check. This assertion used to
+# read `missing "FAIL  check-alpha"`, which can never fail: check-alpha.sh is
+# `mk_check alpha 0` and always renders as PASS, so escalating every skip
+# unconditionally left it green (verified by making that exact mutation).
+# check-epsilon.sh exits 2, is in the roster, and is NOT required — so the
+# over-broad escalation this is written to catch turns this line into
+# "FAIL  check-epsilon" and the assertion goes red.
+saw "...and an un-required exit 2 in the same unit is still a skip" \
+  "SKIP  check-epsilon (exit 2 — precondition missing)"
 if [ "$VR_RC" -eq 1 ]; then
   pass "...and the sweep exits 1"
 else
@@ -1920,6 +1934,58 @@ else
   fail "unreadable manifest gave exit $VR_RC:"$'\n'"$VR_OUT"
 fi
 rm -f "$FR/config/units/zz-broken.yaml"
+
+# AN EMPTY ROSTER IS THE SILENT GREEN SWEEP, and it is the one shape that has to
+# be CONSTRUCTED here rather than described. doctor.py's projection exits 0 with
+# EMPTY STDOUT for a checkout with no config/units/ — probe 5 in section 10a
+# asserts exactly that, `(0, [], "")` — and cmd_verify only refused a NON-ZERO
+# exit. So empty stdout fell through both `while ... <<<"$roster"` loops, every
+# check on disk landed in the "claimed by no unit" note, and `finish --skips`
+# printed "0 passed, 0 failed, 0 skipped" and exited 0. Reproduced before the
+# guard existed: `PAI_MODE=remote pai verify` on this very fixture, EXIT=0.
+#
+# check-brain.sh:159 refuses the same shape for its schedule roster. This one
+# matters more: it is not one check's precondition, it is the whole sweep.
+mv "$FR/config/units" "$FR/config/units.away"
+verify_run remote
+if [ "$VR_RC" -eq 2 ] && printf '%s\n' "$VR_OUT" | grep -qF "roster derived from config/units/*.yaml is EMPTY"; then
+  pass "a checkout with no config/units/ refuses the sweep (exit 2)"
+else
+  fail "a missing config/units/ gave exit $VR_RC:"$'\n'"$VR_OUT"
+fi
+# Not just the exit code: the footer that CALLED it a success must not print.
+# Delete the guard and this line is back, verbatim, over a roster of nothing.
+missing "...and never reaches the footer that called that a pass" \
+  "== summary: 0 passed, 0 failed, 0 skipped =="
+mv "$FR/config/units.away" "$FR/config/units"
+
+# The other way to empty it, and the one that needs no filesystem surgery at
+# all: every manifest still present, every `verify:` list empty. One careless
+# edit in a real repo, and it read as a clean sweep.
+mk_unit aa-mac mac
+mk_unit bb-vps vps
+mk_unit cc-both both
+mk_unit dd-brain vps
+mk_unit ee-none mac
+verify_run remote
+if [ "$VR_RC" -eq 2 ] && printf '%s\n' "$VR_OUT" | grep -qF "is EMPTY"; then
+  pass "every manifest's verify: emptied is the same refusal, not a green no-op"
+else
+  fail "an all-empty catalogue gave exit $VR_RC:"$'\n'"$VR_OUT"
+fi
+# Put the catalogue back, and PROVE the refusal was about the roster and not
+# about the fixture being broken: one entry restored is a running sweep again.
+mk_unit aa-mac mac scripts/verify/check-alpha.sh
+mk_unit bb-vps vps scripts/verify/check-beta.sh scripts/verify/check-epsilon.sh
+mk_unit cc-both both "scripts/verify/check-gamma.sh --flavour salty"
+mk_unit dd-brain vps scripts/verify/check-brain.sh
+mk_unit ee-none mac
+verify_run remote
+if [ "$VR_RC" -eq 0 ] && printf '%s\n' "$VR_OUT" | grep -qF "PASS  check-alpha"; then
+  pass "...and one restored entry is enough to make it a sweep again"
+else
+  fail "the restored catalogue gave exit $VR_RC:"$'\n'"$VR_OUT"
+fi
 
 # The real catalogue, through the real CLI: brain.yaml's second verify script is
 # in the roster now. The blocker it carried said it was in no runner at all.

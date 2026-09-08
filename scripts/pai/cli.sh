@@ -132,6 +132,26 @@ cmd_verify() {
     read -r -a argv <<<"$entry"
     roster_names="$roster_names ${argv[0]##*/}"
   done <<<"$roster"
+  # AN EMPTY ROSTER IS A REFUSAL, NOT A CLEAN SWEEP — and this is the roster
+  # that matters most, because it IS the sweep. doctor.py's projection exits 0
+  # with EMPTY STDOUT when config/units/ is absent or no manifest carries a
+  # `verify:` entry (test-pai.sh's probe asserts exactly that: rc 0, no lines,
+  # no stderr). Without this guard the loops below walk nothing, every check on
+  # disk lands in the "claimed by no unit" note, and `finish --skips` prints
+  # "== summary: 0 passed, 0 failed, 0 skipped ==" and exits 0. Rename or
+  # relocate config/units/ and `pai verify` becomes a permanent green no-op.
+  #
+  # die 2, matching check-brain.sh:159, which refuses the same shape for its
+  # schedule roster: with nothing to run there is no sweep left to report, and
+  # 2 is this repo's "the precondition is missing".
+  if [ -z "$roster_names" ]; then
+    die 2 "the verify roster derived from config/units/*.yaml is EMPTY" \
+      "Nothing would run, and a sweep of nothing must not report success." \
+      "Every check is claimed by some manifest's \`verify:\` list —" \
+      "\`pai units --field verify\` prints the roster, and" \
+      "scripts/verify/check-units.sh is what validates them."
+  fi
+
   for name in $required; do
     case " $roster_names " in
       *" $name "*) ;;

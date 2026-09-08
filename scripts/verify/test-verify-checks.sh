@@ -99,11 +99,25 @@ echo "-- check-mcp.sh --"
 # An enabled extension that declares an MCP server and has NO smoke test here.
 # This is the shape the three hardcoded services could never report: before,
 # enabling `tavily` was smoke-tested by nothing and nothing said so.
+#
+# THE BUILTIN AND THE PLATFORM ENTRY CARRY A `cmd:` ON PURPOSE, and that is the
+# only reason the type exclusion is tested at all. With the bare `type: builtin,
+# enabled: true` shape this fixture used to have, the `if not (cmd or uri)`
+# guard excluded `developer` on its own -- so deleting the builtin/platform
+# exclusion outright left this file at 28 passed, 0 failed (verified). A
+# hand-edited or half-migrated config really does carry both, which is exactly
+# when the two predicates have to disagree and the type has to win.
 write_config "$WORK/mcp-unknown.yaml" <<'EOF'
 extensions:
   developer:
     name: developer
     type: builtin
+    cmd: goose-mcp-developer
+    enabled: true
+  apps:
+    name: apps
+    type: platform
+    cmd: goose-mcp-apps
     enabled: true
   tavily:
     name: tavily
@@ -127,7 +141,9 @@ PAI_GOOSE_CONFIG="$WORK/mcp-unknown.yaml" GOOSE_BIN="$GOOSE_STUB" \
   run_check "$HERE/check-mcp.sh"
 saw "an enabled MCP extension with no smoke test FAILs, naming itself" \
   "FAIL  tavily is enabled and declares an MCP server, but check-mcp.sh has no smoke test"
-absent "goose's own builtins are not held to the rule" "developer is enabled"
+absent "a builtin carrying a cmd is still not held to the smoke-test rule" \
+  "developer is enabled"
+absent "...and neither is a platform extension carrying one" "apps is enabled"
 if [ "$RC_CODE" -eq 1 ]; then
   pass "...and that is a finding, not a skip"
 else
@@ -242,15 +258,29 @@ fi
 # THE ACCEPTANCE CRITERION: a machine with no connectors is not penalised for
 # the connector rule. Before, `workspace-mcp` missing was an unconditional
 # finding, so a brain that simply never installed google-workspace was red.
+#
+# `developer` and `computercontroller` carry a `cmd:` for the same reason
+# check-mcp's fixture does: check-security.sh's `declared` loop applies the same
+# two predicates, and with no `cmd:` the `cmd or uri` guard alone kept this
+# machine's connector list empty -- deleting the builtin/platform exclusion from
+# BOTH files left this file at 28 passed, 0 failed (verified). With the cmd
+# present, dropping that exclusion puts two entries in `declared`, each with no
+# `available_tools`, and the SKIP below becomes two FAILs.
 write_config "$WORK/sec-none/.config/goose/config.yaml" <<'EOF'
 extensions:
   apps:
     name: apps
     type: platform
     enabled: false
+  computercontroller:
+    name: computercontroller
+    type: platform
+    cmd: goose-mcp-computercontroller
+    enabled: true
   developer:
     name: developer
     type: builtin
+    cmd: goose-mcp-developer
     enabled: true
 EOF
 PAI_MODE=local PAI_HOME="$WORK/sec-none" HOME="$WORK/sec-none" \
@@ -323,11 +353,26 @@ chmod +x "$BR/scripts/verify/check-brain.sh"
 # Indented by one space. Under the column-0 anchor this produced an EMPTY roster
 # and the loop then reported "all 0 schedule(s) this brain should have" as a
 # PASS -- a derived check going green because its source stopped resolving.
+#
+# THE ASSERTION IS THE DERIVED IDS, NOT THE ABSENCE OF THAT OLD SENTENCE. The
+# `absent "shows all 0 schedule(s)"` that stood here could not fail: the empty-
+# ROSTER `die 2` added in the same commit makes that sentence unreachable
+# whatever the anchor does, so restoring the column-0 anchor left this file at
+# 28 passed, 0 failed -- verified by making that exact mutation. Naming both
+# schedules is what separates "derived two" from "derived nothing": under the
+# column-0 anchor this run is instead exit 2 about a roster it could not read.
 printf 'declare -A PREREQ=(\n)\n ORDER=(morning-brief inbox-triage)\n' \
   > "$BR/scripts/vps/register-schedules.sh"
 PAI_MODE=remote BRAIN_HOST=brain.invalid run_check "$BR/scripts/verify/check-brain.sh"
-absent "an indented ORDER=( no longer yields a spurious 0-schedule PASS" \
-  "shows all 0 schedule(s)"
+# The verdict prefix is part of the needle, for the reason the sec-bad fixture
+# below records: without it the same sentence emitted as a SKIP would match.
+saw "an indented ORDER=( is still derived, and every id it found is named" \
+  "FAIL  goose schedule list is missing: morning-brief inbox-triage"
+if [ "$RC_CODE" -eq 1 ]; then
+  pass "...so the check reaches its own verdict instead of the roster refusal"
+else
+  fail "check-brain exited $RC_CODE on the indented-ORDER=( fixture:"$'\n'"$RC_OUT"
+fi
 
 # Removed outright: nothing to derive, so exit 2 rather than a green sweep.
 printf 'declare -A PREREQ=(\n)\n' > "$BR/scripts/vps/register-schedules.sh"
