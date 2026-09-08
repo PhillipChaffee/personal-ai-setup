@@ -104,16 +104,16 @@ one that is not there. `bin/pai list` prints the same catalog on your machine.
 | [coding-pack](docs/cursor-port.md) | default_on | mac | Eleven ported Cursor skills, 30 OpenCode subagents, and the global AGENTS.md rule set. | `bootstrap-mac.sh` | — |
 | [goose-desktop](docs/setup/20-mac-setup.md) | default_on | mac | Human-only, turn OFF Desktop auto-update and pick the custom providers on first run. | by hand | — |
 | [opencode](docs/setup/20-mac-setup.md) | default_on | mac | The OpenCode CLI from anomalyco/tap, ~/.config/opencode/opencode.json, and the Zen credential the bootstrap writes. | `bootstrap-mac.sh` | `check-opencode.sh` |
-| [automations](docs/automations.md) | opt_in | vps | The three non-vault recipes, register-schedules.sh, and the disabled fallback timers. | `deploy-vps.sh` (planned) | — |
+| [automations](docs/automations.md) | opt_in | vps | The three non-vault recipes, register-schedules.sh, and the disabled fallback timers. | `deploy-vps.sh` | — |
 | [brain](docs/setup/50-vps-brain.md) | opt_in | vps | Hetzner VPS, LUKS /data, goose's path root on it, and goose-serve over tailnet TLS. | `deploy-vps.sh` (planned) | `check-brain.sh`, `check-security.sh --local` |
-| [code-agents](docs/setup/70-code-agents.md) | opt_in | vps | Rootless podman, the code-agent image, and the per-chat session manager. | `deploy-vps.sh` (planned) | `check-code-agents.sh` |
+| [code-agents](docs/setup/70-code-agents.md) | opt_in | vps | Rootless podman, the code-agent image, and the per-chat session manager. | `deploy-vps.sh` | `check-code-agents.sh` |
 | [connectors](docs/connecting.md) | opt_in | both | The connector vetting registry and the three disabled extension fragments. | by hand | `check-connectors.sh` |
-| [google-workspace](docs/setup/30-google-oauth.md) | opt_in | both | workspace-mcp extension for Gmail/Calendar/Tasks, and its OAuth tokens on /data. | `deploy-vps.sh` (planned) | `check-mcp.sh` |
+| [google-workspace](docs/setup/30-google-oauth.md) | opt_in | both | workspace-mcp extension for Gmail/Calendar/Tasks, and its OAuth tokens on /data. | `deploy-vps.sh` | `check-mcp.sh` |
 | [life-vault](docs/setup/60-vault-setup.md) | opt_in | vps | The private vault repo cloned to /data/life-vault, its template, and vault-qa. | by hand | — |
 | [ntfy-alerts](docs/automations.md) | opt_in | both | notify.sh and the ntfy topic that carries automation failure alerts. | by hand | — |
 | [phone-kit](docs/setup/40-phone-setup.md) | opt_in | checklist | iPhone surfaces - Telegram pairing, Tailscale, Pal Chat, a Siri Shortcut. | by hand | — |
 | [tailnet](docs/setup/10-accounts.md) | opt_in | both | Human-only, the Tailscale account, the client sign-ins, and the MagicDNS + HTTPS-cert toggles. | by hand | — |
-| [telegram-gateway](docs/setup/40-phone-setup.md) | opt_in | vps | goose's Telegram gateway on the brain, installed always and enabled only with a token. | `deploy-vps.sh` (planned) | — |
+| [telegram-gateway](docs/setup/40-phone-setup.md) | opt_in | vps | goose's Telegram gateway on the brain, a selectable unit enabled only with a token. | `deploy-vps.sh` | — |
 | [vault-automations](docs/setup/60-vault-setup.md) | opt_in | vps | health-followups and budget-checkin, gated on the vault files they read. | `deploy-vps.sh` (planned) | — |
 
 <!-- pai-docs:end units-menu -->
