@@ -516,13 +516,84 @@ jobs:
           }
           echo "check-units.sh correctly rejected a prompt of one space."
 
+      # NEGATIVE TEST 8 — the CONTAINMENT around P8(f), rather than P8(f)'s
+      # verdict. Test 4 above proves the arm that runs bootstrap-mac.sh can
+      # fail; this proves that running it cannot hurt the machine it runs on.
+      #
+      # check-units.sh is a LINTER. People run it locally, on a Mac, casually.
+      # P8(f) forks the real installer five times, and the only thing that used
+      # to make that safe was `--dry-run` exiting before every write — a
+      # property asserted by test-base-install.sh's H2/H2b/H3, a different
+      # harness in a different workflow. On a tree where that `exit 0` is
+      # broken, the linter would `brew install` and write into the developer's
+      # ~/.config. dry_run_plan() now hands the child a throwaway $HOME and
+      # checks it afterwards, and this is the control for both halves.
+      #
+      # The mutation is that broken tree, minus the danger: the dry-run path
+      # writes ONE named directory and still exits 0, so nothing here needs
+      # Homebrew or macOS.
+      #
+      # THREE checks, and the attribution matters because it was measured
+      # rather than reasoned. The exit-status check says check-units.sh
+      # refused; the grep says units_lint.py named the write. The grep is the
+      # one that fails the day somebody deletes `env["HOME"] = sandbox` --
+      # verified by deleting exactly that line, which reddens this step at the
+      # grep with "the gate failed, but not about the write".
+      #
+      # The final `[ ! -e "$HOME/$probe" ]` is a BACKSTOP, not the load-bearing
+      # line: under either mutation the probe really does land in the runner's
+      # $HOME, yet it is always reported upstream first. It stays because it is
+      # the only check that would survive a future refactor moving the message,
+      # but do not cite it as what protects the sandbox.
+      - name: Negative test — a --dry-run that writes into $HOME must fail
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/units-negative-dryrun-home"; rm -rf "$work"; mkdir -p "$work"
+          git archive HEAD | tar -x -C "$work"
+          probe=".pai-dry-run-must-not-write"
+          installer="$work/scripts/mac/bootstrap-mac.sh"
+          # python3 rather than sed: BSD sed takes no `\n` in a replacement, and
+          # a mutation nobody can run on their own Mac is a mutation nobody
+          # re-verifies. `  exit 0` at that indent is the dry-run block's own
+          # exit and the only one in the file; the count refuses to guess.
+          python3 - "$installer" "$probe" <<'PY'
+          import sys
+
+          path, probe = sys.argv[1], sys.argv[2]
+          text = open(path).read()
+          anchor = "\n  exit 0\n"
+          if text.count(anchor) != 1:
+              sys.exit(f"'  exit 0' is not the dry-run block's unique exit ({text.count(anchor)})")
+          write = '\n  mkdir -p "$HOME/' + probe + '"\n  exit 0\n'
+          open(path, "w").write(text.replace(anchor, write))
+          PY
+          grep -qF "mkdir -p \"\$HOME/$probe\"" "$installer" || {
+            echo "::error::the dry-run write mutation did not apply — this control is inert"
+            exit 1
+          }
+          if out="$("$work/scripts/verify/check-units.sh" --offline 2>&1)"; then
+            echo "::error::check-units.sh accepted a --dry-run that writes into \$HOME"
+            printf '%s\n' "$out"
+            exit 1
+          fi
+          printf '%s\n' "$out" | grep -qF "wrote 1 entry into its \$HOME ($probe)" || {
+            echo "::error::the gate failed, but not about the write — P8(f)'s containment is inert"
+            printf '%s\n' "$out"
+            exit 1
+          }
+          # THE SANDBOX ITSELF. Five children each ran that mkdir; if any of
+          # them had the real environment, this directory is here now.
+          [ ! -e "$HOME/$probe" ] \
+            || { echo "::error::the --dry-run wrote into the RUNNER's \$HOME — P8(f) is not sandboxed"; exit 1; }
+          echo "check-units.sh named the write, and it landed in a throwaway \$HOME."
+
       # The monthly run. continue-on-error until the catalog closes: --strict
       # also promotes the two REVERSE-closure checks, and every check-*.sh and
       # every secrets.env.example key is unclaimable until all 18 manifests
       # exist. A scheduled job that is red on arrival trains people to ignore
       # it — the same argument that makes staleness a NOTE in the required job.
       # FLIP THIS TO false IN THE PR THAT ADDS THE REMAINING 15 MANIFESTS; the
-      # seven negative tests above are what keep --strict honest until then.
+      # eight negative tests above are what keep --strict honest until then.
       - name: check-units.sh --strict (monthly)
         if: github.event_name == 'schedule'
         continue-on-error: true
