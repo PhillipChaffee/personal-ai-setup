@@ -340,29 +340,45 @@ if leg differential; then
   # The seam commit is deliberately zero-behaviour-change, so it is a valid
   # baseline for "the carve moved nothing".
   #
-  # THE SHA IS NOT GUARANTEED TO STAY REACHABLE, and an earlier version of this
-  # comment claimed it was. This repo's history is MIXED: #101-#104 landed as
-  # `Merge pull request #NN` commits, and #105 — the directly analogous Mac
-  # carve — was SQUASHED, which is why main's tip has a single parent. A squash
-  # of the PR that introduced this file leaves the seam commit unreachable and
-  # `cat-file -e` starts failing. That is not a skip: a differential that
-  # silently stops asserting is the failure this whole file exists to prevent,
-  # so the only arm that may skip is a genuinely SHALLOW clone (which a `git
-  # fetch --unshallow` fixes), and everything else is a FAILURE with a runbook.
+  # THE TAG refs/tags/vps-pre-carve IS LOAD-BEARING. DO NOT DELETE IT.
+  #
+  # The sha below is NOT an ancestor of main and is not guaranteed to become
+  # one. This repo's history is MIXED: #101-#104 landed as `Merge pull request
+  # #NN` commits, while #105-#108 — including the directly analogous Mac carve —
+  # were SQUASHED. A squash makes the seam commit unreachable from every branch,
+  # `cat-file -e` starts failing, and the differential stops asserting. That is
+  # not a skip: a differential that silently stops asserting is the failure this
+  # whole file exists to prevent, so the only arm that may skip is a genuinely
+  # SHALLOW clone (which a `git fetch --unshallow` fixes), and everything else is
+  # a FAILURE with a runbook.
+  #
+  # The tag is what makes that impossible, whatever the merge strategy:
+  #   git push origin 06b04ca39669e8efbfa29fb6f6fefdab37987493:refs/tags/vps-pre-carve
+  # A tag is a ref, so the object stays reachable through any squash, rebase or
+  # branch deletion, and actions/checkout with `fetch-depth: 0` fetches tags
+  # (getRefSpecForAllHistory includes `+refs/tags/*:refs/tags/*`), so CI sees it
+  # too. Deleting the tag re-arms exactly the failure it was pushed to prevent.
+  #
+  # PINNED BY SHA RATHER THAN BY TAG NAME, deliberately. A sha is
+  # content-addressed: `vps-pre-carve` could be moved onto a post-carve revision
+  # by anyone with push access and the comparison would quietly become the tree
+  # against itself. (V0 below also checks the blob's shape, so that has two
+  # guards, not one.) The tag's job is REACHABILITY; the sha's job is IDENTITY.
   #
   # AND NO OLDER SHA CAN REPLACE IT. The obvious hardening — pin something that
-  # is already an ancestor of main, the way test-base-install.sh:856 pins the
+  # is already an ancestor of main, the way test-base-install.sh:1369 pins the
   # merge commit 5f016b3 — is not available here: the seam is introduced by
   # this branch's own first commit, and every earlier revision of
   # deploy-vps.sh writes to the literal /data and /etc/systemd/system, so it
-  # cannot be run against a fake host at all. The two durable options are to
-  # land this PR as a merge commit, or to pin the object with a tag:
-  #   git push origin e3e97f45e2100aeaae89d4d25c78649114c9b74f:refs/tags/vps-pre-carve
-  # A tag keeps the object alive whatever the merge strategy, and
-  # actions/checkout with fetch-depth: 0 fetches tags. Failing both, GitHub
-  # keeps refs/pull/110/head forever, so the blob is recoverable — see the
+  # cannot be run against a fake host at all. Failing the tag, GitHub keeps
+  # refs/pull/110/head forever, so the blob is still recoverable — see the
   # failure text below, which says how.
-  PRE_CARVE_SHA="e3e97f45e2100aeaae89d4d25c78649114c9b74f"
+  #
+  # RE-PIN THIS IF THE BRANCH IS EVER REBASED. A rebase rewrites every commit on
+  # the branch, so the seam gets a new sha and V0 goes red on "UNREACHABLE in a
+  # full clone" — correctly. Re-pin to the rebased seam commit and re-push the
+  # tag at it; do not reach for `--depth 1` to make the red go away.
+  PRE_CARVE_SHA="06b04ca39669e8efbfa29fb6f6fefdab37987493"
 
   HAVE_GIT=0; SHALLOW=0; HAVE_BLOB=0
   if git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
@@ -396,7 +412,7 @@ if leg differential; then
     # `git fetch --unshallow` (or actions/checkout's fetch-depth: 0) restores it.
     skipped "V0/V1/V1b: this is a SHALLOW clone and the pre-carve blob was never fetched — run 'git fetch --unshallow' (CI uses fetch-depth: 0)"
   elif [ "$HAVE_GIT" -eq 1 ]; then
-    bad "V0: ${PRE_CARVE_SHA:0:9}:scripts/vps/deploy-vps.sh is UNREACHABLE in a full clone (a squash merge of the PR that introduced it is how that happens), so V1/V1b asserted nothing. Fix it, do not skip it: recover the object with 'git fetch origin refs/pull/110/head' (GitHub keeps that ref forever) and pin it for good with 'git push origin ${PRE_CARVE_SHA}:refs/tags/vps-pre-carve', or retire V1/V1b deliberately and say in this file what replaces them. Do NOT re-pin to a post-carve revision — V0 checks for that and it compares the tree with itself."
+    bad "V0: ${PRE_CARVE_SHA:0:9}:scripts/vps/deploy-vps.sh is UNREACHABLE in a full clone, so V1/V1b asserted nothing. The tag refs/tags/vps-pre-carve exists to make this impossible, so it has most likely been DELETED (or this branch was rebased and the sha above was not re-pinned). Fix it, do not skip it: 'git fetch origin refs/tags/vps-pre-carve' first; failing that recover the object with 'git fetch origin refs/pull/110/head' (GitHub keeps that ref forever) and re-push the tag with 'git push origin ${PRE_CARVE_SHA}:refs/tags/vps-pre-carve'; failing THAT, retire V1/V1b deliberately and say in this file what replaces them. Do NOT re-pin to a post-carve revision — V0 checks for that and it compares the tree with itself."
   else
     bad "V0: $REPO_ROOT is not a git work tree, so the pre-carve baseline cannot be read and V1/V1b asserted nothing. Run this harness from a clone, not from a 'git archive' export."
   fi
