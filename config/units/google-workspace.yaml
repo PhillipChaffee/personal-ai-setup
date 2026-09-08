@@ -31,6 +31,12 @@ installer:
 # check-mcp.sh proves the extension can complete one real goose run per
 # authorized account. It cannot prove the OAuth app is published (see the
 # blocker below), because a 7-day refresh token works perfectly on day 1.
+#
+# It no longer runs that Gmail check unconditionally: its roster is the LIVE
+# config.yaml's enabled MCP extensions, so a machine that never installed this
+# unit skips the Gmail smoke test rather than failing it. The same derivation
+# is what makes an extension somebody enables later - one with no smoke test in
+# check-mcp.sh - a named FAILURE instead of an unnoticed gap.
 verify:
   - scripts/verify/check-mcp.sh
 runbook: docs/setup/30-google-oauth.md

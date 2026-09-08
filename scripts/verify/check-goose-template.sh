@@ -48,24 +48,11 @@ case "${1:-}" in
 esac
 
 # ---- python runner ----------------------------------------------------------
-# Third copy of this ladder (check-connectors.sh, cli.sh), same message on
-# purpose: a person who hits it in one script should recognise it in the next.
-if command -v python3 >/dev/null 2>&1; then
-  :
-else
-  die 2 "python3 not found (needed to parse YAML)"
-fi
-PY=(python3)
-if python3 -c 'import yaml' >/dev/null 2>&1; then
-  :
-elif command -v uv >/dev/null 2>&1; then
-  PY=(uv run --quiet --with pyyaml python)
-else
-  die 2 "python3 cannot import yaml (PyYAML)." \
-    "  Mac:   uv is installed by scripts/mac/bootstrap-mac.sh — re-run it," \
-    "         or: python3 -m pip install --user pyyaml" \
-    "  Brain: apt-get install -y python3-yaml"
-fi
+# lib.sh's py_runner. The assignment is deliberate: `read -r -a PY <<<"$(...)"`
+# swallows the die (verified under bash 3.2.57), which is what the version in
+# cli.sh used to do.
+PY_CMD="$(py_runner)"
+read -r -a PY <<<"$PY_CMD"
 
 # ---- run --------------------------------------------------------------------
 OUT_FILE="$(mktemp)"

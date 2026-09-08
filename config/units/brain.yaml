@@ -42,11 +42,18 @@ installer:
 
 # The only unit in the catalog with two verify scripts, and they check
 # different things: check-brain.sh asserts the service is up and answering,
-# check-security.sh asserts nothing else can reach it (public port probe) and
-# that no goose path escapes /data (--local).
+# check-security.sh --local asserts /data is really the LUKS mount, that no
+# goose path escapes it, and that the live config.yaml carries the extension
+# hardening the no-clobber install cannot deliver.
+#
+# `--local` is written here, not assumed by the runner. check-security.sh's
+# other mode is the external port probe, and that one CANNOT be a roster entry:
+# it takes the brain's public IP as an argument and, by its own usage text,
+# must run from a DIFFERENT machine than the one it is probing. Two modes, one
+# script, and this is the mode that is this unit's proof.
 verify:
   - scripts/verify/check-brain.sh
-  - scripts/verify/check-security.sh
+  - scripts/verify/check-security.sh --local
 runbook: docs/setup/50-vps-brain.md
 
 secrets:
@@ -127,14 +134,15 @@ blockers:
       admin-console prerequisites (MagicDNS, HTTPS Certificates) are still on
       - those are recorded only in renew-tls-cert.sh:6-7. This is the price of
       folding the timer into this unit instead of minting a nineteenth.
-  - id: check-security-is-in-no-runner
+  - id: check-security-probe-is-in-no-runner
     severity: warn
-    detail: cli.sh:60's local roster is `providers goose mcp connectors brain
-      code-agents` (and :62's remote roster is shorter still), so `pai verify`
-      never runs check-security.sh in either mode - even though
-      deploy-vps.sh:452 calls it "the thing to re-run after any hand-merge".
-      One of this unit's two verify scripts is reachable only by typing its
-      path. (#42 owns fixing cli.sh's roster.)
+    detail: '`pai verify` now derives its roster from this field, so
+      check-security.sh --local is finally in a runner (it was in none: the old
+      hardcoded roster named brain and code-agents but not security). The
+      EXTERNAL port probe still is not, and cannot be - it needs the public IP
+      as an argument and must run from a different machine than the brain, so
+      no roster entry can supply it. It stays a hand-run command, quoted in
+      docs/security.md:52 and docs/setup/70-code-agents.md:81.'
   - id: deploy-vps-has-no-harness
     severity: warn
     detail: bootstrap-mac.sh is driven end to end by
