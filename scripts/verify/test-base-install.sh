@@ -6,7 +6,7 @@
 # checks the installer's last screen tells you to run are run against that
 # install: check-providers.sh and check-goose.sh.
 #
-# Five phases, and each exists because it asserts something no other one can:
+# Nine phases, and each exists because it asserts something no other one can:
 #
 #   A  fresh install      the 16-line brew golden, the config copy, the skills,
 #                         the pins comparison, the deny-PATH invariant
@@ -17,12 +17,28 @@
 #                         provider, asserted on the WIRE and not on the exit code
 #   E  default endpoints  ZEN_BASE/TOGETHER_BASE unset still address the real
 #                         hosts, proved with a recording curl shim and 0 packets
+#   F  the flag surface   --with/--without/--only, and the ways they are refused
+#   G  --without opencode the cascade, observed on disk and announced
+#   H  --dry-run          the hand-typed plan goldens, and that nothing moved
+#   I  the OpenCode unit  the credential unit_opencode() writes with no TUI
+#                         (#38), and check-opencode.sh against fake-opencode.sh
+#
+# THE OPENCODE PHASE IS `I`, NOT `F`, AND THAT IS THE ONE THING #38 HAD TO GIVE
+# UP IN THE REBASE. It was written as phase F against a tree where F was free;
+# #37's flag surface landed first and took F, G and H, and `--only select`'s
+# help text in this file names them. Two phases spelled F would print two
+# different `FAIL  F5:` lines in the same run and share five shell variables
+# (F4_RC, F5_RC, F5_HOME, F6_RC, F6_OUT) across a thousand lines, so the
+# newcomer moved. Every row #38 shipped is here, in order, with an I: I0, I0b,
+# I1 and up. install-test.yml's third negative test greps `^FAIL  I1:`.
 #
 # Every assertion carries its id from the spec (A1..A16, B1..B4, C1, D1..D6,
-# E1..E2) so a failure names the thing the installer did not do, rather than the
-# line that happened to notice. Two ids are this file's own: E1b, because E1 as
-# written cannot fail the way its negative control claims (see phase E), and
-# D-deny, which extends the deny-PATH invariant over the check-goose step. A14
+# E1..E2, F1..F6, G1..G5, H1..H4, I0..I8) so a failure names the thing the
+# installer did not do, rather than the line that happened to notice. Four ids
+# are this file's own: E1b, because E1 as written cannot fail the way its
+# negative control claims (see phase E); D-deny, which extends the deny-PATH
+# invariant over the check-goose step; A9, the no-flag run's zero-skip guard;
+# and I0b, which asserts check-opencode.sh's exit-2 precondition arm. A14
 # is now A14a + A14b -- the seam's SHAPE and the installer's OUTPUT are two
 # claims, and #37 makes only the first of them expressible as a diff of source.
 #
@@ -84,7 +100,8 @@ REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 
 usage() {
   cat <<'EOF'
-Usage: test-base-install.sh [--only brew|goose|providers|routing|select] [--help]
+Usage: test-base-install.sh [--only brew|goose|providers|routing|select|opencode]
+                            [--help]
 
 Runs bootstrap-mac.sh and the verify checks against the fakes in this
 directory, in a throwaway $HOME, with no network and fixture keys.
@@ -99,6 +116,9 @@ directory, in a throwaway $HOME, with no network and fixture keys.
                      contradictions, --only vs --with), --without opencode, and
                      --dry-run. `--only goose` also runs G, because G5 asserts
                      check-goose.sh against the opencode-less $HOME.
+  --only opencode    phase A + phase I: the credential unit_opencode() writes
+                     with no TUI, and check-opencode.sh against
+                     fake-opencode.sh and phase I's own fake-provider.py
   (no flag)          all of it
 
 Needs python3 with PyYAML (bootstrap compares config/pins.yaml with it) and
@@ -118,7 +138,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$ONLY" in
-  ""|brew|goose|providers|routing|select) ;;
+  ""|brew|goose|providers|routing|select|opencode) ;;
   *) echo "test-base-install.sh: unknown --only leg: $ONLY" >&2; usage >&2; exit 2 ;;
 esac
 
@@ -780,12 +800,18 @@ if leg select; then
   H_HOME="$WORK/home-dry"
   H_RC="$(run_bootstrap_flags h "$H_HOME" --dry-run)"
 
-  # H1 — THE WHOLE DEFAULT DRY RUN, hand-typed. Thirty-two lines: the plan
+  # H1 — THE WHOLE DEFAULT DRY RUN, hand-typed. Thirty-three lines: the plan
   # header, the five units in dependency order, the `would install` banner, and
-  # all 25 items the five units own. Typed out of config/units/*.yaml's `owns`
+  # all 26 items the five units own. Typed out of config/units/*.yaml's `owns`
   # blocks in manifest order, NEVER pasted from a run of the script — the same
   # rule as A1 and G4, for the same reason (an expectation derived from the code
   # under test compares the code to itself and can never fail).
+  #
+  # It grew a line with #38: ~/.local/share/opencode/auth.json, opencode.yaml's
+  # fifth `owns` entry, between opencode.json and connect-service. RE-TYPED out
+  # of the manifest by hand, in the manifest's order, exactly as the rule above
+  # requires — the temptation on a rebase is to paste the new run's output and
+  # call the golden updated, which converts this assertion into a tautology.
   #
   # It is the whole file and not `head -N`. This assertion USED to clip to six
   # lines, which meant the banner and every owns line were compared to nothing:
@@ -820,6 +846,7 @@ if leg select; then
   file          ~/.config/goose/.goosehints
   brew formula  anomalyco/tap/opencode
   file          ~/.config/opencode/opencode.json
+  file          ~/.local/share/opencode/auth.json
   file          ~/.agents/skills/connect-service
   file          ~/.agents/skills/ci-lint-test
   file          ~/.agents/skills/clean-plan
@@ -836,9 +863,9 @@ if leg select; then
   file          ~/.config/opencode/AGENTS.md
 EOF
   if [ "$H_RC" = "0" ] && diff -u "$WORK/golden-h.txt" "$WORK/out/h.log" >"$WORK/h1.diff" 2>&1; then
-    ok "H1: --dry-run prints exactly the 32-line five-unit plan and its 25 owned items"
+    ok "H1: --dry-run prints exactly the 33-line five-unit plan and its 26 owned items"
   else
-    bad "H1: the default --dry-run output is not the 32-line golden (rc=$H_RC)"
+    bad "H1: the default --dry-run output is not the 33-line golden (rc=$H_RC)"
     evidence "$WORK/h1.diff"
   fi
 
@@ -1336,10 +1363,22 @@ open(sys.argv[3], "w").write("\n".join(code) + "\n")
       # FAKE_BREW_STATE would make the second run take the idempotent path and
       # install nothing, and the diff would then compare a full tree against
       # itself-from-the-first-run.
+      #
+      # OPENCODE_ZEN_API_KEY IS WITHHELD FROM BOTH SIDES (#38). The differential
+      # asks "does the carve change what gets installed", and the answer has to
+      # be about the carve. unit_opencode() now calls opencode-auth.sh, which
+      # writes ~/.local/share/opencode/auth.json that the pre-carve blob knows
+      # nothing about -- a real, deliberate new behaviour that would read here
+      # as a regression. Empty rather than excluded from the diff: with no key
+      # the script takes its documented "print one line, write nothing" arm on
+      # BOTH sides, so the trees stay comparable and nothing is hidden from the
+      # comparison. Phase F is where the auth write is asserted, against phase
+      # A's $HOME, which DOES have the fixture key.
       local rc=0
       mkdir -p "$2" "$WORK/state-$4" "$WORK/prefix-$4"
       : >"$WORK/brew-$4.log"
       HOME="$2" \
+      OPENCODE_ZEN_API_KEY="" \
       PATH="$BOOT_PATH" \
       PAI_EXEC="$3" \
       PAI_FAKE_ROOT="$WORK" \
@@ -1408,7 +1447,282 @@ open(sys.argv[3], "w").write("\n".join(code) + "\n")
   }
 fi
 
-# ---- 12. summary --------------------------------------------------------------
+# ==== 12. phase I — the OpenCode unit (#38) ===================================
+# APPENDED AS ONE CONTIGUOUS BLOCK, and the delimiters earned their keep: #37's
+# flag surface (phases F, G and H above) was being written against this same
+# file at the same time, and it landed first. Everything this issue adds lives
+# between these two banners and inside unit_opencode(), so the rebase was three
+# conflicts and no interleaving. The one thing it cost is the phase LETTER --
+# see the note at the top of this file for why F became I.
+#
+# What phase I is for: nothing under scripts/verify/ has ever executed the
+# opencode binary, so whichever tier OpenCode lands in it shipped unverified.
+# These nine rows are the first ones that run it.
+#
+# IT STARTS ITS OWN fake-provider.py, ON ITS OWN PORT, WITH ITS OWN RECORD.
+# Phase D's provider is killed at the bottom of the `leg goose || leg providers`
+# guard and `--only opencode` never enters that block, so there is nothing to
+# reuse; a fresh record also means I3's expectation is a delta against a mark
+# this phase takes itself, with no coupling to any earlier phase's row count.
+if leg opencode; then
+  echo
+  echo "== phase I: the OpenCode credential, and check-opencode.sh =="
+
+  OC_PORT="${OC_PORT:-4395}"
+  OC_URL="http://127.0.0.1:$OC_PORT"
+  OC_RECORD="$WORK/opencode-provider.jsonl"
+  # ONE deny log for the whole phase, and I7 asserts it empty. Both walls feed
+  # it: the auth probes run behind $WORK/deny (nothing external at all), and
+  # check-opencode.sh runs behind $WORK/deny-net (curl allowed, because
+  # fake-opencode.sh stands in for the HTTP the real binary does itself).
+  OC_DENY="$WORK/deny-i.log"
+  : >"$OC_DENY"
+  : >"$OC_RECORD"
+  "$HERE/fake-provider.py" --port "$OC_PORT" --out "$OC_RECORD" \
+    >"$WORK/out/opencode-provider.log" 2>&1 &
+  PROVIDER_PID=$!
+
+  OC_READY=0
+  for _ in $(seq 1 100); do
+    code="$(curl -sS -o /dev/null -w '%{http_code}' \
+      -H "Authorization: Bearer $ZEN_FIXTURE_KEY" \
+      "$OC_URL/zen/v1/models" 2>/dev/null || echo 000)"
+    [ "$code" = "200" ] && { OC_READY=1; break; }
+    sleep 0.1
+  done
+  [ "$OC_READY" -eq 1 ] || {
+    evidence "$WORK/out/opencode-provider.log"
+    die "fake-provider.py never answered 200 on $OC_URL/zen/v1/models (port $OC_PORT busy?)"
+  }
+
+  oc_row_count() { grep -c . "$OC_RECORD" 2>/dev/null || true; }
+  oc_rows_since() {
+    # The phase D shape, deliberately duplicated rather than hoisted: rows_since
+    # is defined INSIDE the `leg goose || leg providers` guard, so hoisting it
+    # would mean editing a region #37 is also in. Six lines is the cheaper of
+    # the two costs and this comment is the record of that choice.
+    "$WORK/pathmin/python3" -c '
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+for r in rows[int(sys.argv[2]):]:
+    print(r["mount"], r["method"], r["path"], r["auth_scheme"],
+          str(r["key_matched"]).lower(), r["model"] or "-", r["status"])
+' "$OC_RECORD" "$1"
+  }
+
+  # -- I1/I2: the file PHASE A's bootstrap wrote, in phase A's $HOME ----------
+  # Read back, never planted here. The acceptance criterion is "`pai install`
+  # authenticates OpenCode with no TUI interaction", and a fixture this section
+  # wrote itself would be the harness testing the harness.
+  OC_AUTH="$FAKE_HOME/.local/share/opencode/auth.json"
+  [ -f "$OC_AUTH" ] &&
+    ok "I1: unit_opencode() wrote ~/.local/share/opencode/auth.json — no TUI, no /connect" ||
+    bad "I1: no auth.json under the installed \$HOME — the bootstrap did not authenticate OpenCode"
+
+  # oct(st_mode & 0o777) rather than `stat`: `stat` is not in REQUIRED_TOOLS
+  # (so it is not in $WORK/pathmin either) and its flags differ BSD vs GNU.
+  OC_MODE="$("$WORK/pathmin/python3" -c \
+    'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' \
+    "$OC_AUTH" 2>/dev/null || true)"
+  [ "$OC_MODE" = "600" ] &&
+    ok "I2: auth.json is mode 600" ||
+    bad "I2: auth.json is mode ${OC_MODE:-absent}, want 600 — a live credential at a wider mode"
+
+  # -- the stand-in binaries -------------------------------------------------
+  plant_opencode() {
+    # plant_opencode <bin-dir> <version> — a PATH shim that execs
+    # fake-opencode.sh with a fixed version, the same shape fake-brew.sh's
+    # materialise_goose() writes for goose. Planted by the HARNESS and not by
+    # fake-brew: fake-brew.sh:65-76 states that its materialisation allowlist is
+    # exactly one binary and must not grow, and every question phase I asks is
+    # about check-opencode.sh's logic rather than about which formula brew ran.
+    mkdir -p "$1"
+    cat >"$1/opencode" <<EOF
+#!/bin/sh
+FAKE_OPENCODE_VERSION="$2"
+export FAKE_OPENCODE_VERSION
+exec "$HERE/fake-opencode.sh" "\$@"
+EOF
+    chmod 755 "$1/opencode"
+  }
+
+  # 1.18.19 / 1.18.26 are the two versions the ticket measured on the owner's
+  # Mac: brew's pinned formula, and the self-updating vendor build that was
+  # ahead of it on PATH.
+  OC_BREW_PREFIX="$WORK/opencode-brew"
+  plant_opencode "$OC_BREW_PREFIX/bin" "1.18.19"
+  OC_PATH="$OC_BREW_PREFIX/bin:$WORK/deny-net:$WORK/pathmin"
+
+  # -- I0/I3: the check itself -----------------------------------------------
+  OC_MARK="$(oc_row_count)"
+  OC_OUT="$WORK/out/opencode.log"; OC_RC=0
+  # $OPENCODE_BREW_PREFIX is what keeps `brew --prefix opencode` from running:
+  # brew is on DENY_NAMES and `command -v brew` SUCCEEDS against the exit-127
+  # shim, so the bare call would land in $OC_DENY and I7 would catch it.
+  PATH="$OC_PATH" \
+  PAI_DENY_LOG="$OC_DENY" \
+  OPENCODE_BREW_PREFIX="$OC_BREW_PREFIX" \
+  FAKE_PROVIDER_URL="$OC_URL" \
+    "$HERE/check-opencode.sh" >"$OC_OUT" 2>&1 || OC_RC=$?
+
+  [ "$OC_RC" -eq 0 ] && grep -qF "== summary: 9 passed, 0 failed, 0 skipped ==" "$OC_OUT" &&
+    ok "I0: check-opencode.sh exited 0 with '9 passed, 0 failed, 0 skipped'" || {
+    bad "I0: check-opencode.sh exited $OC_RC without a clean nine-row summary"
+    evidence "$OC_OUT"
+  }
+
+  # I3 — THE WIRE. I0's exit code is satisfiable by a check that inspects files
+  # and never opens a socket; this row is not. One request, built end to end
+  # from the INSTALLED opencode.json (the model id) and the INSTALLED auth.json
+  # (the key), landing key-matched on the Zen mount.
+  cat >"$WORK/expect-i3.txt" <<'EOF'
+zen POST /zen/v1/chat/completions bearer true minimax-m2.7 200
+EOF
+  oc_rows_since "$OC_MARK" >"$WORK/actual-i3.txt" || true
+  if diff -u "$WORK/expect-i3.txt" "$WORK/actual-i3.txt" >"$WORK/i3.diff" 2>&1; then
+    ok "I3: \`opencode run\` made exactly one Zen request, with the model the installed config pins"
+  else
+    bad "I3: the request check-opencode.sh provoked is not the one the installed config implies"
+    evidence "$WORK/i3.diff"
+  fi
+
+  # I0b — NOT INSTALLED IS A SKIP, NOT A FINDING. `opencode` is not in
+  # DENY_NAMES, so taking the fixture prefix off PATH simply leaves nothing to
+  # resolve — the state of a Mac that deliberately did not install this add-on.
+  # scripts/pai/cli.sh reads exit 2 as a skip, so a FAIL here would turn every
+  # such machine red.
+  I0B_ERR="$WORK/out/i0b.err"; I0B_RC=0
+  PATH="$WORK/deny-net:$WORK/pathmin" \
+  PAI_DENY_LOG="$OC_DENY" \
+  OPENCODE_BREW_PREFIX="$OC_BREW_PREFIX" \
+    "$HERE/check-opencode.sh" >/dev/null 2>"$I0B_ERR" || I0B_RC=$?
+  [ "$I0B_RC" -eq 2 ] && grep -qF "opencode CLI not found on PATH" "$I0B_ERR" &&
+    ok "I0b: with no opencode on PATH, check-opencode.sh exits 2 and names the precondition" || {
+    bad "I0b: check-opencode.sh exited $I0B_RC with no opencode installed (want 2)"
+    evidence "$I0B_ERR"
+  }
+
+  # -- I4/I5: opencode-auth.sh's two arms, driven directly -------------------
+  # DIRECTLY, not through bootstrap-mac.sh: both need a $HOME in a state the
+  # installer cannot produce (a pre-existing second provider; no key at all),
+  # and two more full bootstraps to reach a forty-line script would buy nothing.
+  run_auth() {
+    # run_auth <home> <out-file> <key|-> ; echoes rc. Behind the FULL deny wall:
+    # opencode-auth.sh must reach no external binary at all, and I7 is what says
+    # so. The key travels as an environment variable, never on argv.
+    local rc=0
+    mkdir -p "$1"
+    if [ "$3" = "-" ]; then
+      PATH="$WORK/deny:$WORK/pathmin" PAI_DENY_LOG="$OC_DENY" HOME="$1" \
+        env -u OPENCODE_ZEN_API_KEY "$REPO_ROOT/scripts/mac/opencode-auth.sh" \
+        >"$2" 2>&1 </dev/null || rc=$?
+    else
+      PATH="$WORK/deny:$WORK/pathmin" PAI_DENY_LOG="$OC_DENY" HOME="$1" \
+      OPENCODE_ZEN_API_KEY="$3" \
+        "$REPO_ROOT/scripts/mac/opencode-auth.sh" >"$2" 2>&1 </dev/null || rc=$?
+    fi
+    echo "$rc"
+  }
+
+  # I4 — MERGE, NOT OVERWRITE. seed_auth (code-agent-manager.py:1094) opens the
+  # file "w" and dumps a single-key object; copying that here would silently
+  # delete every other provider a Mac had connected. The sentinel is generated
+  # at run time and never committed.
+  I4_HOME="$WORK/home-merge"
+  I4_SENTINEL="pai-install-test-other-$$"
+  mkdir -p "$I4_HOME/.local/share/opencode"
+  I4_AUTH="$I4_HOME/.local/share/opencode/auth.json"
+  PAI_I4_PATH="$I4_AUTH" PAI_I4_SENTINEL="$I4_SENTINEL" "$WORK/pathmin/python3" -c '
+import json, os
+path = os.environ["PAI_I4_PATH"]
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump({"anthropic": {"type": "api", "key": os.environ["PAI_I4_SENTINEL"]}}, fh)
+os.chmod(path, 0o600)
+'
+  I4_RC="$(run_auth "$I4_HOME" "$WORK/out/i4.log" "$ZEN_FIXTURE_KEY")"
+  I4_OK=0
+  # A boolean out of python3, so neither the sentinel nor the key is compared in
+  # a shell string this harness could later print.
+  PAI_I4_PATH="$I4_AUTH" PAI_I4_SENTINEL="$I4_SENTINEL" PAI_I4_KEY="$ZEN_FIXTURE_KEY" \
+    "$WORK/pathmin/python3" -c '
+import json, os, sys
+doc = json.load(open(os.environ["PAI_I4_PATH"]))
+ok = (doc.get("anthropic", {}).get("key") == os.environ["PAI_I4_SENTINEL"]
+      and doc.get("opencode") == {"type": "api", "key": os.environ["PAI_I4_KEY"]})
+sys.exit(0 if ok else 1)
+' >/dev/null 2>&1 && I4_OK=1
+  [ "$I4_RC" = "0" ] && [ "$I4_OK" -eq 1 ] &&
+    ok "I4: an unrelated provider's entry survived the write — auth.json is merged, not overwritten" ||
+    bad "I4: opencode-auth.sh did not preserve the rest of auth.json (rc=$I4_RC, contents ok=$I4_OK)"
+
+  # I5 — NO KEY IS NOT AN ERROR. A fresh Mac has not run keychain-secrets.sh
+  # yet, and unit_opencode() calls this as a bare command under `set -e`.
+  I5_HOME="$WORK/home-nokey"
+  I5_RC="$(run_auth "$I5_HOME" "$WORK/out/i5.log" -)"
+  I5_AUTH="$I5_HOME/.local/share/opencode/auth.json"
+  I5_WROTE=no
+  [ -e "$I5_AUTH" ] && I5_WROTE=yes
+  [ "$I5_RC" = "0" ] && [ "$I5_WROTE" = "no" ] &&
+    grep -qF "no Zen key in the environment" "$WORK/out/i5.log" &&
+    ok "I5: with no key, opencode-auth.sh exits 0, says so, and writes no auth.json" || {
+    bad "I5: the no-key path is wrong (rc=$I5_RC, wrote auth.json=$I5_WROTE)"
+    evidence "$WORK/out/i5.log"
+  }
+
+  # -- I6: the shadowing check, which is what the ticket is actually about ----
+  # The vendor build goes EARLIER on PATH than the brew fixture, which is the
+  # state the ticket measured. Note what this does NOT do: it does not add a
+  # second binary and check the count. C9 covers cardinality separately, and
+  # C7 has to fire on a machine where the vendor build is the ONLY one.
+  OC_VENDOR_BIN="$FAKE_HOME/.opencode/bin"
+  plant_opencode "$OC_VENDOR_BIN" "1.18.26"
+  I6_OUT="$WORK/out/i6.log"; I6_RC=0
+  PATH="$OC_VENDOR_BIN:$OC_PATH" \
+  PAI_DENY_LOG="$OC_DENY" \
+  OPENCODE_BREW_PREFIX="$OC_BREW_PREFIX" \
+  FAKE_PROVIDER_URL="$OC_URL" \
+    "$HERE/check-opencode.sh" >"$I6_OUT" 2>&1 || I6_RC=$?
+  I6_NAMED=0
+  # Two -F patterns rather than the whole sentence: the verdict word and the
+  # diagnosis, with the backticks around `opencode` left out so this stays a
+  # plain fixed string in single quotes (SC2016 fires on a backtick inside them).
+  grep -qF 'FAIL  C7:' "$I6_OUT" &&
+    grep -qF 'is the self-updating vendor build' "$I6_OUT" &&
+    grep -qF "$OC_VENDOR_BIN/opencode (1.18.26)" "$I6_OUT" &&
+    grep -qF "$OC_BREW_PREFIX/bin/opencode (1.18.19)" "$I6_OUT" && I6_NAMED=1
+  [ "$I6_RC" -ne 0 ] && [ "$I6_NAMED" -eq 1 ] &&
+    ok "I6: a vendor build ahead of brew's FAILs C7, naming both paths and both versions" || {
+    bad "I6: the shadowing check did not name the vendor install (rc=$I6_RC, named=$I6_NAMED)"
+    evidence "$I6_OUT"
+  }
+
+  # -- I7: the invariant, over this phase --------------------------------------
+  [ -s "$OC_DENY" ] && {
+    bad "I7: something in phase I reached a denied binary — a bare \`brew\` in check-opencode.sh?"
+    evidence "$OC_DENY"
+  } || ok "I7: phase I's deny log is empty — \$OPENCODE_BREW_PREFIX kept brew out of it"
+
+  # -- I8: no credential in anything this phase wrote --------------------------
+  # A boolean and a count; the offending line is never printed, because the
+  # offending line is the key (the E2 rule, applied to phase I's outputs). The
+  # phase A transcript is on the list because that is where opencode-auth.sh's
+  # own output lands on a real install.
+  I8_HITS=0
+  for oc_log in "$OC_RECORD" "$OC_DENY" "$OC_OUT" "$I6_OUT" "$A_OUT" "$I0B_ERR" \
+                "$WORK/out/i4.log" "$WORK/out/i5.log" "$WORK/out/opencode-provider.log"; do
+    I8_HITS=$((I8_HITS + $(count_in "$oc_log" "$ZEN_FIXTURE_KEY|$I4_SENTINEL")))
+  done
+  [ "$I8_HITS" -eq 0 ] &&
+    ok "I8: no credential-shaped line in the record, the deny log, or any phase I transcript" ||
+    bad "I8: a credential reached a log this phase wrote ($I8_HITS line(s)) — not printed here"
+
+  kill "$PROVIDER_PID" 2>/dev/null || true
+  wait "$PROVIDER_PID" 2>/dev/null || true
+  PROVIDER_PID=""
+fi
+# ======================= #38: OPENCODE, END ==================================
+
+# ---- 13. summary -------------------------------------------------------------
 echo
 if [ "$SKIP_COUNT" -eq 0 ]; then
   echo "== summary: $PASS_COUNT passed, $FAIL_COUNT failed =="

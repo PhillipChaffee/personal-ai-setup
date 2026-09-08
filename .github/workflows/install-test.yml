@@ -117,3 +117,48 @@ jobs:
             exit 1
           fi
           echo "The deny-PATH correctly caught a call that left the seam."
+
+      # THE THIRD NEGATIVE TEST (#38). Take the unattended auth back out of
+      # unit_opencode() and require phase I to notice. (Phase I, not F: #37's
+      # flag surface took F/G/H first — see the note at the top of
+      # test-base-install.sh.)
+      #
+      # IT PROVES ITS OWN SED FIRST, and that is the difference between this
+      # step and a green no-op. Both steps above carry a comment warning that a
+      # re-anchored `sed` which stops matching makes the whole step pass on an
+      # UNMODIFIED tree; here that is checked rather than warned about — the
+      # replacement leaves a marker, and a missing marker is an ::error:: in its
+      # own right. The `test -x` guard is kept for the same reason it is above.
+      #
+      # AND IT GREPS THE MESSAGE, not just the exit code. `--only opencode`
+      # exits 1 for any of twenty reasons; only "FAIL  I1:" means the assertion
+      # that is supposed to catch this caught it.
+      - name: Negative test — removing the unattended auth must fail phase I
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/neg-opencode"
+          rm -rf "$work"; mkdir -p "$work"
+          git archive HEAD | tar -x -C "$work"
+          test -x "$work/scripts/verify/test-base-install.sh" \
+            || { echo "::error::harness is not executable in the archive"; exit 1; }
+          test -x "$work/scripts/mac/opencode-auth.sh" \
+            || { echo "::error::opencode-auth.sh is not executable in the archive"; exit 1; }
+          # `[$]` rather than `\$`: POSIX leaves `\$` inside a BRE undefined,
+          # and an anchor that resolves differently on two seds is exactly the
+          # silent no-op this step is written to avoid.
+          sed -i 's|^ *"[$]SCRIPT_DIR/opencode-auth[.]sh"$|  : # PAI-NEG-AUTH-REMOVED|' \
+            "$work/scripts/mac/bootstrap-mac.sh"
+          grep -q 'PAI-NEG-AUTH-REMOVED' "$work/scripts/mac/bootstrap-mac.sh" \
+            || { echo "::error::the sed matched nothing — unit_opencode() no longer calls" \
+                      "opencode-auth.sh on that line, so this negative test is inert and" \
+                      "would have passed on an unmodified tree"; exit 1; }
+          out="$RUNNER_TEMP/neg-opencode.log"
+          if "$work/scripts/verify/test-base-install.sh" --only opencode >"$out" 2>&1; then
+            echo "::error::the bootstrap installed OpenCode without authenticating it and" \
+                 "phase I stayed green — I1 is inert"
+            exit 1
+          fi
+          grep -q '^FAIL  I1:' "$out" \
+            || { echo "::error::--only opencode failed, but not at I1 — the negative test" \
+                      "is going red for some other reason:"; sed 's/^/  /' "$out"; exit 1; }
+          echo "Phase I correctly caught an OpenCode install with no credential."

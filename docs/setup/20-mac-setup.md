@@ -165,19 +165,25 @@ echo "${OPENCODE_ZEN_API_KEY:0:6}..."   # should print the key's first chars
 
 ## 3. OpenCode → Zen
 
-OpenCode is your coding agent, wired natively to Zen:
+OpenCode is your coding agent, wired natively to Zen, and **there is nothing to
+do here** on a normal install: `bootstrap-mac.sh` writes
+`~/.local/share/opencode/auth.json` (mode `600`) from `$OPENCODE_ZEN_API_KEY`,
+and `config/opencode/opencode.json` — already copied by the bootstrap — pins the
+models and the `together` provider so they survive across machines. There is no
+`/connect` step and no `/models` step any more.
 
-1. Run `opencode` in any project directory.
-2. Type `/connect`, choose **OpenCode Zen**, paste your Zen API key.
-3. Type `/models` and set the default per the
-   [routing table](../model-routing.md): **`kimi-k2.6`** for daily coding,
-   escalate to **`claude-sonnet-5`** manually when a problem deserves it, and
-   use **`big-pickle`** (free) only for throwaway code that contains nothing
-   personal — the free tier trains on your prompts.
+Two cases where you do something:
 
-`config/opencode/opencode.json` (already copied by the bootstrap) pins these
-defaults plus the `together` provider so they survive across machines; the
-`/connect` step is what stores the credential.
+- **You set the key for the first time in step 2 above.** The bootstrap ran
+  before the key existed. Open a new terminal and run
+  `./scripts/mac/opencode-auth.sh` (or the whole bootstrap again — it is
+  idempotent). It tells you which of the two happened.
+- **OpenCode has remembered a different model** from an earlier session.
+  `opencode.json` only sets the defaults for a fresh profile, so type `/models`
+  and set it per the [routing table](../model-routing.md): **`kimi-k2.6`** for
+  daily coding, escalate to **`claude-sonnet-5`** manually when a problem
+  deserves it, and use **`big-pickle`** (free) only for throwaway code that
+  contains nothing personal — the free tier trains on your prompts.
 
 ## 4. Goose Desktop first run
 
@@ -219,8 +225,12 @@ can waste an evening:
 #    404s, this is the script that tells you why and what to change.
 ./scripts/verify/check-goose.sh
 
-# 3. One real OpenCode run end to end.
-opencode run "Say 'opencode wired' and nothing else"
+# 3. The OpenCode unit: the config, the credential (existence, mode 600 and
+#    contents), the ported agents, one real `opencode run`, and WHICH opencode
+#    your PATH actually resolves to. Exits 2, not 1, if OpenCode is not
+#    installed. This replaces the hand-typed `opencode run` that used to be
+#    step 3 here — that line was the entire automated coverage this unit had.
+./scripts/verify/check-opencode.sh
 ```
 
 All three green means: keys are stored correctly, all three Goose providers

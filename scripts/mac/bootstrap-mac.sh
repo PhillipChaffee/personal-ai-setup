@@ -48,8 +48,10 @@ Usage: bootstrap-mac.sh [--with ID] [--without ID] [--only ID] [--dry-run] [--he
 
 Installs the Mac toolchain for the personal-ai setup and copies the repo's
 config templates (no-clobber) into place. Run it from your clone of the repo;
-re-running is safe. Follow-ups it will point you at: keychain-secrets.sh,
-OpenCode /connect, and the scripts/verify/ checks.
+re-running is safe. Follow-ups it will point you at: keychain-secrets.sh and
+the scripts/verify/ checks. OpenCode's Zen credential is written for you
+(scripts/mac/opencode-auth.sh) when $OPENCODE_ZEN_API_KEY is already set --
+there is no /connect step any more.
 
 With no flags it installs all five units, which is what it has always done.
 
@@ -64,7 +66,8 @@ The five units, in dependency order:
 
   base-toolchain   uv, node, jq, the Tailscale cask
   base-goose       the goose CLI + Desktop cask, the pin, ~/.config/goose
-  opencode         the OpenCode CLI and ~/.config/opencode/opencode.json
+  opencode         the OpenCode CLI, ~/.config/opencode/opencode.json, and the
+                   Zen credential in ~/.local/share/opencode/auth.json
   base-skills      the connect-service skill in ~/.agents/skills
   coding-pack      the eleven ported skills, the OpenCode agents, AGENTS.md
 
@@ -188,11 +191,20 @@ REQUIRES_CODING_PACK="opencode"
 # manifest's brew_formula, brew_cask and home_path targets, in manifest order.
 # The `~` is LITERAL -- these strings are printed and compared, never used as a
 # path, so nothing here is ever tilde-expanded or globbed.
+#
+# ~/.local/share/opencode/auth.json IS LISTED even though opencode-auth.sh
+# writes it only when $OPENCODE_ZEN_API_KEY is in the environment. `owns` is the
+# unit's FOOTPRINT -- what this unit, and no other, is allowed to put on the
+# machine -- and the manifest claims it for exactly that reason. A --dry-run
+# plan that hid it because of a runtime condition would be a plan whose contents
+# depended on the caller's shell, and P8(d)/P8(f) compare this list against the
+# manifest, not against what a particular run happened to do.
 OWNS_BASE_TOOLCHAIN="brew:uv brew:node brew:jq cask:tailscale"
 OWNS_BASE_GOOSE="brew:block-goose-cli cask:block-goose
 home:~/.config/goose/config.yaml home:~/.config/goose/custom_providers
 home:~/.config/goose/.goosehints"
-OWNS_OPENCODE="brew:anomalyco/tap/opencode home:~/.config/opencode/opencode.json"
+OWNS_OPENCODE="brew:anomalyco/tap/opencode home:~/.config/opencode/opencode.json
+home:~/.local/share/opencode/auth.json"
 OWNS_BASE_SKILLS="home:~/.agents/skills/connect-service"
 OWNS_CODING_PACK="home:~/.agents/skills/ci-lint-test home:~/.agents/skills/clean-plan
 home:~/.agents/skills/code-review home:~/.agents/skills/deep-research
@@ -670,6 +682,23 @@ unit_opencode() {
   echo "==> Installing the OpenCode config template (no-clobber)"
   mkdir -p "$HOME/.config/opencode"
   copy_no_clobber "$REPO_ROOT/config/opencode/opencode.json" "$HOME/.config/opencode/opencode.json"
+
+  # THE CREDENTIAL, UNATTENDED (#38). This used to be a line in the epilogue
+  # telling you to run `opencode`, type /connect and paste the key, while
+  # scripts/vps/code-agent-manager.py's seed_auth() had been writing exactly
+  # that file on the brain all along.
+  #
+  # A BARE CALL, deliberately: rule 2 above. It is safe as the second-to-last
+  # command of this unit because opencode-auth.sh exits 0 when there is no key
+  # in the environment -- a fresh Mac has not run keychain-secrets.sh yet, and
+  # aborting the whole bootstrap there would be the worst possible time.
+  #
+  # NOT through pai_exec, and that is the same call this file already makes for
+  # python3 and uv (see the PAI_EXEC paragraph in the header): this is a script
+  # in THIS repo doing local compute over a file in $HOME, not an external
+  # binary. Routing it would fake away the write that test-base-install.sh's
+  # phase I then reads back out of the fake $HOME.
+  "$SCRIPT_DIR/opencode-auth.sh"
   return 0
 }
 
@@ -749,12 +778,12 @@ unit_coding_pack
 
 # -------------------------------------------------------------- Next steps --
 # Split into three heredocs so the OpenCode step can be omitted when opencode
-# was not installed -- telling someone to run `/connect` in a CLI this very run
-# deliberately did not install is how a selective install teaches people to
-# distrust the output. The step NUMBER follows, which is why the tail is a
-# separate heredoc rather than a conditional line inside one. With opencode
-# selected (every no-flag run) the three concatenate to exactly the text that
-# was here before.
+# was not installed -- telling someone how the credential for a CLI this very
+# run deliberately did not install got written is how a selective install
+# teaches people to distrust the output. The step NUMBER follows, which is why
+# the tail is a separate heredoc rather than a conditional line inside one. With
+# opencode selected (every no-flag run) the three concatenate to exactly the
+# text a no-flag run has always printed.
 cat <<EOF
 
 ==> Bootstrap done. Next steps (docs/setup/20-mac-setup.md):
@@ -766,11 +795,13 @@ EOF
 
 NEXT_STEP=2
 if in_set opencode "$SELECTED"; then
-  cat <<'EOF'
+  cat <<EOF
 
-  2. Wire OpenCode to Zen: run 'opencode' in any project, type /connect,
-     pick OpenCode Zen, paste your key. Set the daily model per
-     docs/model-routing.md (kimi-k2.6).
+  2. OpenCode's Zen credential is written by the bootstrap itself, from
+     \$OPENCODE_ZEN_API_KEY. If step 1 was the first time you set that key,
+     re-run this script (or just $SCRIPT_DIR/opencode-auth.sh) in the new
+     terminal. There is no /connect step and no /models step: the models are
+     pinned in config/opencode/opencode.json.
 EOF
   NEXT_STEP=3
 fi
@@ -780,4 +811,5 @@ cat <<EOF
   $NEXT_STEP. Verify before going further:
          $REPO_ROOT/scripts/verify/check-providers.sh   # raw HTTPS per endpoint
          $REPO_ROOT/scripts/verify/check-goose.sh       # goose through all 3 providers
+         $REPO_ROOT/scripts/verify/check-opencode.sh    # opencode, credential and PATH
 EOF
