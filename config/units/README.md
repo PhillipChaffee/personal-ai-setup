@@ -133,7 +133,7 @@ manual_steps:
 blockers:
   - id: goosehints-not-rendered   # kebab-case, unique within the unit
     severity: warn                # note | warn | fail
-    detail: bootstrap-mac.sh:215-216 PRINTS a reminder rather than substituting.
+    detail: unit_base_goose() PRINTS a reminder rather than substituting.
 
 # ---- can it be removed? ---------------------------------------------------
 uninstall:
@@ -193,13 +193,15 @@ quoting is part of the schema, not a style choice. `.yamllint.yml` also sets
 ### 2. Why `installer` has two states and not an anchor scheme
 
 The obvious alternative — a `# pai-unit: <id>` comment anchor in the installer, asserted to
-occur exactly once — is **inexpressible for the base units**. `bootstrap-mac.sh:118` is a
-single `FORMULAE` string serving `base-toolchain`, `base-goose` *and* `opencode`, and
-`:131` is one cask loop serving `base-goose` *and* `base-toolchain`. No anchor can occur
-once and mean anything there.
+occur exactly once — was **inexpressible for the base units** when this schema landed:
+`bootstrap-mac.sh` had a single `FORMULAE` string serving `base-toolchain`, `base-goose`
+*and* `opencode`, and one cask loop serving `base-goose` *and* `base-toolchain`. No anchor
+could occur once and mean anything there.
 
 `status` needs no installer edit at all, which is the point: the proof that #36 changed no
-install behaviour is an **empty diff**, and an empty diff needs no argument.
+install behaviour is an **empty diff**, and an empty diff needs no argument. #37 then
+carved those shared lines into one function per unit — and the function name is a better
+anchor than a comment would have been, because the installer has to call it.
 
 - `status: planned` ⇒ `unit_<id>()` is **not defined** in `script`. Fails if it appears.
 - `status: present` ⇒ defined **exactly once**, and **called exactly once** at top level.

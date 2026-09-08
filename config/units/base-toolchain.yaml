@@ -2,8 +2,9 @@
 # base-toolchain — the macOS prerequisites every other Mac unit stands on:
 # the platform guard, Homebrew itself, and the three general-purpose formulae.
 #
-# DESCRIBES TODAY. It has no unit_base_toolchain() function and no verify
-# script; both absences are recorded below rather than smoothed over.
+# DESCRIBES TODAY. unit_base_toolchain() in scripts/mac/bootstrap-mac.sh is its
+# installer; it still has no verify script, and that absence is recorded below
+# rather than smoothed over.
 id: base-toolchain
 manifest_version: 1
 verified_on: "2026-09-07"
@@ -20,35 +21,35 @@ cost: []
 installer:
   script: scripts/mac/bootstrap-mac.sh
   function: unit_base_toolchain
-  status: planned
+  status: present
 
 # NOTHING VERIFIES THIS UNIT. `check-goose.sh` needs the goose binary and
 # `check-providers.sh` needs the provider JSON, so neither one notices a
-# missing `jq` or a missing `uv` — and `uv` is load-bearing: bootstrap-mac.sh
-# falls back to `uv run --with pyyaml` to read config/pins.yaml at :169.
+# missing `jq` or a missing `uv` — and `uv` is load-bearing: unit_base_goose()
+# falls back to `uv run --with pyyaml` to read config/pins.yaml.
 verify: []
 runbook: docs/setup/20-mac-setup.md#1-run-the-bootstrap
 
 secrets: []
 
 owns:
-  # From the FORMULAE string at bootstrap-mac.sh:118. `block-goose-cli` and
-  # `anomalyco/tap/opencode` are in that same string but belong to base-goose
-  # and opencode: one line installs three units' formulae, which is exactly
-  # why installer.status is a manifest field and not a comment anchor.
+  # From FORMULAE_BASE_TOOLCHAIN, which unit_base_toolchain() is the only
+  # consumer of. `block-goose-cli` and `anomalyco/tap/opencode` used to share
+  # that one string and are now FORMULAE_BASE_GOOSE and FORMULAE_OPENCODE,
+  # installed by their own units.
   - {kind: brew_formula, target: uv}
   - {kind: brew_formula, target: node}
   - {kind: brew_formula, target: jq}
-  # From the cask loop at bootstrap-mac.sh:131, which serves two units. The
-  # `tailnet` unit owns the human steps (account, sign-in, MagicDNS), not the
-  # app; splitting it this way keeps `owns` disjoint.
+  # From unit_base_toolchain()'s `brew_cask` call. The `tailnet` unit owns the
+  # human steps (account, sign-in, MagicDNS), not the app; splitting it this
+  # way keeps `owns` disjoint.
   - {kind: brew_cask, target: tailscale}
 
 manual_steps:
   - id: install-homebrew
     summary: Install Homebrew and open a new terminal, then re-run the
-      bootstrap. bootstrap-mac.sh:104-114 prints the command and exits 1; it
-      never installs Homebrew for you.
+      bootstrap. The Homebrew guard in bootstrap-mac.sh's prelude prints the
+      command and exits 1; it never installs Homebrew for you.
     doc: docs/setup/20-mac-setup.md#1-run-the-bootstrap
     blocking: true
   - id: resolve-tailscale-variant
@@ -65,8 +66,9 @@ blockers:
       only during an install and reports nothing afterwards.
   - id: homebrew-is-a-precondition-not-an-install
     severity: note
-    detail: bootstrap-mac.sh:104-114 exits 1 with instructions when brew is
-      absent rather than installing it, so this unit's first step is a manual
+    detail: bootstrap-mac.sh exits 1 with instructions when brew is absent
+      rather than installing it — the guard is in the prelude, ahead of every
+      unit, because no unit can run without it. This unit's first step is a manual
       step by design (piping a remote installer to bash is the thing the
       script declines to do for you).
 

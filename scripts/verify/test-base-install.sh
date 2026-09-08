@@ -38,8 +38,8 @@
 # The golden is ORDER SENSITIVE, so reordering the install loop fails it even
 # when behaviour is unchanged. Update it, do not sort it: `brew pin` after
 # `brew install` is the one ordering that matters, because real brew refuses to
-# pin a formula it has not installed and bootstrap-mac.sh:153 is a bare call
-# under `set -e`.
+# pin a formula it has not installed and the pin inside unit_base_goose() is a
+# bare call under `set -e`.
 #
 # THE DENY-PATH IS THE INVARIANT. $WORK/deny goes first on PATH for both
 # bootstrap phases and holds an exit-127 shim for every external binary this
@@ -50,11 +50,12 @@
 # fake never sees the call because the call never arrives.
 #
 # PyYAML IS MANDATORY, asserted up front rather than tolerated. Without it
-# bootstrap-mac.sh:166 falls through to `uv run --with pyyaml python`, uv is
-# denied here (it is a fake "install"), WANT_GOOSE ends up empty, and L178 takes
-# the "could not compare the goose version -- skipping the check" arm. Both pin
-# arms (A4 and C1) then pass through a branch nobody tested, which is exactly
-# the gap routing `goose --version` through the seam exists to close.
+# unit_base_goose()'s pins ladder falls through to `uv run --with pyyaml
+# python`, uv is denied here (it is a fake "install"), want_goose ends up empty,
+# and the unit takes the "could not compare the goose version -- skipping the
+# check" arm. Both pin arms (A4 and C1) then pass through a branch nobody
+# tested, which is exactly the gap routing `goose --version` through the seam
+# exists to close.
 #
 # SECRETS: nothing here handles a real one and nothing may ever print one. The
 # real roster is UNSET before the fixtures are exported, so a developer's own
@@ -233,7 +234,7 @@ ln -sf "$PY_REAL" "$WORK/pathmin/python3"
 # pathmin), not against the caller's. See the header: without it both pin arms
 # go untested and the harness stays green.
 PATH="$WORK/pathmin" "$WORK/pathmin/python3" -c 'import yaml' >/dev/null 2>&1 ||
-  die "python3 has no yaml module — install pyyaml (pip install pyyaml==6.0.2). bootstrap-mac.sh:166 needs it, and without it the pins comparison silently does not run."
+  die "python3 has no yaml module — install pyyaml (pip install pyyaml==6.0.2). unit_base_goose()'s pins comparison needs it, and without it the pins comparison silently does not run."
 
 # -- $WORK/deny: one exit-127 shim per binary the installer could reach for.
 # "${0##*/}" rather than basename: a shim that shells out to record a call is a
@@ -323,23 +324,31 @@ A_RC="$(run_bootstrap "$A_OUT" "$A_BREW" "$PINS_VERSION" "$A_DENY")"
 # A1 — THE GOLDEN. Hand-written, in order, 16 lines. See the header for why it
 # is typed out and not computed. Five formulae (5 probes + 5 installs), two
 # casks (2 + 2), one `list --pinned` and one `pin` = 16. Not 17.
+#
+# RE-TYPED for the carve, and the reorder is the point rather than an accident:
+# the install is five unit functions now, called in dependency order, so brew
+# sees each unit's packages together instead of seeing every formula, then every
+# cask, then the pin. toolchain (uv node jq + the tailscale cask), then goose
+# (formula, cask, pin), then opencode. Same 16 lines, same work, different
+# grouping — typed out again from the shapes the units emit, never derived from
+# $FORMULAE_*, which would compare the code to itself.
 cat >"$WORK/golden-a.txt" <<'EOF'
-brew list --formula --versions block-goose-cli
-brew install block-goose-cli
-brew list --formula --versions opencode
-brew install anomalyco/tap/opencode
 brew list --formula --versions uv
 brew install uv
 brew list --formula --versions node
 brew install node
 brew list --formula --versions jq
 brew install jq
-brew list --cask --versions block-goose
-brew install --cask block-goose
 brew list --cask --versions tailscale
 brew install --cask tailscale
+brew list --formula --versions block-goose-cli
+brew install block-goose-cli
+brew list --cask --versions block-goose
+brew install --cask block-goose
 brew list --pinned
 brew pin block-goose-cli
+brew list --formula --versions opencode
+brew install anomalyco/tap/opencode
 EOF
 if diff -u "$WORK/golden-a.txt" "$A_BREW" >"$WORK/golden-a.diff" 2>&1; then
   ok "A1: brew-a.log is byte-identical to the 16-line hand-written golden"
@@ -348,14 +357,19 @@ else
   evidence "$WORK/golden-a.diff"
 fi
 
-# A2 — the ordering the golden's line numbers encode, called out on its own so a
-# reorder reports as a reorder. Real brew refuses to pin what it has not
-# installed, and bootstrap-mac.sh:153 is a bare call under `set -e`.
-A_LINE2="$(sed -n '2p' "$A_BREW")"
-A_LINE16="$(sed -n '16p' "$A_BREW")"
-[ "$A_LINE2" = "brew install block-goose-cli" ] && [ "$A_LINE16" = "brew pin block-goose-cli" ] &&
-  ok "A2: the pin is line 16 and the install it depends on is line 2" ||
-  bad "A2: install/pin ordering drifted (line 2 = '$A_LINE2', line 16 = '$A_LINE16')"
+# A2 — the ONE ordering that is a fact about brew rather than a fact about this
+# script: real brew refuses to pin a formula it has not installed, and the pin
+# is a bare `pai_exec` call under `set -e`, so the wrong order is a hard failure
+# on a real Mac. Asserted as index(install) < index(pin), NOT as two hardcoded
+# line numbers: the absolute positions are A1's job, and pinning them here too
+# meant that any reorder of the whole list reported as an install/pin inversion.
+# Located by content, so a rename of either package fails this loudly (empty
+# index) rather than silently comparing two absent lines.
+A_INSTALL_AT="$(grep -nxF 'brew install block-goose-cli' "$A_BREW" | head -1 | cut -d: -f1 || true)"
+A_PIN_AT="$(grep -nxF 'brew pin block-goose-cli' "$A_BREW" | head -1 | cut -d: -f1 || true)"
+[ -n "$A_INSTALL_AT" ] && [ -n "$A_PIN_AT" ] && [ "$A_INSTALL_AT" -lt "$A_PIN_AT" ] &&
+  ok "A2: block-goose-cli is installed (line $A_INSTALL_AT) before it is pinned (line $A_PIN_AT)" ||
+  bad "A2: install/pin ordering drifted (install at line '${A_INSTALL_AT:-absent}', pin at line '${A_PIN_AT:-absent}')"
 
 # A3 — brew put a goose on the system. Without this, every later goose assertion
 # is testing a shim the harness materialised for itself.
@@ -444,16 +458,17 @@ if leg brew || leg routing; then
     evidence "$B_OUT"
   }
 
-  # B1 — eight probes, zero mutations. Also hand-written.
+  # B1 — eight probes, zero mutations. Also hand-written, and re-typed for the
+  # carve in the same order as A1 (it is A1 with the mutations removed).
   cat >"$WORK/golden-b.txt" <<'EOF'
-brew list --formula --versions block-goose-cli
-brew list --formula --versions opencode
 brew list --formula --versions uv
 brew list --formula --versions node
 brew list --formula --versions jq
-brew list --cask --versions block-goose
 brew list --cask --versions tailscale
+brew list --formula --versions block-goose-cli
+brew list --cask --versions block-goose
 brew list --pinned
+brew list --formula --versions opencode
 EOF
   B_MUTATIONS="$(count_in "$B_BREW" ' (install|pin) ')"
   if diff -u "$WORK/golden-b.txt" "$B_BREW" >"$WORK/golden-b.diff" 2>&1 && [ "$B_MUTATIONS" -eq 0 ]; then
@@ -464,7 +479,7 @@ EOF
   fi
 
   # B2 — the probes' exit-status contract and `list --pinned`'s output FORMAT.
-  # A `name 1.46.0` line would never match bootstrap-mac.sh:149's anchored
+  # A `name 1.46.0` line would never match unit_base_goose()'s anchored
   # `grep -qx`, so the run would re-pin forever while B1 still passed.
   B_SKIPS="$(count_in "$B_OUT" 'already installed — skipping')"
   B_CASK_SKIPS="$(count_in "$B_OUT" '^==> cask .* already installed — skipping')"

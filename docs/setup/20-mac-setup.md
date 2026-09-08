@@ -42,12 +42,49 @@ What it does (it's idempotent — safe to re-run after a failed step):
   | `config/goose/custom_providers/*.json` | `~/.config/goose/custom_providers/` |
   | `config/goose/goosehints.example` | `~/.config/goose/.goosehints` |
   | `config/opencode/opencode.json` | OpenCode's config dir (`~/.config/opencode/`) |
+  | `config/skills/*/` | `~/.agents/skills/` |
+  | `config/opencode/agents/*.md` | `~/.config/opencode/agents/` |
+  | `config/opencode/AGENTS.md` | `~/.config/opencode/AGENTS.md` |
 
 The four custom-provider JSONs are the heart of it: they define the
 `together` (default), `zen-openai`, `zen-anthropic`, and `zen-free` providers
 (endpoints and model lists per [`docs/model-routing.md`](../model-routing.md)). Goose picks
 them up from `~/.config/goose/custom_providers/` automatically — reference:
 [custom providers](https://github.com/aaif-goose/goose/blob/main/documentation/docs/getting-started/providers.md).
+
+### Skills, agents, and global rules
+
+The last three rows are the part of the install that is easiest to miss,
+because nothing on this machine is named after it.
+
+**`~/.agents/skills/`** is a single directory read by **both** tools: OpenCode
+treats it as its agent-compatible global skills dir, and goose ≥ 1.16 reads
+skills from it too. Each skill is a directory holding a Claude-compatible
+`SKILL.md` — a short instruction file the model loads when the task matches.
+The bootstrap installs them **atomically** (copy to a temp dir, then `mv`), so
+an interrupted run can never leave a half-copied skill that the no-clobber rule
+would then keep forever.
+
+Two units put things there, and the split matters if you ever install
+selectively:
+
+- **`connect-service`** is the goose-native connect workflow (paired with
+  `recipes/connect-service.yaml`). It is what reads a connector manifest when
+  one exists and writes one when it does not.
+- **the eleven Cursor-ported skills** (`code-review`, `ship`, `deep-research`,
+  …) come from the Cursor port and dispatch into the OpenCode subagents. What
+  was ported, adapted and dropped is [`docs/cursor-port.md`](../cursor-port.md).
+
+**`~/.config/opencode/agents/`** holds the subagents those skills dispatch **by
+name**, and **`~/.config/opencode/AGENTS.md`** is the global rule set OpenCode
+reads in every project. Both are OpenCode-only; goose does not read either.
+Per-project rule snippets deliberately stay in the repo
+(`config/opencode/project-rules/`) — you paste the ones you want into a
+project yourself.
+
+Nothing here is overwritten on a re-run, so a skill or agent file you have
+edited stays edited. The flip side: an edited file is also never *updated* —
+delete it and re-run the bootstrap to take a new version from the repo.
 
 ## 2. Store your keys in the Keychain
 

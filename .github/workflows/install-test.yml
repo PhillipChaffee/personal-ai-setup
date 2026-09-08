@@ -103,7 +103,13 @@ jobs:
           # Take one call back OUT of the seam. The deny-PATH must catch it even
           # though this particular shape swallows its own exit status, which is
           # precisely what no grep over the source could reliably find.
-          sed -i 's|^if pai_exec brew list --pinned|if brew list --pinned|' \
+          #
+          # Re-anchored for #37: the pin lives inside unit_base_goose() now, so
+          # the line is INDENTED and a `^if` anchor would match nothing -- the
+          # harness would then pass on an unmodified script and this step would
+          # report the deny-PATH as inert when the only inert thing is the sed.
+          # The capture group keeps whatever indentation the carve gave it.
+          sed -i 's|^\( *\)if pai_exec brew list --pinned|\1if brew list --pinned|' \
             "$work/scripts/mac/bootstrap-mac.sh"
           if "$work/scripts/verify/test-base-install.sh" --only routing; then
             echo "::error::an unrouted brew call went unnoticed — the deny-PATH" \

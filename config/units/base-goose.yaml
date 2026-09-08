@@ -2,8 +2,9 @@
 # base-goose — the pinned goose CLI, its four custom providers, and the
 # shipped config template.
 #
-# DESCRIBES TODAY. installer.status is `planned` because no unit_*() function
-# exists in either installer yet; #37 creates them and flips this to `present`.
+# DESCRIBES TODAY. unit_base_goose() in scripts/mac/bootstrap-mac.sh installs
+# it: the formula, the cask, the pin, the pins.yaml comparison, and the four
+# provider JSONs plus config.yaml and .goosehints into ~/.config/goose.
 id: base-goose
 manifest_version: 1
 verified_on: "2026-09-07"
@@ -26,7 +27,7 @@ cost:
 installer:
   script: scripts/mac/bootstrap-mac.sh
   function: unit_base_goose
-  status: planned
+  status: present
 
 verify:
   - scripts/verify/check-goose.sh
@@ -65,11 +66,13 @@ manual_steps:
 blockers:
   - id: goosehints-not-rendered
     severity: warn
-    detail: bootstrap-mac.sh:215-216 PRINTS a reminder to edit the placeholders
-      rather than substituting them (#37 renders them from prompted values).
+    detail: unit_base_goose() PRINTS a reminder to edit the placeholders
+      rather than substituting them. The carve moved that line into the unit
+      and changed nothing about it; rendering the placeholders from prompted
+      values is a later change (#37).
   - id: brew-pin-asserts-it-cannot-install
     severity: note
-    detail: bootstrap-mac.sh:163-190 COMPARES the installed goose against
+    detail: unit_base_goose() COMPARES the installed goose against
       config/pins.yaml's goose.version and warns on a mismatch; it cannot
       install a prior release, because brew has no versioned formula. The
       brain installs the pinned version exactly, so the two surfaces can

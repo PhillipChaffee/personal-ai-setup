@@ -2,10 +2,11 @@
 # opencode — the OpenCode CLI (the coding driver) and the one config file the
 # bootstrap lays down for it.
 #
-# DESCRIBES TODAY. The formula is installed by the same FORMULAE string at
-# bootstrap-mac.sh:118 that serves base-toolchain and base-goose, so there is
-# no way to install this unit alone; that is recorded below rather than
-# implied by a `default_on` tier that suggests a switch exists.
+# DESCRIBES TODAY. unit_opencode() installs it: its own formula list and its
+# own ~/.config/opencode. That directory is created THERE and nowhere else, so
+# the unit is separable in the code -- but nothing yet lets you ask for the
+# install without it, and that is recorded below rather than implied by a
+# `default_on` tier that suggests a switch already exists.
 id: opencode
 manifest_version: 1
 verified_on: "2026-09-07"
@@ -26,9 +27,9 @@ cost:
 installer:
   script: scripts/mac/bootstrap-mac.sh
   function: unit_opencode
-  status: planned
+  status: present
 
-# NO check-*.sh COVERS THIS UNIT. docs/setup/20-mac-setup.md:137 tells a HUMAN
+# NO check-*.sh COVERS THIS UNIT. docs/setup/20-mac-setup.md:174 tells a HUMAN
 # to run `opencode run "Say 'opencode wired'"` as verification step 3, and that
 # line is the entire proof: nothing under scripts/verify/ runs opencode, reads
 # ~/.config/opencode/opencode.json, or checks that /connect stored a
@@ -46,7 +47,7 @@ secrets:
     store: mac_keychain
     secret: true
     optional: false
-  # store: none, deliberately. `/connect` (20-mac-setup.md:84-85) writes the
+  # store: none, deliberately. `/connect` (20-mac-setup.md:121-122) writes the
   # Zen key into OpenCode's OWN credential store, which is neither
   # config/env/secrets.env.example nor keychain-secrets.sh's VARS. It is a
   # third store this validator cannot read, so claiming `mac_keychain` here
@@ -58,9 +59,10 @@ secrets:
     optional: false
 
 owns:
-  # From the FORMULAE string at bootstrap-mac.sh:118. The loop strips the tap
-  # prefix for its `brew list` probe (`short="${formula##*/}"`), but the
-  # install uses the tap-qualified name, which is what is claimed here.
+  # From FORMULAE_OPENCODE, which unit_opencode() is the only consumer of.
+  # brew_formula() strips the tap prefix for its `brew list` probe
+  # (`short="${formula##*/}"`), but the install uses the tap-qualified name,
+  # which is what is claimed here.
   - {kind: brew_formula, target: anomalyco/tap/opencode}
   - {kind: repo_file, target: config/opencode/opencode.json}
   - {kind: home_path, target: ~/.config/opencode/opencode.json}
@@ -69,7 +71,7 @@ manual_steps:
   - id: connect-zen
     summary: Run `opencode` in any project, type /connect, pick OpenCode Zen
       and paste the key. The bootstrap never does this -- it only prints the
-      instruction at bootstrap-mac.sh:261-263.
+      instruction in the next-steps epilogue.
     doc: docs/setup/20-mac-setup.md#3-opencode-zen
     blocking: true
   - id: set-default-model
@@ -88,12 +90,14 @@ blockers:
       install shadowing brew's), not a working-install check, and it is
       skipped entirely unless doctor is inspecting the real $HOME. A Mac where
       /connect was never run passes everything until a human types `opencode`."
-  - id: formula-line-serves-three-units
+  - id: no-switch-for-default-on-yet
     severity: note
-    detail: "bootstrap-mac.sh:118 installs block-goose-cli, this formula, uv,
-      node and jq from one FORMULAE string, so `default_on` describes intent,
-      not a switch: there is no supported way to bootstrap the Mac without
-      OpenCode today."
+    detail: "The shared FORMULAE string is gone: this unit's formula comes from
+      FORMULAE_OPENCODE and is installed by unit_opencode(), which also owns
+      the only `mkdir ~/.config/opencode` in the script. What is still missing
+      is the SELECTION -- the five units are called unconditionally, so
+      `default_on` describes intent until bootstrap-mac.sh grows
+      --with/--without/--only."
   - id: together-provider-ships-two-model-ids
     severity: note
     detail: "opencode.json:14 and :17 hardcode openai/gpt-oss-120b and
