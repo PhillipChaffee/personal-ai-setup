@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
-# cli.sh — the `pai` dispatcher. READ-ONLY in its entirety.
+# cli.sh — the `pai` dispatcher. READ-ONLY EXCEPT FOR ONE OPT-IN FLAG.
 #
 # doctor/status/list are doctor.py; verify is a runner over the existing
 # scripts/verify/check-*.sh. The split is deliberate: verify is shell because
 # the things it runs are shell, and a Python wrapper would only re-implement
 # exit-code plumbing that lib.sh already has.
 #
-# NOTHING HERE WRITES. `--fix` arrives with #34, which needs goose's ACP API —
-# goose serde-round-trips config.yaml, so a file-copying "fix" would be undone
-# the next time goose starts.
+# EVERY COMMAND HERE WRITES NOTHING, with exactly one exception, added in #34:
+# `pai doctor --fix`. It re-asserts, over goose's ACP config API, the keys the
+# repo's own templates declare — the API rather than the file because goose
+# serde-round-trips config.yaml, so a file-copying "fix" would be undone the
+# next time goose starts. `pai doctor --dry-run` prints the same plan and
+# writes nothing; that is the reading to reach for first.
+#
+# Flags are forwarded VERBATIM to doctor.py ("$@", not "$1") — it owns the
+# option vocabulary, and an unknown flag must be its usage error rather than a
+# word this dispatcher silently drops.
 set -euo pipefail
 
 # shellcheck source=scripts/verify/lib.sh
@@ -18,16 +25,31 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
   cat <<'EOF'
-Usage: pai <command>
+Usage: pai <command> [options]
 
   doctor   what drifted between this machine and the repo's templates
   status   what is installed here
   list     what the repo ships
   verify   run the scripts/verify/check-*.sh suite, one table, one exit code
 
-All commands are read-only. Exit: 0 ok, 1 findings, 2 usage/precondition.
+Every command writes nothing, except `doctor --fix`:
 
-  PAI_HOME   inspect a different home (used by the tests); defaults to $HOME
+  doctor --dry-run             say exactly what --fix would do. writes nothing.
+  doctor --fix                 re-assert the repo's own keys over goose's ACP
+                               config API. THIS WRITES. Refuses to touch an
+                               extension whose live config still holds inline
+                               `envs` values, because any ACP write erases them.
+  doctor --fix --migrate-envs  additionally promote those values into goose's
+                               secret store. One way; the value is never printed.
+
+Exit: 0 ok, 1 findings, 2 usage/precondition.
+
+  PAI_HOME       inspect a different home (used by the tests); defaults to $HOME.
+                 --fix REFUSES when it is not $HOME unless GOOSE_ACP_URL or
+                 PAI_GOOSE_BIN also names which goose is meant.
+  GOOSE_ACP_URL  a running `goose serve` to use; nothing is spawned. Required on
+                 the brain, where goose-serve.service already owns the config.
+  PAI_GOOSE_BIN  the goose binary --fix may spawn on loopback for the duration.
 EOF
 }
 
@@ -85,7 +107,7 @@ case "${1:-}" in
   -h|--help|"") usage; exit 0 ;;
   doctor|status|list)
     read -r -a PY <<<"$(py_runner)"
-    exec "${PY[@]}" "$REPO_ROOT/scripts/pai/doctor.py" "$1"
+    exec "${PY[@]}" "$REPO_ROOT/scripts/pai/doctor.py" "$@"
     ;;
   verify) cmd_verify ;;
   *) die_usage "unknown command: $1" ;;

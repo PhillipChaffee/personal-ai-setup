@@ -18,16 +18,21 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/pai-test.XXXXXX")"
 
-# Section 8 spawns `goose serve` stand-ins, so `trap ... EXIT` alone is no longer
-# enough: Ctrl-C would leave a listener behind in the very file that asserts
-# nothing is left behind. Every server this harness starts is recorded as a
-# 0600 marker under $TMPDIR/pai-goosecfg (goosecfg writes it AT SPAWN), and
-# section 8 redirects TMPDIR into $WORK -- so the markers are the roster, and
-# cleanup is idempotent by construction. Killing the group precedent:
-# test-code-agent-manager.sh:90-99; the multi-signal trap is new here.
+# Sections 8 and 9 spawn `goose serve` stand-ins, so `trap ... EXIT` alone is no
+# longer enough: Ctrl-C would leave a listener behind in the very file that
+# asserts nothing is left behind. Every server this harness starts is recorded
+# as a 0600 marker under $TMPDIR/pai-goosecfg (goosecfg writes it AT SPAWN), and
+# both sections redirect TMPDIR into a subdirectory of $WORK -- so the markers
+# are the roster, and cleanup is idempotent by construction. Killing the group
+# precedent: test-code-agent-manager.sh:90-99; the multi-signal trap is new here.
+#
+# The glob is `*/tmp/` rather than `goosecfg/tmp/` because section 9 owns a
+# second work directory: `pai doctor --fix` spawns its own server, and a roster
+# that only knew about section 8's would leak exactly the process this file
+# added.
 cleanup() {
   local marker pid
-  for marker in "$WORK"/goosecfg/tmp/pai-goosecfg/*.json; do
+  for marker in "$WORK"/*/tmp/pai-goosecfg/*.json; do
     [ -e "$marker" ] || continue
     pid="$(sed -n 's/.*"pid": *\([0-9]*\).*/\1/p' "$marker")"
     if [ -n "$pid" ]; then
@@ -66,8 +71,13 @@ else
   read -r -a FIX_PY <<<"uv run --quiet --with pyyaml python"
 fi
 
-pai() { # pai <command> <home>
-  PAI_HOME="$2" "${PAI_PY[@]}" "$DOCTOR" "$1"
+# Flags are forwarded, because #34 gave `doctor` some: a wrapper that passed
+# only "$1" would make every --fix assertion below silently test plain `doctor`.
+# cli.sh has the same change for the same reason.
+pai() { # pai <command> <home> [flags...]
+  local command="$1" home="$2"
+  shift 2
+  PAI_HOME="$home" "${PAI_PY[@]}" "$DOCTOR" "$command" "$@"
 }
 
 # ---- fixture generation ------------------------------------------------------
@@ -261,6 +271,12 @@ fi
 
 # ---- 5. THE read-only proof --------------------------------------------------
 # Not a grep for '>' — a hash of every byte under the fixture before and after.
+#
+# DELIBERATELY RESTRICTED TO THE NON-MUTATING VERBS, and it must stay that way.
+# #34 added `doctor --fix`, which writes on purpose; this proof is what keeps
+# the rest of the tool honest about not doing so, and adding --fix here would
+# turn the one assertion that guards the read-only contract into a no-op.
+# Section 9 has the matching proof for `--dry-run`.
 BEFORE="$(find "$CLEAN" -type f -exec shasum {} \; | sort | shasum)"
 pai doctor "$CLEAN" >/dev/null 2>&1 || true
 pai status "$CLEAN" >/dev/null 2>&1 || true
@@ -716,6 +732,15 @@ try:
 finally:
     g._ephemeral_port = saved_ep
     squatter.close()
+# And the top of the range, which the OS hands out like any other ephemeral
+# port: bind(65536) raises OverflowError, NOT OSError, so before this guard it
+# escaped the retry above and surfaced as a traceback out of `pai doctor --fix`.
+# Observed once in a real harness run, which is the only reason it is here.
+saved_ep, g._ephemeral_port = g._ephemeral_port, lambda: 65535
+try:
+    raises(g.ServerError, g.Reason.NO_PORT, g.EphemeralGoose.choose_port)
+finally:
+    g._ephemeral_port = saved_ep
 
 # 9. the exception vocabulary the callers will switch on.
 rpc = g.RpcError(-32601, "Method not found")
@@ -1167,13 +1192,478 @@ PY
 gc_probe "spawn, readiness, teardown proof, crash marker, signal path" \
   "$GC_WORK/probe-life.py"
 
-# Nothing this section spawned may survive it. The trap at the top of this file
-# is the backstop; this is the assertion.
-LEFTOVER="$(find "$GC_WORK/tmp/pai-goosecfg" -name '*.json' 2>/dev/null | wc -l | tr -d ' ')"
-if [ "$LEFTOVER" = "0" ]; then
-  pass "goosecfg: no crash markers and no listeners survived the probes"
+# ---- 9. `pai doctor --fix`: the one mutating verb ----------------------------
+# doctor.py was READ-ONLY BY DESIGN until #34 and said so in its header; --fix
+# is a real change to a stated contract, so it gets a section of its own and the
+# read-only proof above stays restricted to the verbs that still honour it.
+#
+# THE FIXTURE IS TWO FILES, and the split is an artefact of the test double, not
+# of the design. On a real machine the ACP view and ~/.config/goose/config.yaml
+# are the same config: goose writes the file from the state ACP reads. The fake
+# persists ACP state as JSON in the WIRE shape (`{extension: {...}, enabled:
+# bool}`), which is not the disk shape doctor's read-only half parses, so:
+#
+#   $state          the fake's write-through file -- the ACP truth, and the only
+#                   thing --fix's plan is computed from or proven against
+#   $home/.config/goose/config.yaml
+#                   read by --fix for ONE thing: the inline `envs` values, which
+#                   are unreadable over ACP in both directions (measured)
+#
+# The consequence, stated rather than papered over: a plain `pai doctor` after a
+# `--fix` cannot observe the repair offline, because the disk file the fake
+# writes is not in config.yaml's shape. The re-assert is proven instead by a
+# second `--dry-run` finding nothing left to do -- read through the same ACP
+# read-back that IS the state, which is the stronger of the two claims.
+FIX_WORK="$WORK/fix"
+mkdir -p "$FIX_WORK/tmp"
+
+# Derived from the repo's own template at run time, exactly like make_clean and
+# for the same reason: a committed seed would be asserting yesterday's template.
+# goosecfg.to_wire does the disk->ACP translation so this fixture cannot drift
+# from the one --fix will send.
+seed_state() { # seed_state <state.json> <mutator-name>
+  "${FIX_PY[@]}" - "$REPO_ROOT" "$1" "$2" <<'PY'
+import importlib.util, json, pathlib, sys
+import yaml
+repo, out, mutation = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3]
+spec = importlib.util.spec_from_file_location("gc_seed", repo / "scripts/pai/goosecfg.py")
+g = importlib.util.module_from_spec(spec)
+sys.modules["gc_seed"] = g
+spec.loader.exec_module(g)
+tpl = yaml.safe_load((repo / "config/goose/config.yaml").read_text())["extensions"]
+state = {"extensions": {}, "secrets": {}}
+for name, block in tpl.items():
+    if block.get("type") in ("builtin", "platform"):
+        # goose's own: the wire entry carries neither a command nor a url, which
+        # is exactly why --fix compares only `enabled` on these.
+        wire = {"type": block["type"], "name": name, "timeout": block.get("timeout")}
+    else:
+        wire = g.to_wire(name, block, {})
+    state["extensions"][name] = {"enabled": bool(block.get("enabled")), "extension": wire}
+# goose's own extensions, which must be reported as NOTE and never touched.
+for extra in ("computercontroller", "scheduler", "tutorial"):
+    state["extensions"][extra] = {"enabled": True,
+                                  "extension": {"type": "builtin", "name": extra}}
+ws = state["extensions"]["workspace-mcp"]
+if mutation in ("drift", "restart"):
+    # The three drifts criterion 4 names, and they are the measured ones: the
+    # live Mac has workspace-mcp UNPINNED with no --permissions, an
+    # available_tools of length 0, and apps.enabled true.
+    ws["extension"]["server"]["args"] = ["workspace-mcp", "--tools", "gmail"]
+    ws["extension"]["available_tools"] = []
+    state["extensions"]["apps"]["enabled"] = True
+if mutation == "restart":
+    # ...plus one goose put back that the first --fix had already promoted: a
+    # dropped env_key. env_keys is the one field compared as a SUPERSET, so this
+    # is the arm where that comparison has to say NO.
+    ws["extension"]["envKeys"] = ws["extension"]["envKeys"][:1]
+if mutation == "disabled":
+    ws["enabled"] = False
+    ws["extension"]["available_tools"] = []
+out.write_text(json.dumps(state, indent=2))
+PY
+}
+
+# The disk half. `envs` is the only key --fix reads from it, so that is the only
+# key it carries; anything else here would imply doctor's read-only half can see
+# the fake, which it cannot.
+seed_home() { # seed_home <home> <envs-value-or-empty>
+  mkdir -p "$1/.config/goose"
+  if [ -z "${2:-}" ]; then
+    printf 'extensions: {}\n' > "$1/.config/goose/config.yaml"
+  else
+    printf 'extensions:\n  workspace-mcp:\n    envs:\n      USER_GOOGLE_EMAIL: %s\n' \
+      "$2" > "$1/.config/goose/config.yaml"
+  fi
+}
+
+# A value that is obviously not a secret, so the "the value never reaches the
+# output" assertion below can name it. Never a real address.
+FAKE_EMAIL="not-a-real-address@example.invalid"
+
+# --fix spawns its own `goose serve` stand-in through goosecfg, so it needs the
+# same TMPDIR redirection and tuning seams section 8 uses -- and the markers it
+# leaves under $FIX_WORK/tmp are what the EXIT trap reaps.
+run_fix() { # run_fix <home> <state> <mode> [flags...]
+  local home="$1" state="$2" mode="$3"
+  shift 3
+  FIX_RC=0
+  FIX_OUT="$(TMPDIR="$FIX_WORK/tmp" PAI_GOOSE_READY_S=3 PAI_GOOSE_STOP_S=0.5 \
+      PAI_GOOSE_ALLOW_CONCURRENT=1 PAI_GOOSE_BIN="$FAKE_ACP" \
+      PAI_FAKE_CONFIG="$state" PAI_FAKE_MODE="$mode" \
+      pai doctor "$home" "$@" 2>&1)" || FIX_RC=$?
+}
+
+fix_rc() { # fix_rc <label> <wanted>
+  if [ "$FIX_RC" = "$2" ]; then
+    pass "$1"
+  else
+    fail "$1 (exit $FIX_RC, wanted $2)"$'\n'"$FIX_OUT"
+  fi
+}
+fix_says() { # fix_says <label> <extended-regex>
+  if printf '%s\n' "$FIX_OUT" | grep -qE -- "$2"; then
+    pass "$1"
+  else
+    fail "$1 — no line matched /$2/"$'\n'"$FIX_OUT"
+  fi
+}
+fix_silent() { # fix_silent <label> <extended-regex>
+  if printf '%s\n' "$FIX_OUT" | grep -qE -- "$2"; then
+    fail "$1 — /$2/ appeared in the output"$'\n'"$FIX_OUT"
+  else
+    pass "$1"
+  fi
+}
+
+FIX_HOME="$FIX_WORK/home"
+FIX_STATE="$FIX_WORK/state.json"
+seed_home "$FIX_HOME" ""
+seed_state "$FIX_STATE" drift
+
+# 9a. --dry-run says what it would do and WRITES NOTHING. Same byte-hash proof
+#     as section 5, applied to the mutating half: a dry run whose plan differs
+#     from --fix's, or that touches the config, is worse than no dry run.
+DRY_BEFORE="$(shasum < "$FIX_STATE")"
+run_fix "$FIX_HOME" "$FIX_STATE" ok --dry-run
+DRY_AFTER="$(shasum < "$FIX_STATE")"
+fix_rc "--dry-run exits 1 while fixable drift remains" 1
+fix_says "--dry-run plans the workspace-mcp pin" 'WOULD +workspace-mcp\.args'
+fix_says "--dry-run plans the allowlist" 'WOULD +workspace-mcp\.available_tools'
+fix_says "--dry-run plans re-disabling apps" 'WOULD +apps\.enabled'
+fix_says "--dry-run says so, in the summary" 'NOTHING WAS WRITTEN'
+fix_silent "--dry-run fixes nothing" '^FIXED'
+if [ "$DRY_BEFORE" = "$DRY_AFTER" ]; then
+  pass "--dry-run left the live config byte-identical"
 else
-  fail "goosecfg left $LEFTOVER crash marker(s) behind — a server may still be running"
+  fail "--dry-run wrote to the config it was only supposed to describe"
+fi
+
+# 9b. the acceptance criterion itself: the pin, the --permissions flag, the
+#     allowlist, and apps re-disabled — in one run, each proven by read-back.
+run_fix "$FIX_HOME" "$FIX_STATE" ok --fix
+fix_rc "--fix exits 0 when everything fixable was fixed" 0
+fix_says "--fix restores the workspace-mcp pin and --permissions" 'FIXED +workspace-mcp\.args'
+fix_says "--fix restores the allowlist" 'FIXED +workspace-mcp\.available_tools'
+fix_says "--fix re-disables apps" 'FIXED +apps\.enabled'
+fix_says "goose's own extensions are a NOTE, never touched" 'not ours, never touched \(3\)'
+if "${FIX_PY[@]}" - "$FIX_STATE" "$REPO_ROOT" <<'PY'
+import json, pathlib, sys
+import yaml
+state = json.loads(pathlib.Path(sys.argv[1]).read_text())
+tpl = yaml.safe_load((pathlib.Path(sys.argv[2]) / "config/goose/config.yaml").read_text())
+want = tpl["extensions"]["workspace-mcp"]
+ws = state["extensions"]["workspace-mcp"]
+# The DISK side of the same claim: not "doctor printed FIXED" but "the server
+# stored the template's own bytes", read straight out of the fake's file.
+assert ws["extension"]["server"]["args"] == want["args"], ws["extension"]["server"]["args"]
+assert ws["extension"]["available_tools"] == want["available_tools"]
+assert ws["enabled"] is True, ws
+assert state["extensions"]["apps"]["enabled"] is False, state["extensions"]["apps"]
+PY
+then
+  pass "the fixed values are what the repo's template declares, read off the server"
+else
+  fail "--fix reported success and the stored config disagrees"
+fi
+
+# 9c. idempotence. A second --fix finds nothing, and a --dry-run agrees: there
+#     is no journal, so this is the read-back saying the re-assert stuck.
+run_fix "$FIX_HOME" "$FIX_STATE" ok --fix
+fix_rc "a second --fix exits 0" 0
+fix_silent "a second --fix changes nothing" '^FIXED'
+fix_says "...and says so" '== fix: 0 fixed, 0 unfixed'
+run_fix "$FIX_HOME" "$FIX_STATE" ok --dry-run
+fix_rc "--dry-run on a repaired config exits 0" 0
+fix_silent "--dry-run on a repaired config plans nothing" '^WOULD'
+
+# 9d. criterion 4: a goose restart puts the keys back, and re-running detects
+#     and re-asserts them by the same code path. Also drives env_keys' superset
+#     comparison in the direction that must FAIL — a declared key goose lost.
+seed_state "$FIX_STATE" restart
+run_fix "$FIX_HOME" "$FIX_STATE" ok --fix
+fix_rc "after a simulated goose restart, --fix exits 0" 0
+fix_says "...and re-asserts the pin" 'FIXED +workspace-mcp\.args'
+fix_says "...and the allowlist" 'FIXED +workspace-mcp\.available_tools'
+fix_says "...and apps" 'FIXED +apps\.enabled'
+fix_says "...and the env_keys goose dropped" 'FIXED +workspace-mcp\.env_keys'
+
+# 9e. THE FAIL-OPEN ONE. goose accepts the allowlist, answers success, and
+#     stores no allowlist key at all — which means every tool is allowed. --fix
+#     must report FAIL, must NOT enable, and must exit 1.
+DROP_STATE="$FIX_WORK/drop.json"
+seed_state "$DROP_STATE" disabled
+run_fix "$FIX_HOME" "$DROP_STATE" drop-allowlist --fix
+fix_rc "a dropped allowlist is an unfixed FAIL, exit 1" 1
+fix_says "...reported as FAIL, not FIXED" '^FAIL +workspace-mcp\.available_tools'
+fix_says "...naming the reason machine-readably" 'allowlist-dropped'
+if "${FIX_PY[@]}" -c 'import json,sys;s=json.load(open(sys.argv[1]));sys.exit(0 if s["extensions"]["workspace-mcp"]["enabled"] is False else 1)' "$DROP_STATE"; then
+  pass "a failed read-back left the extension DISABLED — the safe end"
+else
+  fail "--fix enabled an extension whose allowlist goose had silently dropped"
+fi
+# ...and the drift is still there afterwards, which is the other half of "did
+# not fix it". This is also the arm where the live allowlist key is ABSENT
+# rather than a list, so the set-comparison in field_matches falls through.
+run_fix "$FIX_HOME" "$DROP_STATE" ok --dry-run
+fix_rc "the unfixed drift is still reported afterwards" 1
+fix_says "...still naming the allowlist" 'WOULD +workspace-mcp\.available_tools'
+
+# 9f. `envs`. MEASURED: it is unreachable over ACP in both directions and ANY
+#     ACP write leaves disk `envs: {}`. The author's live machine has
+#     USER_GOOGLE_EMAIL populated, so the default has to be to leave the whole
+#     extension alone and say why.
+ENV_HOME="$FIX_WORK/envhome"
+ENV_STATE="$FIX_WORK/env.json"
+seed_home "$ENV_HOME" "$FAKE_EMAIL"
+seed_state "$ENV_STATE" drift
+run_fix "$ENV_HOME" "$ENV_STATE" ok --fix
+fix_rc "an inline envs value does not make --fix fail" 0
+fix_says "...the extension holding it is refused by name" 'workspace-mcp NOT TOUCHED'
+fix_says "...naming the KEY and the remedy" 'USER_GOOGLE_EMAIL'
+fix_says "...and pointing at the flag" '--migrate-envs'
+fix_silent "...and never printing the value" "$FAKE_EMAIL"
+fix_silent "...and not repairing it behind the refusal" 'FIXED +workspace-mcp'
+fix_says "...while still fixing what it may" 'FIXED +apps\.enabled'
+
+# ...and with the flag, the one announced migration, proven by config/read
+# {isSecret: true} returning non-null. The VALUE is never asked for.
+run_fix "$ENV_HOME" "$ENV_STATE" ok --fix --migrate-envs
+fix_rc "--migrate-envs exits 0" 0
+fix_says "the migration is announced before it happens" 'migrating USER_GOOGLE_EMAIL'
+fix_says "...it is called one way, in those words" 'ONE WAY'
+fix_says "...and the extension is then repaired" 'FIXED +workspace-mcp\.args'
+fix_silent "...still without printing the value" "$FAKE_EMAIL"
+if "${FIX_PY[@]}" - "$ENV_STATE" <<'PY'
+import json, pathlib, sys
+state = json.loads(pathlib.Path(sys.argv[1]).read_text())
+ws = state["extensions"]["workspace-mcp"]["extension"]
+# The NAME reached env_keys and the store holds the key. Nothing here looks at,
+# compares, or prints what the value is — that is the repo's rule, and it is
+# also all goose would give us (config/read masks it).
+assert "USER_GOOGLE_EMAIL" in ws["envKeys"], ws["envKeys"]
+assert "USER_GOOGLE_EMAIL" in state["secrets"], sorted(state["secrets"])
+PY
+then
+  pass "the promoted key reached env_keys and goose's secret store, by name only"
+else
+  fail "the announced envs migration did not land"
+fi
+
+# ...and the promotion SURVIVES the next repair, which is the half that is easy
+# to get wrong and impossible to notice. `config/extensions/add` is a FULL
+# REPLACE, so a payload carrying only the template's `env_keys` would delete the
+# name the migration had just appended: the value would still be in goose's
+# secret store and the extension would silently stop being handed it, while the
+# planner's superset comparison went on calling the narrowed list a match.
+# Drift is re-introduced by editing ONE key rather than re-seeding, because
+# seed_state would rewrite `envKeys` and destroy the very thing under test.
+"${FIX_PY[@]}" - "$ENV_STATE" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+state = json.loads(path.read_text())
+state["extensions"]["workspace-mcp"]["extension"]["server"]["args"] = [
+    "workspace-mcp", "--tools", "gmail",
+]
+path.write_text(json.dumps(state, indent=2))
+PY
+# goose has emptied inline `envs` by now -- that is what the migration did to it
+# -- so this run is a plain --fix with nothing left to refuse.
+seed_home "$ENV_HOME" ""
+run_fix "$ENV_HOME" "$ENV_STATE" ok --fix
+fix_rc "a repair AFTER the migration exits 0" 0
+fix_says "...and re-asserts the pin" 'FIXED +workspace-mcp\.args'
+if "${FIX_PY[@]}" -c 'import json,sys;s=json.load(open(sys.argv[1]));sys.exit(0 if "USER_GOOGLE_EMAIL" in s["extensions"]["workspace-mcp"]["extension"]["envKeys"] else 1)' "$ENV_STATE"; then
+  pass "the migrated env_key survived that repair, still wired to the extension"
+else
+  fail "a later --fix dropped the migrated env_key: stored, and no longer delivered"
+fi
+
+# A live `envs` still holding the template's own placeholder is dropped, never
+# promoted: putting a fiction in the secret store is worse than doing nothing.
+PLACEHOLDER_HOME="$FIX_WORK/placeholderhome"
+seed_home "$PLACEHOLDER_HOME" "you@example.com"
+seed_state "$FIX_STATE" drift
+run_fix "$PLACEHOLDER_HOME" "$FIX_STATE" ok --fix
+fix_rc "a placeholder envs value does not block the repair" 0
+fix_says "...it is dropped, and said so" 'USER_GOOGLE_EMAIL still holds the template.s placeholder'
+fix_says "...and the extension is repaired anyway" 'FIXED +workspace-mcp\.args'
+
+# 9g. set-enabled answers {} whatever it did, so the enabled-only path reads
+#     back too. `ignore-enable` is the mode that proves it.
+seed_state "$FIX_STATE" drift
+run_fix "$FIX_HOME" "$FIX_STATE" ignore-enable --fix
+fix_rc "a set-enabled that silently did nothing is an unfixed FAIL" 1
+fix_says "...reported against apps" '^FAIL +apps\.enabled'
+fix_says "...saying the read-back is what disagreed" 'read-back disagrees'
+
+# 9h. the split-brain guard. PAI_HOME retargets everything doctor READS and
+#     nothing it WRITES, so without this `PAI_HOME=/tmp/fixture pai doctor
+#     --fix` diagnoses a fixture and repairs the real machine.
+SPLIT_RC=0
+SPLIT_OUT="$(PAI_HOME="$FIX_HOME" TMPDIR="$FIX_WORK/tmp" \
+  env -u GOOSE_ACP_URL -u PAI_GOOSE_BIN \
+  "${PAI_PY[@]}" "$DOCTOR" doctor --fix 2>&1)" || SPLIT_RC=$?
+if [ "$SPLIT_RC" -eq 2 ] && printf '%s' "$SPLIT_OUT" | grep -q "refusing --fix"; then
+  pass "--fix refuses a PAI_HOME that is not \$HOME with no goose named"
+else
+  fail "--fix would have repaired this machine while diagnosing a fixture (exit $SPLIT_RC)"$'\n'"$SPLIT_OUT"
+fi
+# ...and the same run is allowed once $HOME and PAI_HOME agree, which is the
+# other arm of the guard. HOME is pointed at the FIXTURE rather than --fix at
+# this machine, for the obvious reason -- and the assignment is a prefix on a
+# function call, which bash outside POSIX mode scopes to that call alone
+# (verified). If that ever stopped being true, every later line in this file
+# would be running against a fake $HOME.
+seed_state "$FIX_STATE" drift
+HOME="$FIX_HOME" run_fix "$FIX_HOME" "$FIX_STATE" ok --dry-run
+fix_rc "--fix is allowed when PAI_HOME is \$HOME" 1
+fix_says "...and plans the same repairs" 'WOULD +workspace-mcp\.args'
+
+# 9i. no goose, and none spawnable: exit 2, not a traceback and not a silent 0.
+run_fix "$FIX_HOME" "$FIX_STATE" ok --fix
+NOGOOSE_RC=0
+NOGOOSE_OUT="$(TMPDIR="$FIX_WORK/tmp" PAI_GOOSE_READY_S=1 PAI_GOOSE_ALLOW_CONCURRENT=1 \
+  PAI_GOOSE_BIN="$FIX_WORK/no-such-goose" PAI_HOME="$FIX_HOME" \
+  "${PAI_PY[@]}" "$DOCTOR" doctor --fix 2>&1)" || NOGOOSE_RC=$?
+if [ "$NOGOOSE_RC" -eq 2 ] && printf '%s' "$NOGOOSE_OUT" | grep -q "no usable goose ACP session"; then
+  pass "no goose reachable and none spawnable exits 2, naming both seams"
+else
+  fail "an unreachable goose exited $NOGOOSE_RC"$'\n'"$NOGOOSE_OUT"
+fi
+
+# 9j. the option vocabulary. An unknown flag must be a usage error, not a word
+#     that silently degrades `pai doctor --fx` into a harmless-looking report.
+BAD_RC=0
+pai doctor "$FIX_HOME" --fx >/dev/null 2>&1 || BAD_RC=$?
+if [ "$BAD_RC" -eq 2 ]; then
+  pass "an unknown doctor flag exits 2 (usage)"
+else
+  fail "an unknown doctor flag exited $BAD_RC, wanted 2"
+fi
+LONE_RC=0
+pai doctor "$FIX_HOME" --migrate-envs >/dev/null 2>&1 || LONE_RC=$?
+if [ "$LONE_RC" -eq 2 ]; then
+  pass "--migrate-envs without --fix exits 2 rather than reading as a plain doctor"
+else
+  fail "--migrate-envs alone exited $LONE_RC, wanted 2"
+fi
+
+# 9k. THE FLAG ACTUALLY REACHES doctor.py THROUGH bin/pai. cli.sh used to
+#     `exec ... "$1"`, which dropped every flag — so without this assertion the
+#     entire section above could pass while `pai doctor --fix` did nothing at
+#     all. It costs zero coverage (cli.sh runs its own python3) and is the only
+#     thing that proves the "$@" change.
+SHIM_RC=0
+"$REPO_ROOT/bin/pai" doctor --fx >/dev/null 2>&1 || SHIM_RC=$?
+if [ "$SHIM_RC" -eq 2 ]; then
+  pass "bin/pai forwards doctor's flags verbatim (an unknown one is its exit 2)"
+else
+  fail "bin/pai dropped the flag: --fx exited $SHIM_RC, wanted doctor.py's 2"
+fi
+SHIM_DRY_RC=0
+SHIM_DRY_OUT="$(PAI_HOME="$FIX_HOME" TMPDIR="$FIX_WORK/tmp" PAI_GOOSE_READY_S=3 \
+  PAI_GOOSE_ALLOW_CONCURRENT=1 PAI_GOOSE_BIN="$FAKE_ACP" PAI_FAKE_CONFIG="$FIX_STATE" \
+  "$REPO_ROOT/bin/pai" doctor --dry-run 2>&1)" || SHIM_DRY_RC=$?
+if printf '%s' "$SHIM_DRY_OUT" | grep -q "NOTHING WAS WRITTEN"; then
+  pass "bin/pai doctor --dry-run reaches the real dry run (exit $SHIM_DRY_RC)"
+else
+  fail "bin/pai doctor --dry-run did not run one"$'\n'"$SHIM_DRY_OUT"
+fi
+
+# 9l. the planner arms no live server can produce, driven in process. Same
+#     file-not-stdin and register-before-exec_module rules as sections 6 and 8.
+#     These are template shapes the repo does not ship and must never ship
+#     silently: a camelCase allowlist, an `enabled: true` with no allowlist, a
+#     placeholder in a DECLARED field, a builtin that is simply absent.
+cat > "$FIX_WORK/probe-plan.py" <<'PY'
+"""doctor's --fix planner on template shapes the repo deliberately does not ship."""
+import importlib.util
+import sys
+
+DOCTOR, = sys.argv[1:2]
+spec = importlib.util.spec_from_file_location("doctor_plan_probe", DOCTOR)
+assert spec and spec.loader
+mod = importlib.util.module_from_spec(spec)
+sys.modules["doctor_plan_probe"] = mod
+spec.loader.exec_module(mod)
+
+MCP = {"type": "stdio", "enabled": True, "cmd": "uvx", "args": ["x@1"],
+       "available_tools": ["get_events"]}
+
+
+def texts(findings):
+    return " || ".join(f.text for f in findings)
+
+
+# 1. field_matches: the two fields whose comparison must be NO STRICTER than
+#    goosecfg's prover, or --fix re-applies the same extension forever.
+assert mod.field_matches("env_keys", ["A"], ["A", "PROMOTED"]) is True
+assert mod.field_matches("env_keys", ["A", "B"], ["A"]) is False
+assert mod.field_matches("available_tools", ["a", "b"], ["b", "a"]) is True
+assert mod.field_matches("available_tools", ["a"], None) is False
+assert mod.field_matches("args", ["a", "b"], ["b", "a"]) is False
+assert mod.field_matches("timeout", 300, 300) is True
+
+# 2. a placeholder in a DECLARED field is skipped by the differ entirely: --fix
+#    never invents a value, and the read-only half already NOTEs it.
+assert mod.diff_fields({"cmd": "<your cmd>"}, {"cmd": "uvx"}) == []
+assert mod.diff_fields({"cmd": "uvx"}, {"cmd": "npx"}) == [("cmd", "npx", "uvx")]
+
+# 3. camelCase in the template: refused BEFORE any write, because goose accepts
+#    it and stores no allowlist at all.
+camel = dict(MCP, availableTools=["t"])
+repairs, notes = mod.plan_mcp("camel", camel, None, {}, migrate_envs=False)
+assert repairs == [], repairs
+assert "camelCase" in texts(notes), texts(notes)
+
+# 4. enabled: true with no allowlist -> APPLIED, left DISABLED. Two refusals,
+#    not one; collapsing them makes playwright and tavily permanently unfixable.
+naked = {"type": "stdio", "enabled": True, "cmd": "npx"}
+repairs, notes = mod.plan_mcp("naked", naked, None, {}, migrate_envs=False)
+assert len(repairs) == 1 and repairs[0].enable is False, repairs
+assert "left DISABLED" in texts(notes), texts(notes)
+assert "add it, disabled" in repairs[0].lines[0], repairs[0].lines
+
+# 5. a builtin that is absent: ACP's add speaks `type: mcp` only.
+repairs, notes = mod.plan_platform("apps", {"type": "platform", "enabled": False}, None)
+assert repairs == [] and "cannot create one" in texts(notes), (repairs, texts(notes))
+
+# 6. plan_fix's own two empty arms: a template with no builtin/platform block,
+#    and a live config holding nothing goose added of its own.
+repairs, notes = mod.plan_fix({"extensions": {"x": MCP}}, {"x": MCP}, {}, migrate_envs=False)
+assert repairs == [], repairs
+assert [n.text for n in notes] == [mod.OUT_OF_SCOPE.text], texts(notes)
+
+# 7. apply_repair's detail-less exception arm: reason alone, no ": ".
+import goosecfg  # noqa: E402 -- sys.path[0] is scripts/pai only for the real CLI
+
+
+class Refuses:
+    def set_enabled(self, key, *, enabled):
+        raise goosecfg.ServerError(goosecfg.Reason.NOT_READY)
+
+
+bare = mod.Repair("apps", ("apps.enabled",), {}, {}, True, enabled_only=True)
+assert mod.apply_repair(Refuses(), bare) == goosecfg.Reason.NOT_READY
+PY
+PLAN_RC=0
+PLAN_OUT="$(PYTHONPATH="$REPO_ROOT/scripts/pai" "${PAI_PY[@]}" "$FIX_WORK/probe-plan.py" \
+  "$DOCTOR" 2>&1)" || PLAN_RC=$?
+if [ "$PLAN_RC" -eq 0 ]; then
+  pass "--fix planner: both refusals, the placeholder skip, and the convergence rules"
+else
+  fail "--fix planner probe failed:"$'\n'"$PLAN_OUT"
+fi
+
+# Nothing sections 8 and 9 spawned may survive them. The trap at the top of this
+# file is the backstop; this is the assertion.
+LEFTOVER="$(find "$GC_WORK/tmp/pai-goosecfg" "$FIX_WORK/tmp/pai-goosecfg" \
+  -name '*.json' 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$LEFTOVER" = "0" ]; then
+  pass "goosecfg and --fix: no crash markers and no listeners survived the probes"
+else
+  fail "$LEFTOVER crash marker(s) survived — a server may still be running"
 fi
 
 finish

@@ -1,18 +1,37 @@
 #!/usr/bin/env python3
-"""Read-only inspection of a personal-ai install: what is here, and what drifted.
+"""Inspect a personal-ai install: what is here, what drifted, and -- opt in -- fix it.
 
-Nothing in this file writes. `pai doctor --fix` is a later ticket (#34) and will
-need goose's ACP API, because goose serde-round-trips config.yaml -- the live
+READ-ONLY BY DEFAULT, AND THAT IS STILL THE CONTRACT. `pai doctor`, `pai status`
+and `pai list` write nothing, anywhere, ever; scripts/verify/test-pai.sh proves
+it by hashing every byte of a fixture before and after. What changed in #34 is
+that ONE verb was added beside them, and it is the first mutating thing in this
+tool:
+
+    pai doctor                  report. writes nothing.
+    pai doctor --dry-run        say exactly what --fix WOULD do. writes nothing.
+    pai doctor --fix            re-assert, over goose's ACP config API, the keys
+                                the repo's own templates declare. WRITES.
+    pai doctor --fix --migrate-envs
+                                additionally perform the one announced, one-way
+                                `envs` migration described below.
+
+--fix is opt-in, it is never implied, and `--dry-run` is the reading of it that
+costs nothing -- the plan it prints is the same plan, line for line, that --fix
+would then execute.
+
+WHY IT CANNOT JUST EDIT config.yaml. goose serde-round-trips that file: the live
 file on the author's Mac has 21 extensions and zero comments against a template
-declaring 7 with 195 comment lines. That is also why this compares only the
-fields the template DECLARES: goose adds keys of its own (`bundled`,
-`description`, `display_name`) to everything it touches, and diffing whole
-objects would report those as drift forever.
+declaring 7 with 195 comment lines, so a file-copying "fix" is undone by the
+next thing goose writes. The supported surface is the ACP config API, which
+scripts/pai/goosecfg.py speaks -- imported LAZILY, inside the --fix branch, so
+that plain `pai doctor` keeps no dependency on it at all.
 
 THE OWNERSHIP RULE, which is the decision that makes the output legible:
 doctor reports drift on everything it can see, but only the keys the repo's own
 templates declare are ever called drift. Extensions goose added by itself are
-listed once, informationally, and never touched.
+listed once, informationally, and never touched. --fix inherits that rule and
+narrows it further -- see REFUSALS on `plan_fix`, which is the list worth
+reading before trusting this with a live config.
 """
 
 from __future__ import annotations
@@ -27,7 +46,7 @@ from typing import Any, Literal
 
 import yaml
 
-Level = Literal["PASS", "FAIL", "NOTE"]
+Level = Literal["PASS", "FAIL", "NOTE", "FIXED", "WOULD"]
 
 # The fields a template entry can declare. Anything outside this set is goose's
 # own bookkeeping and is not ours to have an opinion about.
@@ -118,7 +137,7 @@ def compare_extension(
             Finding(
                 "FAIL",
                 f"{name}.{field}: live {got!r} != declared {want!r}",
-                "restore it from config/goose/config.yaml (--fix arrives in #34)",
+                "re-assert it over ACP: pai doctor --dry-run, then pai doctor --fix",
             ),
         )
     if not findings:
@@ -277,9 +296,9 @@ def collect(repo: Path, home: Path) -> list[Finding]:
 
 
 def report(findings: list[Finding]) -> int:
-    """Print findings; return the process exit code."""
-    _emit("doctor reports drift on everything; --fix (#34) re-asserts only what the")
-    _emit("repo's own templates declare.")
+    """Print findings; return the process exit code. WRITES NOTHING."""
+    _emit("doctor reports drift on everything; --fix re-asserts only what the repo's")
+    _emit("own templates declare, and only over goose's ACP config API.")
     _emit("")
     for finding in findings:
         _emit(f"{finding.level:<4}  {finding.text}")
@@ -290,6 +309,464 @@ def report(findings: list[Finding]) -> int:
     _emit("")
     _emit(f"== summary: {passed} passed, {failed} failed ==")
     return 1 if failed else 0
+
+
+# --------------------------------------------------------------------------
+# --fix: the only mutating path in this file
+# --------------------------------------------------------------------------
+
+# `builtin` and `platform` blocks are goose's OWN extensions, declared here only
+# so their on/off state is written down. ACP's `config/extensions/add` speaks
+# `type: mcp` and nothing else, so `set-enabled` is the only lever that reaches
+# one -- which is exactly enough for `apps`, the security-relevant case, and
+# exactly nothing for the rest.
+PLATFORM_TYPES = frozenset({"builtin", "platform"})
+
+# Printed on every --fix and --dry-run. It is the reader's answer to "what did
+# this just decide not to touch", and it is deliberately the first NOTE.
+OUT_OF_SCOPE = Finding(
+    "NOTE",
+    "--fix touches goose's extension config and nothing else: skills, .goosehints, "
+    "provider wiring and the model catalogue are owned by bootstrap-mac.sh and "
+    "sync-models.sh, which is why they are not repaired here",
+    "plain `pai doctor` reports those; it is still the whole picture",
+)
+
+
+@dataclass(frozen=True)
+class Repair:
+    """One extension --fix would re-assert, with the before/after that justifies it.
+
+    `lines` is rendered at PLAN time, not at report time, so `--dry-run` and
+    `--fix` print byte-identical text under different tags. A dry run that
+    described the work differently from the work would be worth nothing.
+    """
+
+    name: str
+    lines: tuple[str, ...]
+    template: dict[str, Any]
+    envs: dict[str, str]
+    enable: bool
+    # True when the repair is a single `set-enabled` rather than a full add:
+    # the builtin/platform case, where nothing else is reachable.
+    enabled_only: bool
+
+
+def refuse_split_brain(home: Path) -> str:
+    """Say why --fix must not run against this home, or '' when it may.
+
+    `PAI_HOME` retargets everything doctor READS. It retargets nothing doctor
+    WRITES: the ACP endpoint is whatever goose answers, which is this machine's
+    real config. So `PAI_HOME=/tmp/fixture pai doctor --fix` would diagnose a
+    fixture and repair the live install. Refused, unless the caller has also
+    named the endpoint (`GOOSE_ACP_URL`) or the binary (`PAI_GOOSE_BIN`) and so
+    has said out loud which goose it means.
+    """
+    if home == Path.home():
+        return ""
+    if os.environ.get("GOOSE_ACP_URL") or os.environ.get("PAI_GOOSE_BIN"):
+        return ""
+    return (
+        f"refusing --fix: PAI_HOME={home} is not $HOME, so --fix would diagnose that "
+        "home and repair this machine's goose. Set GOOSE_ACP_URL (or PAI_GOOSE_BIN) "
+        "to name the goose you mean."
+    )
+
+
+def field_matches(field: str, want: Any, got: Any) -> bool:  # noqa: ANN401 -- YAML values
+    """Compare one declared field the same way goosecfg's read-back proves it.
+
+    THE PLANNER MUST BE NO STRICTER THAN THE PROVER, or --fix never converges:
+    it would re-apply an extension whose write goosecfg then certifies as
+    correct, on every run, forever. Two fields need that care.
+
+    `env_keys` is a SUPERSET comparison because goose appends the NAME of every
+    promoted env value to it -- a successful migration legitimately widens the
+    list, and equality would false-FAIL on exactly the operation that worked.
+
+    `available_tools` is compared as a SET because goosecfg.prove_allowlist
+    does; a reordering is not a difference in what the agent may call.
+    """
+    if field == "env_keys":
+        return set(want or ()) <= set(got or ())
+    if field == "available_tools" and isinstance(want, list) and isinstance(got, list):
+        return set(want) == set(got)
+    return bool(want == got)
+
+
+def diff_fields(template: dict[str, Any], live: dict[str, Any]) -> list[tuple[str, Any, Any]]:
+    """Every declared field where the live entry disagrees, as (field, live, declared)."""
+    diffs: list[tuple[str, Any, Any]] = []
+    for field in DECLARED_FIELDS:
+        if field not in template or is_placeholder(template[field]):
+            continue
+        got = live.get(field)
+        if field_matches(field, template[field], got):
+            continue
+        diffs.append((field, got, template[field]))
+    return diffs
+
+
+def keep_promoted_env_keys(
+    template: dict[str, Any],
+    live: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Return the template block widened by any `env_keys` name goose added itself.
+
+    THE PAYLOAD IS THE WHOLE ENTRY: `config/extensions/add` is a full replace,
+    not a merge (measured), so re-sending the template's `env_keys` verbatim
+    DELETES every name that is not in it. That is not hypothetical -- it is
+    exactly what --migrate-envs appends. Without this, the next repair of any
+    other field silently un-wires the value that migration promoted: the secret
+    stays in goose's store, the extension stops being handed it, and NOTHING
+    reports it, because `field_matches` compares env_keys as a superset and goes
+    on calling the narrowed list a match.
+
+    It is also the ownership rule read correctly. A name the repo's template does
+    not declare is not the repo's to remove, for the same reason the fourteen
+    extensions goose added by itself are listed and never touched.
+    """
+    declared = [str(k) for k in template.get("env_keys") or ()]
+    extra = sorted({str(k) for k in (live or {}).get("env_keys") or ()} - set(declared))
+    if not extra:
+        return template
+    return {**template, "env_keys": [*declared, *extra]}
+
+
+def plan_envs(
+    name: str,
+    live_block: dict[str, Any],
+    *,
+    migrate: bool,
+) -> tuple[dict[str, str] | None, list[Finding]]:
+    """Decide what happens to an extension's inline `envs`. Returns None to REFUSE it.
+
+    MEASURED on goose 1.46.0, and this is the single most dangerous fact in the
+    whole feature: `envs` is unreadable over ACP in BOTH directions, and ANY ACP
+    write leaves disk `envs: {}`. So re-asserting an extension that carries an
+    inline value DESTROYS that value -- silently, as a side effect of fixing
+    something else entirely. The author's own machine has
+    `workspace-mcp.envs.USER_GOOGLE_EMAIL` populated, so this is the common case,
+    not the corner.
+
+    Re-sending the value as `server.env` does not preserve it either: goose
+    PROMOTES it into its secret store, appends the name to `env_keys`, and still
+    writes `envs: {}`. That is a one-way door on a live machine, so it is opt-in
+    behind --migrate-envs. Without the flag the extension is not touched AT ALL,
+    and the NOTE names the remedy.
+
+    THE VALUE NEVER APPEARS -- not in a plan, not in a report, not in an
+    exception. Only the KEY is ever named, and the proof that the migration
+    landed is goosecfg's `config/read {isSecret: true}` returning non-null.
+
+    Values are read from the LIVE config, never the template: --fix migrates a
+    value that already exists and never invents one, so an unpersonalised
+    machine gets its placeholder dropped rather than promoted.
+    """
+    raw = live_block.get("envs")
+    if not isinstance(raw, dict) or not raw:
+        return {}, []
+    real = {str(k): str(v) for k, v in raw.items() if not is_placeholder(v)}
+    notes = [
+        Finding("NOTE", f"{name}.envs.{key} still holds the template's placeholder -- dropped")
+        for key in sorted({str(k) for k in raw} - set(real))
+    ]
+    if not real:
+        return {}, notes
+    keys = ", ".join(sorted(real))
+    if not migrate:
+        notes.append(
+            Finding(
+                "NOTE",
+                f"{name} NOT TOUCHED: any ACP write erases inline `envs`, and this live "
+                f"config still holds {keys}",
+                "re-run as `pai doctor --fix --migrate-envs` to promote it into goose's "
+                "secret store instead -- one way, and the value is never printed",
+            ),
+        )
+        return None, notes
+    notes.append(
+        Finding(
+            "NOTE",
+            f"{name}.envs: migrating {keys} into goose's secret store -- ONE WAY. The "
+            "value leaves config.yaml, env_keys gains the name, and the read-back "
+            "proves only that the key is set, never what it is",
+        ),
+    )
+    return real, notes
+
+
+def plan_platform(
+    name: str,
+    template: dict[str, Any],
+    live: dict[str, Any] | None,
+) -> tuple[list[Repair], list[Finding]]:
+    """Plan a builtin/platform extension: `enabled`, and deliberately nothing else.
+
+    `set-enabled` is the only ACP call that reaches one (proven working on
+    `apps` specifically, both ways, persisting to disk). Comparing anything else
+    here would be worse than useless: LiveEntry.to_disk() infers `type` from the
+    server shape a builtin does not have, so `type` would read as drift on every
+    run and no call could ever clear it.
+    """
+    if live is None:
+        return [], [
+            Finding(
+                "NOTE",
+                f"{name} is a builtin/platform extension and is absent from the live "
+                "config; ACP's add speaks `type: mcp` only, so --fix cannot create one",
+                "`goose configure` -> Toggle Extensions, once",
+            ),
+        ]
+    want = bool(template.get("enabled"))
+    if bool(live.get("enabled")) == want:
+        return [], []
+    line = f"{name}.enabled: live {live.get('enabled')!r} -> declared {want!r}"
+    return [Repair(name, (line,), template, {}, want, enabled_only=True)], []
+
+
+def plan_mcp(
+    name: str,
+    template: dict[str, Any],
+    live: dict[str, Any] | None,
+    live_block: dict[str, Any],
+    *,
+    migrate_envs: bool,
+) -> tuple[list[Repair], list[Finding]]:
+    """Plan one repo-declared MCP extension, and say what it will not do.
+
+    TWO REFUSALS, NOT ONE, and the distinction is what makes playwright and
+    tavily fixable at all. An extension with no non-empty snake_case allowlist
+    is APPLIED and left disabled; only ENABLING it is refused. Collapsing them
+    would leave two of the four shipped fragments permanently unrepairable,
+    since both ship with their allowlist commented out.
+    """
+    notes: list[Finding] = []
+    if "availableTools" in template:
+        return [], [
+            Finding(
+                "NOTE",
+                f"{name} declares camelCase `availableTools`, which goose accepts and "
+                "then stores as NOTHING -- meaning every tool allowed. Refused before "
+                "any write",
+                "rename it to snake_case `available_tools` in config/goose/extensions.d/",
+            ),
+        ]
+    allow = template.get("available_tools")
+    has_allow = isinstance(allow, list) and bool(allow)
+    want_enabled = bool(template.get("enabled"))
+    if want_enabled and not has_allow:
+        notes.append(
+            Finding(
+                "NOTE",
+                f"{name} declares `enabled: true` with no non-empty `available_tools`; "
+                "it will be applied and left DISABLED. An absent allowlist means every "
+                "tool is allowed, so enabling it is refused",
+                "add the snake_case allowlist to config/goose/extensions.d/",
+            ),
+        )
+    envs, env_notes = plan_envs(name, live_block, migrate=migrate_envs)
+    notes.extend(env_notes)
+    if envs is None:
+        return [], notes
+    wanted = keep_promoted_env_keys(template, live)
+    enable = want_enabled and has_allow
+    lines: tuple[str, ...]
+    if live is None:
+        state = "enabled" if enable else "disabled"
+        lines = (f"{name}: absent from the live config -> add it, {state}",)
+    else:
+        diffs = diff_fields(wanted, live)
+        if not diffs:
+            return [], notes
+        lines = tuple(f"{name}.{f}: live {g!r} -> declared {w!r}" for f, g, w in diffs)
+    return [Repair(name, lines, wanted, envs, enable, enabled_only=False)], notes
+
+
+def plan_fix(
+    template_cfg: dict[str, Any],
+    live: dict[str, dict[str, Any]],
+    live_cfg: dict[str, Any],
+    *,
+    migrate_envs: bool,
+) -> tuple[list[Repair], list[Finding]]:
+    """Work out every repair and every refusal, WITHOUT performing any of them.
+
+    REFUSALS -- the list to read before pointing this at a live config. --fix
+    will not touch:
+
+      1. any live extension the repo's templates do not declare (goose's own 14
+         on the author's Mac). Listed once, never written.
+      2. a builtin/platform extension that is absent -- ACP cannot create one.
+      3. any field of a builtin/platform other than `enabled` -- `set-enabled`
+         is the only lever that reaches one.
+      4. a template value that is a placeholder (`you@example.com`, `<...>`).
+         That is personalisation; --fix never invents a value.
+      5. inline `envs` values, unless --migrate-envs is given: any ACP write
+         erases them, so the default is to leave the whole extension alone.
+      6. a template declaring camelCase `availableTools` -- refused BEFORE any
+         write, because goose would accept it and store no allowlist at all.
+      7. enabling anything with no non-empty snake_case allowlist.
+      8. everything outside goose's extension config -- skills, .goosehints,
+         provider wiring, the model catalogue, `active_provider`.
+
+    Every one of those is a NOTE. NOTEs do NOT set the exit code, on purpose:
+    items 1 and 8 are structural and no fix can ever clear them, and an exit
+    code that is permanently 1 is how a checker gets ignored.
+    """
+    template = extensions_of(template_cfg)
+    live_blocks = extensions_of(live_cfg)
+    repairs: list[Repair] = []
+    notes: list[Finding] = [OUT_OF_SCOPE]
+    platform = sorted(n for n, b in template.items() if b.get("type") in PLATFORM_TYPES)
+    if platform:
+        notes.append(
+            Finding(
+                "NOTE",
+                f"builtin/platform ({', '.join(platform)}): only `enabled` is reachable "
+                "over ACP -- set-enabled is the sole lever, and every other declared "
+                "field on them is reported by `pai doctor`, never repaired here",
+            ),
+        )
+    for name in sorted(template):
+        block = template[name]
+        if block.get("type") in PLATFORM_TYPES:
+            more, said = plan_platform(name, block, live.get(name))
+        else:
+            more, said = plan_mcp(
+                name, block, live.get(name), live_blocks.get(name) or {},
+                migrate_envs=migrate_envs,
+            )
+        repairs.extend(more)
+        notes.extend(said)
+    theirs = sorted(set(live) - set(template))
+    if theirs:
+        notes.append(
+            Finding("NOTE", f"not ours, never touched ({len(theirs)}): {', '.join(theirs)}"),
+        )
+    return repairs, notes
+
+
+def apply_repair(client: Any, repair: Repair) -> str:  # noqa: ANN401 -- goosecfg.AcpClient
+    """Perform one repair and PROVE it landed. Returns '' on success, else why not.
+
+    SUCCESS FROM THE CALL IS NOT EVIDENCE -- that is goosecfg's whole design and
+    it applies to `set-enabled` too, which answers `{}` whatever it did. So the
+    enabled-only path reads back here rather than believing the reply;
+    goosecfg.apply_extension already does the equivalent for the full path, and
+    restores the pre-image's enabled state on any failure after the write.
+    """
+    import goosecfg  # noqa: PLC0415 -- lazy on purpose; see the module docstring
+
+    try:
+        if repair.enabled_only:
+            client.set_enabled(repair.name, enabled=repair.enable)
+            entry = client.get(repair.name)
+            if entry is None or entry.enabled != repair.enable:
+                return "set-enabled reported success and the read-back disagrees"
+        else:
+            goosecfg.apply_extension(
+                client, repair.name, repair.template, envs=repair.envs, enable=repair.enable,
+            )
+    except goosecfg.GooseCfgError as exc:
+        return f"{exc.reason}: {exc.detail}" if exc.detail else exc.reason
+    return ""
+
+
+def fix_report(
+    repairs: list[Repair],
+    notes: list[Finding],
+    outcomes: list[tuple[Repair, str]],
+    *,
+    dry_run: bool,
+) -> int:
+    """Print the plan (or the result) and return the exit code.
+
+    0 nothing fixable remains, 1 something fixable does. A dry run that found
+    work to do is a 1 for the same reason a FAIL is: the drift is still there.
+    Refusals are NOTEs and never move the number.
+    """
+    fixed = unfixed = 0
+    for repair in repairs if dry_run else []:
+        for line in repair.lines:
+            _emit(f"WOULD  {line}")
+    for repair, why in outcomes:
+        for line in repair.lines:
+            _emit(f"{'FAIL ' if why else 'FIXED'}  {line}")
+        if why:
+            _emit(f"       goose did not keep it -- {why}")
+            unfixed += 1
+        else:
+            fixed += 1
+    for note in notes:
+        _emit(f"NOTE   {note.text}")
+        if note.fix:
+            _emit(f"       fix: {note.fix}")
+    _emit("")
+    if dry_run:
+        _emit(
+            f"== dry run: {len(repairs)} would be re-asserted, {len(notes)} refused; "
+            "NOTHING WAS WRITTEN ==",
+        )
+        return 1 if repairs else 0
+    _emit(f"== fix: {fixed} fixed, {unfixed} unfixed, {len(notes)} refused ==")
+    return 1 if unfixed else 0
+
+
+def fix(repo: Path, home: Path, *, dry_run: bool, migrate_envs: bool) -> int:
+    """`pai doctor --fix` -- the only thing in this file that writes.
+
+    Exit: 0 nothing fixable remains, 1 an unfixed FAIL, 2 refused or no goose
+    reachable and none spawnable.
+
+    There is NO journal and there is deliberately no cache. The plan is computed
+    from the live ACP listing every time, so a goose restart that put a key back
+    is detected and re-asserted by exactly the same code path as the first run.
+    That is also what makes --fix idempotent by construction: run it twice and
+    the second run finds nothing, because the read-back IS the state.
+    """
+    import goosecfg  # noqa: PLC0415 -- lazy on purpose; see the module docstring
+
+    refusal = refuse_split_brain(home)
+    if refusal:
+        print(f"doctor.py: {refusal}", file=sys.stderr)  # noqa: T201
+        return 2
+    template_cfg = load_yaml(repo / "config" / "goose" / "config.yaml")
+    live_path = home / ".config" / "goose" / "config.yaml"
+    live_cfg = load_yaml(live_path)
+    mode = "DRY RUN -- nothing will be written" if dry_run else "WRITING"
+    _emit(f"== pai doctor --fix ({mode}) ==")
+    _emit(f"target: {os.environ.get('GOOSE_ACP_URL') or 'an ephemeral goose serve on loopback'}")
+    # The ONE input that does not come from the live ACP listing. Inline `envs`
+    # are unreadable over the wire in both directions, so the refusal that keeps
+    # a write from erasing them is computed from this file -- and PAI_HOME can
+    # point it at a machine other than the one GOOSE_ACP_URL is serving. Named
+    # out loud rather than assumed, because being wrong about it is silent.
+    _emit(f"inline `envs` read from: {live_path}")
+    _emit("")
+    try:
+        with goosecfg.connect() as client:
+            live = {e.config_key: e.to_disk() for e in client.list_extensions()}
+            repairs, notes = plan_fix(template_cfg, live, live_cfg, migrate_envs=migrate_envs)
+            outcomes = [] if dry_run else [(r, apply_repair(client, r)) for r in repairs]
+    except goosecfg.GooseCfgError as exc:
+        # Everything a repair can raise is caught by apply_repair, so what
+        # reaches here is the SESSION failing: nothing answered, nothing was
+        # spawnable, the listing came back malformed, or the ephemeral server
+        # would not shut down. All four are exit 2 -- "this could not run" --
+        # rather than exit 1, "this ran and found drift". A session that dies
+        # after some repairs landed reports none of them; the next run's
+        # read-back is what recovers, since there is no journal to be wrong.
+        print(f"doctor.py: no usable goose ACP session ({exc})", file=sys.stderr)  # noqa: T201
+        print(  # noqa: T201
+            "  Point GOOSE_ACP_URL at a running `goose serve` (plus "
+            "GOOSE_SERVER__SECRET_KEY), or PAI_GOOSE_BIN at a goose binary --fix may "
+            "spawn. On the brain the permanent goose-serve.service must be used: two "
+            "writers on one config.yaml is a lost update.",
+            file=sys.stderr,
+        )
+        return 2
+    return fix_report(repairs, notes, outcomes, dry_run=dry_run)
 
 
 def inventory(repo: Path, home: Path) -> int:
@@ -437,13 +914,43 @@ def catalogue(repo: Path) -> int:
     return 0
 
 
+# Exactly the flags `doctor` accepts. An unknown one is a usage error rather
+# than a silently ignored word: `pai doctor --fx` must not read as a plain,
+# harmless `pai doctor`, and `pai doctor --fix --dry-run` must not read as a
+# write.
+DOCTOR_FLAGS = frozenset({"--fix", "--dry-run", "--migrate-envs"})
+
+
+def doctor(repo: Path, home: Path, flags: list[str]) -> int:
+    """`pai doctor [--dry-run|--fix [--migrate-envs]]`.
+
+    THE DEFAULT IS READ-ONLY AND STAYS READ-ONLY. Mutation needs `--fix`
+    spelled out; `--dry-run` is the same plan with the writing removed, and it
+    wins when both are given -- the conservative reading of a contradictory
+    command line is the one that does not touch anything.
+    """
+    unknown = [f for f in flags if f not in DOCTOR_FLAGS]
+    if unknown:
+        print(f"doctor.py: unknown option {unknown[0]!r}", file=sys.stderr)  # noqa: T201
+        return 2
+    fixing, dry = "--fix" in flags, "--dry-run" in flags
+    if not fixing and not dry:
+        if "--migrate-envs" in flags:
+            print(  # noqa: T201
+                "doctor.py: --migrate-envs only means something with --fix", file=sys.stderr,
+            )
+            return 2
+        return report(collect(repo, home))
+    return fix(repo, home, dry_run=dry, migrate_envs="--migrate-envs" in flags)
+
+
 def main(argv: list[str]) -> int:
     """Dispatch. Exit 0 ok, 1 findings, 2 usage."""
     repo = Path(__file__).resolve().parents[2]
     home = Path(os.environ.get("PAI_HOME", str(Path.home())))
     command = argv[1] if len(argv) > 1 else ""
     if command == "doctor":
-        return report(collect(repo, home))
+        return doctor(repo, home, argv[2:])
     if command == "status":
         return inventory(repo, home)
     if command == "list":
