@@ -1,7 +1,7 @@
 ---
 description: Evaluate identifier and module naming proposed in a plan. Use as part of multi-agent plan review.
 mode: subagent
-model: opencode/kimi-k2.6
+model: togetherai/zai-org/GLM-5.3
 permission:
   edit: deny
 ---

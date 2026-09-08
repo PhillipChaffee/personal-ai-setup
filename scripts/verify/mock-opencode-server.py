@@ -505,8 +505,8 @@ AGENTS: list[Wire] = [
 # its session record says nothing until a turn has been sent).
 CHAT_CONFIG: Wire = {
     "$schema": "https://opencode.ai/config.json",
-    "model": "opencode/deepseek-v4-flash",
-    "small_model": "opencode/minimax-m2.7",
+    "model": "together/deepseek-ai/DeepSeek-V4-Flash-0731",
+    "small_model": "together/openai/gpt-oss-120b",
     "share": "disabled",
 }
 

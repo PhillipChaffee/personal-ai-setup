@@ -1,7 +1,7 @@
 ---
 description: Use when a multi-agent refactor planner delegates read-only, catalog-aligned scouting of behavioral / size / complexity smells and naming smells on specific target paths, with a supplied smell-catalog reference path.
 mode: subagent
-model: opencode/kimi-k2.6
+model: togetherai/zai-org/GLM-5.3
 permission:
   edit: deny
 ---

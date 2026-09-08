@@ -1,7 +1,7 @@
 ---
 description: Use when refactor planning needs placement / cohesion smells or convention-drift findings vs framework placement guides for concrete target paths (Django apps, FastAPI services, Helm charts, Python packages, CLI tools, test suites). Invoke from refactor orchestration when splitting scouts from code-level smells — not for git-diff-only review without targets.
 mode: subagent
-model: opencode/kimi-k2.6
+model: togetherai/zai-org/GLM-5.3
 permission:
   edit: deny
 ---

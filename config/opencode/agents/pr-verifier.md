@@ -1,7 +1,7 @@
 ---
 description: Use as part of multi-agent plan review. Filters reviewer findings before any walkthrough or fix runs by re-examining each finding as a finding (confirmed / false_positive / needs_rephrase). May read the codebase to verify claims.
 mode: subagent
-model: opencode/claude-sonnet-5
+model: togetherai/zai-org/GLM-5.3
 permission:
   edit: deny
 ---

@@ -1,7 +1,7 @@
 ---
 description: Identify performance and scalability issues in git diffs. Use as part of multi-agent code review.
 mode: subagent
-model: opencode/kimi-k2.6
+model: togetherai/zai-org/GLM-5.3
 permission:
   edit: deny
 ---

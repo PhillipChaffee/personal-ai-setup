@@ -100,7 +100,7 @@ Spawn both readonly scouts simultaneously via the task tool, in a single message
 - First call: the `refactor-code-scout` agent (`~/.config/opencode/agents/refactor-code-scout.md`)
 - Second call: the `refactor-placement-scout` agent (`~/.config/opencode/agents/refactor-placement-scout.md`)
 
-Run both scouts on `opencode/kimi-k2.6`. Pass the model explicitly. If a named scout agent is
+Run both scouts on `togetherai/zai-org/GLM-5.3`. Pass the model explicitly. If a named scout agent is
 unavailable, use `general` with its `~/.config/opencode/agents/` definition inlined and the same model.
 
 **Inputs to pass to `refactor-code-scout`**:

@@ -1,7 +1,7 @@
 ---
 description: Designs a structured, executor-ready research plan for a complex investigation. Assigns parallelizable research subtasks, difficulty tiers, sources, and expected outputs without reading or fetching anything itself.
 mode: subagent
-model: opencode/claude-sonnet-5
+model: togetherai/zai-org/GLM-5.3
 permission:
   edit: deny
 ---

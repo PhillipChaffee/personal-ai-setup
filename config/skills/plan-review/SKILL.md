@@ -39,7 +39,7 @@ when something is actually wrong, not when a section header is absent.
 
 Before launching reviewers, run exactly one **Plan Review Planner** subagent.
 
-The planner runs on `opencode/claude-sonnet-5` — reviewer dispatch is a deep-reasoning
+The planner runs on `togetherai/zai-org/GLM-5.3` — reviewer dispatch is a deep-reasoning
 call, and the model is pinned in `pr-planner`'s frontmatter. Launching agents by name is
 all the model selection this skill ever does; every reviewer's model is pinned the same
 way.
@@ -89,10 +89,10 @@ Each reviewer:
 - Returns structured findings or a clean verdict
 - The Feasibility agent may read codebase files to verify plan assumptions
 
-Reviewers run on the models pinned in their agent frontmatter — `opencode/kimi-k2.6` for
-the seven structural reviewers (Problem & Scope, Feasibility, Risk & Rollback,
-Completeness, Organization, Naming, Simplification), `opencode/claude-sonnet-5` for
-`pr-adversarial` and `pr-architecture`. Escalating on a high-stakes plan means making sure
+Reviewers run on the model pinned in their agent frontmatter — `togetherai/zai-org/GLM-5.3` for
+all nine reviewers (the seven structural ones — Problem & Scope, Feasibility, Risk & Rollback,
+Completeness, Organization, Naming, Simplification — plus `pr-adversarial` and
+`pr-architecture`). Escalating on a high-stakes plan means making sure
 those deep-tier reviewers are in the selected set — never switching an agent's model at
 launch. Keep prompts self-contained.
 
@@ -144,7 +144,7 @@ as a single subagent to filter the reviewer findings. The verifier tags each fin
 `confirmed`, `false_positive`, or `needs_rephrase`. Deduplicate near-duplicate findings in the parent chat **before** launching the verifier (merge same root cause; keep source tags). The verifier filters and rephrases; it does not own cross-reviewer deduplication.
 
 Use the **pr-verifier** agent — false-positive filtering across a conflicting finding set
-is a deep-reasoning role, and its model (`opencode/claude-sonnet-5`) is pinned in its
+is a deep-reasoning role, and its model (`togetherai/zai-org/GLM-5.3`) is pinned in its
 frontmatter. If the agent is unavailable, use `general` with `pr-verifier.md` inlined.
 
 **Input to pass**: the full plan text, the planner's verifier instructions, and all selected
@@ -250,7 +250,7 @@ Apply 3 approved fixes now via the implementer subagent? [yes / no / edit list]
 
 After fixes apply, suggest: "If you want to verify nothing regressed, re-invoke `plan-review`."
 
-Use the **pr-implementer** agent (its model, `opencode/kimi-k2.6`, is pinned in its
+Use the **pr-implementer** agent (its model, `togetherai/zai-org/GLM-5.3`, is pinned in its
 frontmatter). If the agent is unavailable, use `general` with `pr-implementer.md` inlined.
 
 ## Review-only mode

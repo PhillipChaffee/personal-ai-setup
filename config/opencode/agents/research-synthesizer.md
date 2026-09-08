@@ -1,7 +1,7 @@
 ---
 description: Merges the outputs of multiple researcher subagents into one curated, deduplicated summary with citations preserved. Use as the final synthesis step of the deep-research Tier 3 pipeline.
 mode: subagent
-model: opencode/claude-sonnet-5
+model: togetherai/zai-org/GLM-5.3
 permission:
   edit: deny
 ---
