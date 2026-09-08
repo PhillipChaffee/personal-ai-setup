@@ -98,6 +98,38 @@ permission system: `git push*` is `ask` unless a repo's allowlist entry sets
 `"allow_push": true`. Approve a push to `main` and it happens — your repos,
 your call.
 
+### "Agent-authored" is a convention, and here is how you find out it stopped
+
+`config/code-agents/AGENTS.md` is the container's standing instruction file —
+the manager renders it into every chat volume beside the opencode config, where
+opencode loads it as global instructions for whatever repo the chat cloned. It
+tells the agent to open its pull requests itself and to put
+`Agent-authored: …` first in the body.
+
+**Nothing enforces that.** The agent writes the body; the manager performs no
+git operation after create-time and never touches the PR. An agent that omits
+the line produces a pull request indistinguishable from a human's, and no check
+in this repo can make it otherwise.
+
+There *is* a test that the instruction file names the marker
+(`test-code-agent-manager.sh`), and it is worth being precise about what it
+does: it is a **drift-lock between two strings in this repo**, not evidence
+about any pull request. `AGENTS.md`'s label and the `AGENT_PR_MARKER` constant
+the manager greps for have to stay spelled the same, because renaming one
+without the other makes every pull read `agent_authored: false` — which is
+indistinguishable from a model that quietly stopped following the convention.
+
+What exists instead is an **observable**: the manager's GitHub sweep reads each
+pull request's body and reports `agent_authored` on `GET /api/pulls` and
+`GET /api/chats/<id>/pulls` — `true` when the marker is there, `false` when it
+is not, and **absent** when GitHub sent no body (the field is a measurement, so
+"not asked" is not "no"). A convention that quietly stopped being followed
+shows up as a `false` on a list you already look at.
+
+The commit identity is separate and *is* enforced by the manager: it configures
+`code-agent <code-agent@brain.invalid>` in the workspace at clone time, so a
+delivered branch carries no personal name or email (issue #17 C4).
+
 ## Trust, isolation, and the honest limits
 
 - **The allowlist is the trust boundary.** OpenCode ingests `AGENTS.md` and
@@ -109,7 +141,41 @@ your call.
   nothing else: no `/data/secrets.env`, no life vault, no goose history, no
   other chat's files. Its environment carries only what it needs — model
   key(s) + the git PAT. CPU/memory caps keep a test suite from starving the
-  interactive brain. `check-code-agents.sh --probe` verifies all of this.
+  interactive brain. `check-code-agents.sh --probe` verifies this **on the
+  brain it is run on**: it stands a second chat up and makes chat A go after
+  chat B three ways, one verdict each —
+  1. **the filesystem**, tried at B's host path, by relative traversal out of
+     A's own mount, and by a `find` over A's filesystem to a stated depth
+     (`CA_SCAN_DEPTH`, 12 — deep enough to reach another chat's workspace
+     inside rootless podman's own `…/storage/overlay/<id>/diff/` tree),
+     compared by content. That is one vector tried three ways, not three
+     vectors: the scan subsumes the other two *within its bound*, which is why
+     the verdict prints the bound and why the two named paths are still tried
+     by name.
+  2. **chat B's published port on the host**, with the server password every
+     container holds.
+  3. **the manager's own `/chat/<id>/<path>` proxy** — the shortest path of the
+     three, needing neither a mount bug nor a port guess (see the proxy note
+     below).
+
+  Every arm's positive control exercises *that arm's own precondition*: A must
+  read its own marker, and the **scan** must hand that same marker back before
+  "nothing else anywhere" means anything; A must reach **its own** published
+  port over a host address before B's silence at the same address means
+  anything; A must reach the gateway's `/api/health`, and where the gateway
+  answers 401 the probe first checks that A's own server both *takes* A's token
+  and *refuses* a deliberately wrong one — a server enforcing nothing accepts
+  everything, which is a chat holding no key rather than a plane refusing it. A
+  miss whose instrument was never shown to work is reported as a SKIP, never
+  counted as isolation. CI runs the same probes against fixtures
+  (`test-verify-checks.sh`), which proves the probes fire — it proves nothing
+  about podman.
+- **The gateway proxy is not per-chat authorized** (issue #115). Every
+  container is handed the one gateway password, and `/chat/<id>/<path>`
+  authorizes no ids against callers — so a chat that can route to the gateway
+  can read or drive any other chat, and wake a stopped one to do it. Whether a
+  container *can* route there is what the probe's third arm measures; the fix
+  is a credential-model change and belongs to that issue.
 - **Egress is unrestricted (accepted risk, MVP).** The agent's shell can
   reach the internet — it needs the model APIs and GitHub anyway. Combined
   with repo-content injection this is a data-exfiltration path; the accepted
@@ -134,6 +200,61 @@ your call.
 - Cost: `opencode stats` inside a chat (or aggregated per project) reports
   tokens **and dollars**. A typical deepseek-v4-flash chat is cents; the Zen
   account cap remains the runaway backstop.
+- **The envelope this plane has to fit inside.** Code agents open no new
+  account — the tokens bill to the Zen and Together lines already in the
+  README's budget table, and the only new resource is disk. The whole stack is
+  budgeted at **~$15–35/mo against ~$50 of headroom**
+  ([README](../README.md#budget), [setup overview](setup/00-overview.md)), so
+  the room a code chat has is roughly **$15/mo of token spend** before the
+  total leaves that envelope. That is a lot of cents-per-chat work and very
+  little of a large model run in a loop, which is why the default is
+  `deepseek-v4-flash` and why `CODE_AGENT_MAX_ACTIVE` is 2. Check it the same
+  way you'd check any other line: `opencode stats` per chat, the provider's own
+  usage page for the month.
+
+## The manager's whole HTTP surface
+
+Every route below is authenticated (HTTP Basic, or `?auth_token=` for
+EventSource); there is no unauthenticated path. Twelve API paths plus the proxy
+— **not** the five that issue #17 C1's "exposes exactly" sentence names.
+
+**This table is generated-equivalent, not hand-maintained.**
+`test-code-agent-manager.sh` derives the surface by driving the dispatcher —
+every path its routing tables name, crossed with every verb it answers — and
+asserts that the rows below equal that set exactly, in both directions, and
+that the manager's own module docstring does too. A route added without a row
+here fails the harness; so does a row here for a route that no longer exists,
+and so does a **verb** added to a path that is already listed. Only a `|` table
+row counts: the sentence about `GET /api/chats/<id>/pulls` further up this page
+is prose and cannot stand in for a row.
+
+| Route | What it does |
+|---|---|
+| `GET /api/health` | liveness, engine/image, chat counts, `active`/`blocked`, sweep stamp |
+| `GET /api/repos` | the allowlist (names + flags) |
+| `GET /api/repos/<name>/branches` | one allowlisted repo's branches, default marked |
+| `GET /api/chats` | the metadata index merged with live container state (+ per-tree change stat) |
+| `GET /api/permissions` | permission asks parked on every running chat |
+| `GET /api/pulls` | every chat's pull requests, from the sweep's cache |
+| `GET /api/chats/<id>/pulls` | one chat's pull requests, live from GitHub |
+| `POST /api/chats` | create: allowlist check → volume → clone → branch → setup → container |
+| `POST /api/chats/<id>/wake` | start a stopped chat's container |
+| `POST /api/chats/<id>/stop` | stop a running chat's container |
+| `POST /api/chats/<id>/pulls/<n>/merge` | merge one of that chat's pull requests |
+| `DELETE /api/chats/<id>[?purge=1]` | remove the container; `purge` removes the volume |
+| `* /chat/<id>/<path>` | reverse proxy to that chat's opencode server, waking it first |
+
+The proxy is a **wildcard**: everything after the chat id is forwarded verbatim
+to that chat's server, with no route allowlist of its own. That is deliberate —
+the app and the OpenCode desktop client both speak the full opencode API — and
+it is why the `/share` refusal has to come from the chat's own resolved config
+(`"share": "disabled"`, probed by `check-code-agents.sh --probe`) rather than
+from a blocked route here.
+
+The `<id>` is **not authorized against the caller**, and that is not deliberate
+— it is issue #115. Authentication here answers "do you know the password",
+never "which chat are you", and every chat container is handed that same
+password. Anything that can reach this gateway can therefore drive any chat.
 
 ## Operations quick reference
 

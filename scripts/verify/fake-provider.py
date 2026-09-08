@@ -44,7 +44,7 @@ The record (`--out`, one JSONL object per request) obeys the same rule:
 `auth_scheme` is the literal string `bearer` / `x-api-key` / `none` and
 `key_matched` is a boolean — the credential itself is read, compared, and
 dropped, and no code path can write it anywhere. Booleans and counts only
-(test-code-agent-manager.sh:523-525). `path` is the URL path with the query
+(test-code-agent-manager.sh:744-746). `path` is the URL path with the query
 string discarded, so a key smuggled into `?api_key=` cannot land in the log
 either. Request bodies are parsed for one field, `model`, and are never stored.
 

@@ -353,8 +353,9 @@ fi
 # template guard and the handle-eviction bound: reachable in principle, never
 # reached by an end-to-end run. All in-process, no wall clock.
 cat >"$WORK/preflight-shapes.py" <<'PY'
-import importlib.util, json, sys, tempfile
+import dis, importlib.util, inspect, json, re, sys, tempfile
 from pathlib import Path
+from urllib.parse import urlparse as REAL_URLPARSE
 
 spec = importlib.util.spec_from_file_location("cam", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
@@ -420,14 +421,483 @@ written = json.loads((chat_dir / "home" / ".config" / "opencode" / "opencode.jso
 assert written["model"] == "opencode/chosen-model", written
 assert "_readme" not in written, "the template readme leaked into a chat config"
 assert written["permission"]["bash"]["git push*"] == "allow", written
+
+# --- the container's standing instructions land beside the config (#17 C3) ---
+# The repo's real AGENTS.md, byte for byte: the config template names it by its
+# in-container path, so a chat whose copy is stale or absent is a chat that was
+# never told the delivery convention.
+rendered = chat_dir / "home" / ".config" / "opencode" / "AGENTS.md"
+assert rendered.is_file(), "AGENTS.md was not rendered into the chat volume"
+assert rendered.read_bytes() == mod.AGENTS_TEMPLATE.read_bytes(), "AGENTS.md was altered"
+# A DRIFT-LOCK BETWEEN TWO STRINGS IN THIS REPO, and nothing more. It is NOT
+# evidence about any pull request: the agent writes the body, so no assertion
+# here can make one say anything. What it holds together is a pair that has to
+# agree — the label AGENTS.md tells the agent to write, and AGENT_PR_MARKER,
+# which pull_to_wire greps for when it reports `agent_authored`. Rename one
+# without the other and every pull silently reads agent_authored: false, which
+# looks exactly like a model that stopped following the convention. The
+# OBSERVABLE for the convention itself is that field on /api/pulls; the three
+# assertions below it are what test it.
+assert mod.AGENT_PR_MARKER in rendered.read_text().lower(), \
+    "the instructions no longer name the marker pull_to_wire looks for"
+
+# A MISSING TEMPLATE MUST NOT FAIL A CREATE. Instructions are a convention;
+# trading one for an outage would be the wrong direction.
+mod.AGENTS_TEMPLATE = tmp / "no-such-AGENTS.md"
+chat_dir_c = tmp / "chatC"
+mod.render_chat_config(chat_dir_c, None, allow_push=False)
+assert (chat_dir_c / "home" / ".config" / "opencode" / "opencode.json").is_file()
+assert not (chat_dir_c / "home" / ".config" / "opencode" / "AGENTS.md").exists()
+
+# --- agent_authored: the OBSERVABLE, not an enforcement (#17 C3) -------------
+# Nothing can make the agent write the line. What must hold is that a body
+# carrying it reads true, a body without it reads FALSE rather than absent
+# (absent would render as "unknown" and hide the regression), and a pull GitHub
+# sent no body for carries no claim at all.
+marked = mod.pull_to_wire("o/n", {"number": 1, "body": "Agent-authored: opened by a code-agent chat."},
+                          with_checks=False)
+assert marked["agent_authored"] is True, marked
+plain = mod.pull_to_wire("o/n", {"number": 2, "body": "Fixes the thing."}, with_checks=False)
+assert plain["agent_authored"] is False, plain
+none = mod.pull_to_wire("o/n", {"number": 3, "body": None}, with_checks=False)
+assert "agent_authored" not in none, none
+
+# --- every route+VERB the dispatcher serves is named in BOTH published lists -
+# Issue #17 C1's "exposes exactly" list named five things; the dispatcher
+# serves twelve API paths plus the proxy — thirteen (verb, path) rows — and the
+# module docstring had drifted three routes behind. It is derived here so the
+# NEXT route cannot, and derived at VERB granularity, which the first cut was
+# not: it compared PATHS, so deleting only the `GET /api/chats` row left the
+# path documented by `POST /api/chats` and reported a clean sweep, and a NEW
+# verb on an existing path was invisible for the same reason. `blind` below
+# holds exactly the rows that gate could not report, as an assertion.
+#
+# AND DERIVED FROM THE DISPATCHER RATHER THAN FROM THE TABLES, which the second
+# cut was not: it drove every path `API_READS` and the `ROUTE_*` patterns name,
+# so a route dispatched from a LITERAL path — the file's own idiom, `elif
+# (path, verb) == ("/api/chats", "POST")` — was named by no table, never
+# driven, and needed no documenting. served() now discovers the paths BY
+# DRIVING (the oracle above the definition) and refuses to answer until every
+# dispatch site in the dispatcher's bytecode has fired. `LiteralRoute`,
+# `PrefixRoute`, `InlineAnswer` and `BlindOracle` below are the three escapes
+# and the oracle's own control, fed in as fixtures.
+#
+# TWO LISTS, ONE GATE. The docstring is not the only place this surface is
+# published: docs/code-agents.md carries the same thirteen rows in a table that
+# reads as generated. A hand-maintained copy that looks derived is worse than
+# one that looks hand-maintained, so both are checked against the dispatcher
+# and against each other, in both directions — a row served and not listed is
+# drift, and a row listed and not served is drift too.
+DOCS_MD = Path(sys.argv[2]).read_text()
+
+# THE VERBS ARE THE SERVER'S OWN, read off the do_* methods rather than typed
+# out here: add `do_HEAD = handle_any` and this probe widens by itself. The
+# floor assertion is against VACUITY — an empty verb set would make every
+# "the list is complete" claim below true for free.
+VERBS = sorted(n[3:] for n in dir(mod.Handler) if n.startswith("do_"))
+assert {"GET", "POST", "DELETE"} <= set(VERBS), VERBS
+
+# One table, read twice: what a published list calls the placeholder, and a
+# value that really matches the group. The same pattern therefore yields both
+# the row a list has to contain and a path the dispatcher can be DRIVEN with,
+# and the `match` assertion in candidates() fails loudly the day a pattern
+# change makes the sample stale rather than silently dropping the route.
+GROUPS = (("([a-zA-Z0-9-]+)", "<id>", "probe-chat"),
+          ("([0-9]+)", "<n>", "7"),
+          ("([^/]+)", "<name>", "probe-repo"),
+          ("(/.*|$)", "/<path>", "/session"))
+
+def expand(pattern, column):
+    text = pattern.lstrip("^").rstrip("$")
+    for regex, shown, sample in GROUPS:
+        text = text.replace(regex, shown if column == "shown" else sample)
+    if "(wake|stop)" in text:
+        return [text.replace("(wake|stop)", "wake"), text.replace("(wake|stop)", "stop")]
+    return [text]
+
+# THE PATH ORACLE — why the candidate paths cannot come from the tables.
+# handle_any's own idiom for a route with neither a pattern nor a table entry is
+#     elif (path, verb) == ("/api/chats", "POST")
+# and a path named ONLY that way is in no table this file can read. The previous
+# revision enumerated the tables, so a route added that way was served under
+# every verb, named by no published list, and swept clean (LiteralRoute below is
+# that mutation, fed in as a fixture).
+#
+# So the candidates are taken off the dispatcher's OWN COMPARISONS: the path it
+# is driven with records every string it gets compared against, and each one is
+# driven back through the dispatcher on the next lap. handle_any starts with
+# `path = urlparse(self.path).path`, which is where the recording rides in;
+# `str.__eq__` still decides the answer, so the dispatcher behaves identically.
+LITERALS: set[str] = set()
+
+class WatchedPath(str):
+    """A path that remembers what it was compared to. Equality is str's, and
+    `!=` is Python's own inversion of it, so both directions are watched."""
+    def __eq__(self, other):
+        if isinstance(other, str):
+            LITERALS.add(str(other))
+        return str.__eq__(self, other)
+    __hash__ = str.__hash__  # so `path in self.API_READS` still hits
+
+def watching_urlparse(raw):
+    parsed = REAL_URLPARSE(raw)
+    return parsed._replace(path=WatchedPath(parsed.path))
+
+def candidates(cls):
+    """[(published path, a path that matches it)] — every path to drive: the two
+    tables, plus every literal the oracle has watched the dispatcher compare."""
+    out = [(p, p) for p in cls.API_READS]
+    for name in sorted(dir(cls)):
+        if not name.startswith("ROUTE_"):
+            continue
+        pattern = getattr(cls, name).pattern
+        for shown, real in zip(expand(pattern, "shown"), expand(pattern, "real")):
+            assert re.compile(pattern).match(real), f"{name}: sample {real} no longer matches"
+            out.append((shown, real))
+    out += [(p, p) for p in LITERALS if p.startswith("/")]
+    return sorted(set(out))
+
+def dispatchers(cls):
+    """The functions that make a routing decision: every handle_any in the MRO,
+    plus every route_* handed the VERB — route_pull_requests is a dispatcher in
+    its own right, which is why dispatched() leaves it real."""
+    out = [k.__dict__["handle_any"] for k in cls.__mro__ if "handle_any" in k.__dict__]
+    for name in sorted(dir(cls)):
+        if name.startswith("route_") and \
+                "verb" in inspect.signature(getattr(cls, name)).parameters:
+            out.append(getattr(cls, name))
+    return out
+
+def is_dispatch_target(name):
+    """The names a dispatcher hands a request off to. Exact, not prefixed, for
+    the two singletons: a helper called `proxy_headers` is not a route, and a
+    site nothing can drive would hold this gate red forever."""
+    return name in ("proxy", "send_json") or name.startswith("route_")
+
+def dispatch_sites(cls):
+    """{(file, line): label} — every place a dispatcher's own BYTECODE hands the
+    request off. Read off the compiled function rather than the source text: the
+    bytecode is what runs, and a name that reaches it reaches it however it was
+    written.
+
+    `send_json` counts, because a dispatcher's other way of answering is to
+    answer inline — `elif path.startswith("/x"): self.send_json(200, ...)` is a
+    served route with no route method to name it, and the sweep has to reach
+    that line too or it is not enumerating the dispatcher.
+
+    The table dispatch (`getattr(self, self.API_READS[path])()`) names no target
+    and so has no site here — that route's completeness comes from the table,
+    which is enumerated directly."""
+    out = {}
+    for func in dispatchers(cls):
+        for ins in dis.get_instructions(func):
+            target = ins.argval
+            if not isinstance(target, str) or not is_dispatch_target(target):
+                continue
+            line = ins.positions.lineno if ins.positions else ins.starts_line
+            assert line, f"{func.__qualname__}: no line for {target}"
+            out[(func.__code__.co_filename, line)] = \
+                f"{target} at line {line} of {func.__qualname__}"
+    return out
+
+def dispatched(cls, verb, path, fired):
+    """Drive the REAL dispatcher once; say whether it routed the request, and
+    record WHERE it dispatched from into `fired`.
+
+    Nothing here reads handle_any's SOURCE — that would be a second guess at
+    the routing table, which is the thing being checked. The handler is the one
+    the server uses, with its leaves replaced by recorders. A method that is
+    handed the verb (route_pull_requests) is a dispatcher in its own right and
+    is left REAL — it is WRAPPED rather than replaced, so the call site is
+    recorded while the verb distinction this gate exists to see is preserved. A
+    method that is never handed the verb cannot make a verb decision, so
+    recording it is lossless.
+
+    A dispatch target that is neither `proxy` nor `route_*` would run for real;
+    the `routed or refused` assertion is what catches that, loudly and with the
+    output in the message, rather than letting a new target answer silently.
+    """
+    handler = cls.__new__(cls)
+    handler.path, handler.command = path, verb
+    handler.authed = lambda: True
+    seen = []
+
+    def recorder(name, real):
+        def call(*a, **k):
+            frame = sys._getframe(1)  # the dispatcher that just called us
+            fired.add((frame.f_code.co_filename, frame.f_lineno))
+            if real is not None:
+                return real(*a, **k)
+            seen.append(("ROUTED", name))
+            return None
+        return call
+
+    # send_json ANSWERS rather than routes, so it is wrapped rather than
+    # replaced: the call site is recorded, the status still reaches `seen`, and
+    # nothing here reads it as "this path is served".
+    handler.send_json = recorder(
+        "send_json", lambda status, body: seen.append((status, body)))
+    for name in dir(cls):
+        if name != "proxy" and not name.startswith("route_"):
+            continue
+        takes_verb = "verb" in inspect.signature(getattr(cls, name)).parameters
+        setattr(handler, name,
+                recorder(name, getattr(handler, name) if takes_verb else None))
+    saved, mod.urlparse = mod.urlparse, watching_urlparse
+    try:
+        handler.handle_any()
+    finally:
+        mod.urlparse = saved
+    routed = [s for s in seen if s[0] == "ROUTED"]
+    refused = [s for s in seen
+               if s[0] == 404 and str(s[1].get("error", "")).startswith("no route")]
+    assert routed or refused, f"{verb} {path} neither routed nor refused: {seen}"
+    return bool(routed)
+
+def served(cls):
+    """{(verb, published path)} the dispatcher routes.
+
+    `*` when EVERY verb the server answers is routed, which is the wildcard the
+    published lists already use for the proxy — the one route with no verb
+    allowlist of its own.
+
+    THE SWEEP PROVES ITS OWN COMPLETENESS BEFORE IT ANSWERS, because "the list
+    is complete" is the claim every assertion downstream rests on and an
+    enumeration cannot be trusted to notice what it never looked at:
+
+      * THE ORACLE IS LIVE. Not one comparison recorded means a literal-path
+        route would be invisible, and the sweep says so instead of answering.
+      * EVERY DISPATCH SITE FIRED. The candidates are driven to a fixpoint (a
+        literal discovered on one lap is driven on the next), and then every
+        place the dispatcher's bytecode hands off to a route has to have been
+        reached by one of those drives. A route the candidates never name is a
+        site that never fired — PrefixRoute below is that shape.
+    """
+    rows, done, fired = set(), set(), set()
+    LITERALS.clear()  # a control from a PREVIOUS sweep is not this sweep's control
+    while True:
+        todo = [c for c in candidates(cls) if c not in done]
+        if not todo:
+            break
+        for shown, real in todo:
+            done.add((shown, real))
+            verbs = [v for v in VERBS if dispatched(cls, v, real, fired)]
+            if len(verbs) == len(VERBS):
+                rows.add(("*", shown))
+            else:
+                rows.update((v, shown) for v in verbs)
+    assert LITERALS, ("the path oracle recorded no comparison at all: nothing "
+                      "shows a literal-path route would be seen, so this sweep "
+                      "cannot claim to have enumerated the dispatcher")
+    sites = dispatch_sites(cls)
+    missing = sorted(label for key, label in sites.items() if key not in fired)
+    assert not missing, (f"the sweep never reached {missing} — the dispatcher "
+                         "routes somewhere these candidate paths do not go, so "
+                         "the surface below is not the surface")
+    return rows
+
+def doc_rows(text, table=False):
+    """Every `VERB /path` row in a published list.
+
+    `table=True` for markdown, where only a `|`-delimited cell counts: prose in
+    docs/code-agents.md names `GET /api/chats/<id>/pulls` in a sentence, and
+    letting a sentence stand in for a table row is how a table starts lying.
+    """
+    rows = set()
+    for line in text.splitlines():
+        if table:
+            if not line.startswith("|"):
+                continue
+            line = line.split("|")[1]
+        parts = line.replace("`", "").split()
+        if len(parts) >= 2 and parts[0] in [*VERBS, "*"] and parts[1].startswith("/"):
+            rows.add((parts[0], parts[1].split("[")[0]))  # DELETE /api/chats/<id>[?purge=1]
+    return rows
+
+def drop_row(text, verb, path, table=False):
+    """Delete the ONE row for (verb, path) — not the rows sharing its path."""
+    return "\n".join(l for l in text.splitlines()
+                     if (verb, path) not in doc_rows(l, table))
+
+rows = served(mod.Handler)
+for name, listed in (("module docstring", doc_rows(mod.__doc__)),
+                     ("docs/code-agents.md", doc_rows(DOCS_MD, table=True))):
+    assert not sorted(rows - listed), f"served but not in the {name}: {sorted(rows - listed)}"
+    assert not sorted(listed - rows), f"in the {name} but not served: {sorted(listed - rows)}"
+# LAST, so the two assertions above get to name the drift first — this one only
+# has a count to report. It is the floor against a served() that quietly
+# stopped deriving anything, and the reason adding a route means editing a test.
+assert len(rows) == 13, f"expected thirteen (verb, route) rows, derived {sorted(rows)}"
+
+# THE GATE'S OWN FALSIFIABILITY, fed in once per row rather than once — for
+# both lists, because a gate that covers one copy of a list and not the other
+# is how the second copy rots. Every row is deleted on its own and has to come
+# back named, prefix-shadowed or verb-shadowed.
+for verb, path in sorted(rows):
+    for name, text, table in (("module docstring", mod.__doc__, False),
+                              ("docs/code-agents.md", DOCS_MD, True)):
+        holed = drop_row(text, verb, path, table)
+        assert holed != text, f"drop_row removed no {name} row for {verb} {path}"
+        assert sorted(rows - doc_rows(holed, table)) == [(verb, path)], \
+            f"{name}: holing {verb} {path} reported {sorted(rows - doc_rows(holed, table))}"
+
+# THE ROWS THE PATH-ONLY GATE COULD NOT REPORT, as an assertion rather than a
+# claim in a comment. `/api/chats` is served under two verbs, so deleting
+# either row leaves the PATH documented by the other and the previous revision
+# of this gate swept clean — the literal acceptance test it was asked to fail.
+def path_only_undocumented(text, table=False):
+    listed = {p for _, p in doc_rows(text, table)}
+    return sorted({p for _, p in rows} - listed)
+
+blind = sorted(r for r in rows if not path_only_undocumented(drop_row(mod.__doc__, *r)))
+assert blind == [("GET", "/api/chats"), ("POST", "/api/chats")], blind
+
+# ...and the other half of the same blindness: a verb the dispatcher GROWS on a
+# path that is already documented. `PUT /api/chats` is served by this subclass
+# and named by no list, which the path-only gate reported as a clean sweep
+# because `POST /api/chats` keeps the path listed. served() is driven, not
+# parsed, so it sees the new verb without being told the route exists.
+class GrewAVerb(mod.Handler):
+    def handle_any(self):
+        if self.command == "PUT" and self.path == "/api/chats":
+            self.route_list_chats()
+            return
+        mod.Handler.handle_any(self)
+
+grew = sorted(served(GrewAVerb) - doc_rows(mod.__doc__))
+assert grew == [("PUT", "/api/chats")], grew
+
+# THE THIRD BLINDNESS, AND THE ONE THAT SHIPPED: a route dispatched from a
+# LITERAL path. It is in no table — not `API_READS`, not a `ROUTE_*` pattern —
+# so a gate that enumerated the tables never drove it, never saw it served, and
+# reported a clean sweep with an undocumented route answering every verb. The
+# path here is discovered the only way it can be: by watching the dispatcher
+# compare against it. The fixture reaches the oracle exactly the way the real
+# dispatcher does, through the module's urlparse, because that is where the
+# recording is wired in.
+class LiteralRoute(mod.Handler):
+    def handle_any(self):
+        if mod.urlparse(self.path).path == "/api/admin/secrets":
+            self.route_repos()
+            return
+        mod.Handler.handle_any(self)
+
+literal = sorted(served(LiteralRoute) - doc_rows(mod.__doc__))
+assert literal == [("*", "/api/admin/secrets")], literal
+
+# ...and the shape the ORACLE cannot see either, which is why the sweep also
+# has to prove it reached every dispatch site: a prefix test compares no
+# literal, so no candidate path ever names this route and nothing above would
+# notice. The sweep refuses to answer instead of answering short.
+class PrefixRoute(mod.Handler):
+    def handle_any(self):
+        if mod.urlparse(self.path).path.startswith("/api/internal/"):
+            self.route_repos()
+            return
+        mod.Handler.handle_any(self)
+
+try:
+    served(PrefixRoute)
+except AssertionError as e:
+    assert "the sweep never reached" in str(e), e
+    assert "route_repos" in str(e), e
+else:
+    raise AssertionError("a route no candidate path reaches was swept clean")
+
+# ...and the same escape with no route method at all: the dispatcher answers
+# the request itself. Nothing names a route, so only the line it answers ON can
+# report it, which is why send_json is a dispatch site like any other.
+class InlineAnswer(mod.Handler):
+    def handle_any(self):
+        if mod.urlparse(self.path).path.startswith("/api/internal/"):
+            self.send_json(200, {"secrets": "here you go"})
+            return
+        mod.Handler.handle_any(self)
+
+try:
+    served(InlineAnswer)
+except AssertionError as e:
+    assert "the sweep never reached" in str(e), e
+    assert "send_json" in str(e), e
+else:
+    raise AssertionError("a route the dispatcher answers inline was swept clean")
+
+# ...and the ORACLE'S OWN CONTROL, which is the reason the two fixtures above
+# fail the way they do rather than passing quietly. This dispatcher routes off
+# `self.path` directly, so it never asks the module's urlparse and nothing can
+# watch it. A sweep that records not one comparison has no evidence a
+# literal-path route would be seen, and says so instead of answering.
+class BlindOracle(mod.Handler):
+    def handle_any(self):
+        if self.path == "/api/admin/secrets":
+            self.route_repos()
+            return
+        self.send_json(404, {"error": f"no route: {self.command} {self.path}"})
+
+try:
+    served(BlindOracle)
+except AssertionError as e:
+    assert "the path oracle recorded no comparison" in str(e), e
+else:
+    raise AssertionError("a sweep whose oracle never fired reported a surface anyway")
+
+# THE TWO GUARDS INSIDE THE HELPERS, fired once each. Both exist so that a
+# future edit degrades LOUDLY instead of shrinking the derived surface, and an
+# assertion nobody has ever seen fail is an assertion nobody has seen.
+class AnsweredSomethingElse(mod.Handler):
+    """A dispatch target that is neither `proxy` nor `route_*` runs for real.
+    dispatched() has to refuse to read that as "not served" — which is what it
+    looks like, and which would drop the route out of the surface silently."""
+    def handle_any(self):
+        self.send_json(500, {"error": "boom"})
+
+try:
+    dispatched(AnsweredSomethingElse, "GET", "/api/health", set())
+except AssertionError as e:
+    assert "neither routed nor refused" in str(e), e
+else:
+    raise AssertionError("a handler that neither routed nor refused was read as a verdict")
+
+class StaleSample(mod.Handler):
+    """A route pattern GROUPS cannot instantiate. Without the match assertion
+    the sample path simply never dispatches, and the route disappears from the
+    derived surface — a gate that quietly loses routes as the code is edited."""
+    ROUTE_STALE = re.compile(r"^/api/widgets/([0-9a-f]{8})$")
+
+try:
+    candidates(StaleSample)
+except AssertionError as e:
+    assert "no longer matches" in str(e), e
+else:
+    raise AssertionError("a route whose sample cannot match it was derived anyway")
 PY
-if "${MANAGER_PY[@]}" "$WORK/preflight-shapes.py" "$REPO_ROOT/scripts/vps/code-agent-manager.py"
+if "${MANAGER_PY[@]}" "$WORK/preflight-shapes.py" "$REPO_ROOT/scripts/vps/code-agent-manager.py" \
+  "$REPO_ROOT/docs/code-agents.md"
 then
   ok "a hand-mangled index.json or repos.json degrades instead of raising"
   ok "the notification handle memory is bounded and evicts oldest-first"
   ok "a non-object config template is refused; the model override and push grant apply"
+  ok "the container's AGENTS.md is rendered into the chat volume, and a missing one is survivable"
+  ok "agent_authored is true/false from the PR body, and absent when GitHub sent none"
+  # SAY WHAT IS PROVEN, NOT WHAT WOULD BE NICE. The oracle drives handle_any and
+  # the route_* methods and asserts every dispatch site in their BYTECODE fired,
+  # so a literal path, a prefix test or an inline send_json inside them is caught
+  # (four fixtures feed each one in). Two escapes are known and NOT covered:
+  # routing inside a do_<VERB> body (the five one-line bodies today just call
+  # handle_any, and the oracle never sees a comparison made before that call),
+  # and a non-route_* helper that handle_any delegates to. Both were reproduced
+  # against the real manager and both swept clean. Neither is an idiom this file
+  # uses, so the gate holds today -- but a green line that claimed the whole
+  # dispatcher would be the exact overclaim this harness exists to prevent.
+  ok "every VERB+route reachable through handle_any or a route_* method is named in the docstring AND in docs/code-agents.md"
+  ok "...and holing any ONE row of either list — path- or verb-shadowed — reports exactly it"
+  ok "...and a verb the dispatcher GROWS on an already-listed path is reported too"
+  ok "...and a route dispatched from a LITERAL path, which no table names, is reported too"
+  ok "...and the sweep proves its own reach: every dispatch site fired, and the oracle did"
+  ok "...and the derivation refuses to guess: an unroutable answer and a stale sample both raise"
 else
-  bad "state-shape / config-template checks (see the assertion above)"
+  bag="state-shape / config-template / instructions / route-doc checks"
+  bad "$bag (see the assertion above)"
 fi
 
 # ---- 0c. the probes, when the thing they probe is not there (unit) ----------

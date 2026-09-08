@@ -101,6 +101,10 @@ secrets:
 owns:
   - {kind: repo_file, target: config/code-agents/Containerfile}
   - {kind: repo_file, target: config/code-agents/opencode.json}
+  # The container's standing instructions, rendered into every chat volume
+  # beside the opencode config. A CONVENTION and nothing more - see the
+  # agent-authored-pr-body blocker below.
+  - {kind: repo_file, target: config/code-agents/AGENTS.md}
   - {kind: repo_file, target: config/code-agents/repos.example.json}
   - {kind: repo_file, target: scripts/vps/code-agent-manager.py}
   - {kind: repo_file, target: scripts/vps/systemd/code-agent-manager.service}
@@ -184,6 +188,55 @@ blockers:
       not there yet". Selecting the unit with an empty OPENCODE_SERVER_PASSWORD
       or GITHUB_CODE_AGENT_PAT still installs everything and leaves the manager
       disabled, exactly as before.
+  - id: agent-authored-pr-body-is-a-convention
+    severity: note
+    detail: "config/code-agents/AGENTS.md tells the agent to put an
+      `Agent-authored:` line first in every pull-request body, and nothing
+      enforces it: the agent writes the body, and the manager performs no git
+      operation after create-time. There is an OBSERVABLE rather than a
+      control - pull_to_wire reports `agent_authored` on /api/pulls and
+      /api/chats/<id>/pulls, absent when GitHub sent no body - so a convention
+      that stopped being followed is visible instead of assumed. There IS one
+      assertion about the file (test-code-agent-manager.sh:440), and it is a
+      drift-lock between two strings in this repo, not evidence about any pull
+      request: AGENTS.md's marker label and the AGENT_PR_MARKER constant
+      pull_to_wire greps for have to agree, or every pull silently reads
+      agent_authored false."
+  - id: sandbox-probes-need-a-real-brain
+    severity: note
+    detail: "check-code-agents.sh --probe covers the three properties B1 and B5
+      name - /share refused, external_directory denied, and another chat out of
+      reach. That last one runs THREE vectors, each with its own verdict: the
+      filesystem (B's host path, traversal out of A's mount, and a find(1) over
+      A's filesystem to a stated depth - CA_SCAN_DEPTH, 12, deep enough for
+      rootless podman's own .../storage/overlay/<id>/diff/ tree - which
+      subsumes the other two WITHIN THAT BOUND, so the verdict prints the
+      bound: one vector tried three ways, not three vectors), chat B's
+      published port on the host, and the manager's own /chat/<id>/<path>
+      proxy. All of it reads the RUNNING container rather than the template in
+      this repo, so all of it needs podman and a live gateway; CI drives the
+      same functions in scripts/verify/code-agent-probes.sh against fixtures
+      (test-verify-checks.sh section 5), which proves the probes FIRE and
+      proves nothing about isolation. Every arm can only report a SKIP off a
+      brain, and will report one ON a brain whose instrument does not work:
+      the filesystem arm needs its own scan to hand back A's OWN marker, the
+      published-port arm needs A to reach its OWN published port over a host
+      address first, and the proxy arm needs the gateway to answer inside A's
+      netns at all - and, where the gateway answers 401, needs A's own server
+      to both take A's token and refuse a deliberately wrong one. The external_directory arm is weaker than the rest by
+      construction: it reads the policy the server resolved, not a denied tool
+      call, so it says the policy is loaded and not that it is enforced."
+  - id: the-gateway-proxy-has-no-per-chat-authorization
+    severity: note
+    detail: "Issue #115. code-agent-manager.py's /chat/<id>/<path> takes any
+      chat id and authorizes none of them; the only gate is one global
+      PASSWORD, and run_container hands that same value to every chat
+      container. A code agent that can route to the gateway can therefore read
+      or drive any other chat, and wake a stopped one to do it - no mount bug
+      and no port guess needed. The probe's proxy arm reports whether the
+      gateway is reachable from inside a chat's netns (PASS refused / FAIL
+      served / SKIP unreachable); the credential model itself is #115's to fix
+      and is deliberately unchanged here."
   - id: image-build-is-unpinned-at-the-base
     severity: note
     detail: podman build pulls the OpenCode base image on first run

@@ -306,6 +306,71 @@ if [ "$PROBE" = "yes" ] && [ -n "$AUTH" ]; then
       note "auth.json absent (OPENCODE_ZEN_API_KEY unset?) — zen models won't resolve"
     fi
 
+    # ---- the sandbox probes (issue #17 B1/B5) ------------------------------
+    # SOURCED HERE, NOT AT THE TOP, for two reasons. It is needed only on the
+    # --probe path, and a `.` beside lib.sh would renumber every line below it
+    # — the manifests cite this file BY LINE (config/units/{ntfy-alerts,
+    # telegram-gateway,life-vault}.yaml), and those citations are already stale
+    # by one carve. Everything this section adds is below the lines they name.
+    #
+    # Until this block existed, B1's three named properties were asserted by
+    # nothing: "share" matched only the auth.json path above, external_directory
+    # existed as a config key and a mock's echo, and "volume" appeared 14 times
+    # in this file without one attempt to reach another chat's.
+    # shellcheck source=scripts/verify/code-agent-probes.sh
+    . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/code-agent-probes.sh"
+    CA_CURL="$CURL"; CA_AUTH="$AUTH"; CA_BASE="$BASE"
+    echo
+    echo "-- probe: the sandbox properties (B1/B5) --"
+
+    # B5, first two clauses. Both ask the RUNNING server, through the gateway,
+    # what it resolved — never the template in this repo and never the file on
+    # the volume, either of which can be right while the container ignores it.
+    probe_share_disabled "$CID"
+    probe_external_directory_denied "$CID"
+
+    # B1's cross-chat clause. Needs a SECOND chat to exist, so it creates one
+    # and deletes it here rather than leaving it for the caller.
+    #
+    # MAX_ACTIVE is 2 by default and chat A is already running, so this create
+    # is refused with a 409 whenever a real chat is up. That is a SKIP with the
+    # reason on screen, never a silent pass.
+    CHATS_ROOT="${CODE_AGENT_ROOT:-$DATA_ROOT/code-agents}/chats"
+    # Chat A's own published port, re-read from the create response already in
+    # hand rather than parsed further up — the manifests cite this file by line
+    # and every addition here stays below the lines they name. It is the
+    # published-port arm's POSITIVE CONTROL: A tries its own port over the same
+    # three host addresses it tries B's on, so a dead container->host route
+    # reports as a skip instead of as isolation.
+    APORT="$(printf '%s' "$CHAT_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("port",""))' 2>/dev/null || true)"
+    # shellcheck disable=SC2086
+    B_JSON="$($CURL $AUTH -X POST -H 'Content-Type: application/json' \
+        -d '{"repo":"_probe","task":"cross-chat isolation probe"}' "$BASE/api/chats" || true)"
+    BID="$(printf '%s' "$B_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null || true)"
+    BPORT="$(printf '%s' "$B_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("port",""))' 2>/dev/null || true)"
+    if [ -n "$BID" ] && [ -n "$BPORT" ]; then
+      pass "second probe chat created ($BID) — the cross-chat probe has a subject"
+      # No credential in this argv: the probe script reads the password out of
+      # the container's own environment (podman exec argv is visible in ps).
+      # $BASE is the gateway the manager is actually serving on (the brain's
+      # tailnet IP, non-loopback) — the proxy arm's target and its control.
+      [ -n "$APORT" ] ||
+        note "chat A's own port is unknown — the published-port arm will skip"
+      probe_cross_chat_reach "$CN" "${APORT:-0}" "code-agent-$BID" "$BID" \
+        "$CHATS_ROOT/$BID" "$BPORT" "$BASE"
+      # shellcheck disable=SC2086
+      $CURL $AUTH -X DELETE "$BASE/api/chats/$BID?purge=1" >/dev/null 2>&1 || true
+      if "$CA_ENGINE" container exists "code-agent-$BID" 2>/dev/null; then
+        fail "second probe chat ($BID) not removed — delete it by hand"
+      else
+        pass "second probe chat deleted (container + volume)"
+      fi
+    else
+      skip "cross-chat probe — a second chat could not be created"
+      note "response: $(printf '%s' "$B_JSON" | head -c 160)"
+      note "A 409 means CODE_AGENT_MAX_ACTIVE (default 2) is reached: stop a chat and re-run."
+    fi
+
     # Spin-down / wake with state intact (issue #17 B2/B3).
     # shellcheck disable=SC2086
     $CURL $AUTH -X POST "$BASE/api/chats/$CID/stop" >/dev/null 2>&1 || true
@@ -356,7 +421,20 @@ cat <<'EOF'
       ask pops on your device and push proceeds only on approval.
   [ ] PR flow: agent pushes its agent/ branch and opens the PR (gh);
       commits show the code-agent identity, never your name/email.
-  [ ] Notification: the PR email arrives; a forced failure alerts via ntfy.
+  [ ] PR body carries the agent-authored line (config/code-agents/AGENTS.md).
+      A CONVENTION, not a control: the agent writes the body, so nothing here
+      can make it true. `GET /api/pulls` reports agent_authored per pull, which
+      is how you find out it stopped happening.
+  [ ] Notification: GitHub's own PR notification email arrives (this stack
+      sends no PR email of its own); a forced failure alerts via ntfy.
+  [ ] Out-of-workspace read: ask a chat to read /etc/hostname — the
+      external_directory=deny probe proves the policy is LOADED, only a real
+      turn proves it is ENFORCED.
+  [ ] If --probe SKIPPED the cross-chat proxy arm, settle it by hand: the
+      question is whether this brain's gateway address is reachable from
+      inside a chat's network namespace at all. Read the SKIP's reason first
+      (it quotes what wget said), then see issue #115 — the authorization gap
+      is certain either way; reachability only decides whether it is live.
 EOF
 
-finish
+finish --skips

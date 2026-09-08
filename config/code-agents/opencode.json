@@ -11,8 +11,13 @@
     "Zen models authenticate via the auth.json the manager seeds from",
     "OPENCODE_ZEN_API_KEY; Together via the TOGETHER_API_KEY env var below.",
     "share is disabled: /share would post transcripts to the public share",
-    "backend (docs/privacy.md)."
+    "backend (docs/privacy.md).",
+    "`instructions` names config/code-agents/AGENTS.md by the path the manager",
+    "renders it to inside the chat volume ($HOME is /chat/home). Absolute, not",
+    "relative: opencode resolves relative entries against the PROJECT dir, and",
+    "these instructions are the container's, not any one repo's."
   ],
+  "instructions": ["/chat/home/.config/opencode/AGENTS.md"],
   "model": "opencode/deepseek-v4-flash",
   "small_model": "opencode/minimax-m2.7",
   "share": "disabled",
