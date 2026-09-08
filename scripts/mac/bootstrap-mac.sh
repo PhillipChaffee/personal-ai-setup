@@ -113,29 +113,98 @@ EOF
   exit 1
 fi
 
-# --------------------------------------------------------------- Formulae ---
-# anomalyco/tap/opencode: OpenCode's official Homebrew tap (https://opencode.ai/docs)
-FORMULAE="block-goose-cli anomalyco/tap/opencode uv node jq"
+# ---------------------------------------------------------- Shared helpers --
+# These four are TOP LEVEL and they stay top level. #37 carves the install steps
+# below into per-unit functions (unit_base_toolchain, unit_base_goose, ...), and
+# a helper defined inside one of those is not defined until that one has RUN --
+# bash only globalises a nested definition after the outer function returns. A
+# selective install that skips the defining unit would then die at
+# `command not found` under `set -e`, on a machine nobody can debug from here.
+# copy_no_clobber is the concrete case: it used to be defined in the middle of
+# the config-templates step and is called from three later steps.
+#
+# Each brew helper takes ONE argument: a space-separated package list, split
+# inside the function on purpose. `brew_formula "$FORMULAE_BASE_TOOLCHAIN"`
+# keeps the unquoted expansion (and the SC2086 argument about it) in one place
+# instead of at every call site.
 
-for formula in $FORMULAE; do
-  short="${formula##*/}"   # tap-qualified names: check by short name
-  if pai_exec brew list --formula --versions "$short" >/dev/null 2>&1; then
-    echo "==> $short already installed — skipping"
+brew_formula() {
+  # $1 = space-separated formula names; tap-qualified names are allowed.
+  local formula short
+  for formula in $1; do
+    short="${formula##*/}"   # tap-qualified names: check by short name
+    if pai_exec brew list --formula --versions "$short" >/dev/null 2>&1; then
+      echo "==> $short already installed — skipping"
+    else
+      echo "==> brew install $formula"
+      pai_exec brew install "$formula"
+    fi
+  done
+}
+
+brew_cask() {
+  # $1 = space-separated cask names.
+  local cask
+  for cask in $1; do
+    if pai_exec brew list --cask --versions "$cask" >/dev/null 2>&1; then
+      echo "==> cask $cask already installed — skipping"
+    else
+      echo "==> brew install --cask $cask"
+      pai_exec brew install --cask "$cask"
+    fi
+  done
+}
+
+# No-clobber on purpose: your local edits (e.g. a base_url variant fix from
+# check-goose.sh) must survive re-runs.
+copy_no_clobber() {
+  # $1 = source file, $2 = destination file
+  if [ -e "$2" ]; then
+    echo "    kept existing $2"
   else
-    echo "==> brew install $formula"
-    pai_exec brew install "$formula"
+    cp "$1" "$2"
+    echo "    installed $2"
   fi
-done
+}
+
+install_skill() {
+  # $1 = a skill source directory under config/skills/. Copies it into
+  # ~/.agents/skills atomically (temp dir + mv), no-clobber: an interrupted
+  # `cp -R` must not leave a partial skill dir that no-clobber then keeps
+  # forever. The caller creates ~/.agents/skills and sweeps stale temps.
+  local skill_name tmp_dir
+  skill_name="$(basename "$1")"
+  if [ -e "$HOME/.agents/skills/$skill_name" ]; then
+    echo "    kept existing ~/.agents/skills/$skill_name"
+  else
+    tmp_dir="$HOME/.agents/skills/.personal-ai-tmp.$skill_name"
+    cp -R "$1" "$tmp_dir"
+    mv "$tmp_dir" "$HOME/.agents/skills/$skill_name"
+    echo "    installed ~/.agents/skills/$skill_name"
+  fi
+}
+
+# --------------------------------------------------------------- Formulae ---
+# One list per unit-to-be, so #37's carve moves lines rather than rewriting
+# them, and so install-test.yml's negative test has a stable `^FORMULAE_...=`
+# anchor to mutate. They are GLOBALS, not `local`s inside the future units, for
+# that anchor's sake and for the dry-run planner that will read them.
+#
+# THE EMISSION ORDER BELOW IS TODAY'S ORDER, deliberately: the brew golden in
+# test-base-install.sh is a hand-written 16-line expectation, and this change is
+# supposed to be behaviour-identical. Reordering these three calls to match the
+# dependency order is the carve's job, in the commit that re-types the golden.
+FORMULAE_BASE_GOOSE="block-goose-cli"
+# anomalyco/tap/opencode: OpenCode's official Homebrew tap (https://opencode.ai/docs)
+FORMULAE_OPENCODE="anomalyco/tap/opencode"
+FORMULAE_BASE_TOOLCHAIN="uv node jq"
+
+brew_formula "$FORMULAE_BASE_GOOSE"
+brew_formula "$FORMULAE_OPENCODE"
+brew_formula "$FORMULAE_BASE_TOOLCHAIN"
 
 # ----------------------------------------------------------------- Casks ----
-for cask in block-goose tailscale; do
-  if pai_exec brew list --cask --versions "$cask" >/dev/null 2>&1; then
-    echo "==> cask $cask already installed — skipping"
-  else
-    echo "==> brew install --cask $cask"
-    pai_exec brew install --cask "$cask"
-  fi
-done
+brew_cask "block-goose tailscale"
 
 echo "NOTE: Tailscale was installed as the standalone app. Launch it once and"
 echo "      sign in to your tailnet (docs/setup/10-accounts.md). If you already"
@@ -190,18 +259,8 @@ if [ -r "$PIN_FILE" ]; then
 fi
 
 # ------------------------------------------------------- Config templates ---
-# No-clobber on purpose: your local edits (e.g. a base_url variant fix from
-# check-goose.sh) must survive re-runs.
-copy_no_clobber() {
-  # $1 = source file, $2 = destination file
-  if [ -e "$2" ]; then
-    echo "    kept existing $2"
-  else
-    cp "$1" "$2"
-    echo "    installed $2"
-  fi
-}
-
+# copy_no_clobber() is defined with the other shared helpers above; see the
+# paragraph there for why it cannot live in this section any more.
 echo "==> Installing config templates (no-clobber)"
 mkdir -p "$HOME/.config/goose/custom_providers" "$HOME/.config/opencode"
 
@@ -224,20 +283,13 @@ echo "     your name, email, and timezone)"
 echo "==> Installing skills, OpenCode agents, and global rules (no-clobber)"
 mkdir -p "$HOME/.agents/skills" "$HOME/.config/opencode/agents"
 
-# Copy each skill atomically (temp dir + mv): an interrupted cp -R must not
-# leave a partial skill dir that the no-clobber rule would then keep forever.
+# Sweep first: a leftover temp from an interrupted run is a partial skill dir,
+# and install_skill's `mv` would otherwise inherit it. `|| true` and idempotent,
+# so every unit that installs skills can run it.
 rm -rf "$HOME/.agents/skills"/.personal-ai-tmp.* 2>/dev/null || true
 for skill_dir in "$REPO_ROOT"/config/skills/*/; do
   [ -d "$skill_dir" ] || continue
-  skill_name="$(basename "$skill_dir")"
-  if [ -e "$HOME/.agents/skills/$skill_name" ]; then
-    echo "    kept existing ~/.agents/skills/$skill_name"
-  else
-    tmp_dir="$HOME/.agents/skills/.personal-ai-tmp.$skill_name"
-    cp -R "$skill_dir" "$tmp_dir"
-    mv "$tmp_dir" "$HOME/.agents/skills/$skill_name"
-    echo "    installed ~/.agents/skills/$skill_name"
-  fi
+  install_skill "$skill_dir"
 done
 
 for agent_md in "$REPO_ROOT"/config/opencode/agents/*.md; do

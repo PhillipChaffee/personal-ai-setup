@@ -39,11 +39,12 @@ jobs:
           # business surviving in .git/config where an artifact upload
           # or a later step could pick it up (zizmor: artipacked).
           persist-credentials: false
-          # LOAD BEARING. Assertion A14 proves the seam is a strict no-op by
-          # unwinding it and diffing against the PRE-SEAM bootstrap-mac.sh,
-          # which it finds in git history. On a shallow clone that history is
-          # absent and A14 degrades to a counted SKIP -- so acceptance
-          # criterion 4 would be asserted on a laptop and nowhere else.
+          # LOAD BEARING. Assertion A14b runs the PRE-CARVE bootstrap-mac.sh,
+          # which it reads out of git history by pinned sha, and diffs the $HOME
+          # it installs against the one this checkout installs. On a shallow
+          # clone that blob is absent and A14b degrades to a counted SKIP -- so
+          # "the carve changed no behaviour" would be asserted on a laptop and
+          # nowhere else.
           fetch-depth: 0
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
@@ -76,7 +77,13 @@ jobs:
           git archive HEAD | tar -x -C "$work"
           test -x "$work/scripts/verify/test-base-install.sh" \
             || { echo "::error::harness is not executable in the archive"; exit 1; }
-          sed -i 's|^FORMULAE=.*|FORMULAE="block-goose-cli anomalyco/tap/opencode uv node jq docker"|' \
+          # Re-anchored for #37: the single $FORMULAE is now one list per unit.
+          # The anchor is a top-level global for exactly this reason -- a list
+          # that had moved inside a unit function would still be sed-able, but
+          # `^FORMULAE_BASE_TOOLCHAIN=` would match nothing, the harness would
+          # pass on an UNMODIFIED script, and this step would report that the
+          # golden is inert when the only inert thing is the sed.
+          sed -i 's|^FORMULAE_BASE_TOOLCHAIN=.*|FORMULAE_BASE_TOOLCHAIN="uv node jq docker"|' \
             "$work/scripts/mac/bootstrap-mac.sh"
           if "$work/scripts/verify/test-base-install.sh" --only brew; then
             echo "::error::the brew golden accepted an extra formula — assertion A1" \
