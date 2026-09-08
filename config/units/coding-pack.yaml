@@ -96,20 +96,23 @@ blockers:
       so a half-copied ~/.config/opencode/agents is invisible everywhere. The
       copy loops keep whatever is already present (copy_no_clobber() prints
       `kept existing` and moves on), so stale is silent too."
+  - id: doctor-is-not-selection-aware
+    severity: warn
+    detail: "bootstrap-mac.sh can now leave this unit out (--without opencode
+      cascades to it, and --only base-goose never reaches it), but
+      doctor.py:166-182 compares ~/.agents/skills against every directory in
+      config/skills/ and hard-FAILs on the difference. So a deliberate
+      selective install reads as a broken one: `pai doctor` says '11 of 12
+      shipped skills are not installed' and tells you to re-run the bootstrap,
+      which is exactly what you did. Making doctor selection-aware needs the
+      enabled-unit registry (#40) -- it cannot be inferred from $HOME, because
+      an absent skill and a skipped unit look identical there."
   - id: runbook-documents-the-port-not-the-install
     severity: note
     detail: docs/cursor-port.md is a decision log -- what was ported, adapted
       and dropped. It is the closest thing to a runbook and it is what this
       unit points at, but nothing in it tells a reader how to install or
       re-install the pack.
-  - id: no-switch-for-default-on-yet
-    severity: note
-    detail: The shared skills loop is gone -- unit_coding_pack() installs the
-      eleven from its own enumerated list (SKILLS_CODING_PACK) and creates
-      ~/.agents/skills itself, so it no longer depends on base-skills having
-      run. What is still missing is the SELECTION -- the five units are called
-      unconditionally, so `default_on` describes intent until bootstrap-mac.sh
-      grows --with/--without/--only.
 
 uninstall:
   supported: false

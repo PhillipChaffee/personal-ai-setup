@@ -181,7 +181,7 @@ notes: null                       # free text; nothing reads it
 
 ---
 
-## The four rules that need their reason written down
+## The five rules that need their reason written down
 
 ### 1. Why `verified_on` is quoted
 
@@ -254,11 +254,52 @@ scripts/verify/check-units.sh --strict     # promotes the three advisory checks 
 ```
 
 Exit `0` clean, `1` findings, `2` usage or a missing precondition. Needs `python3` with
-PyYAML (falls back to `uv run --with pyyaml`). Speaks to nothing.
+PyYAML (falls back to `uv run --with pyyaml`). Speaks to no network. It does run one local
+program — `bootstrap-mac.sh --dry-run`, once per unit, for P8(f) — which writes nothing and
+needs neither Homebrew nor macOS.
+
+### 5. Why the Mac installer keeps its own copy of this catalog
+
+`scripts/mac/bootstrap-mac.sh` resolves `--with` / `--without` / `--only` against a table
+of bash globals — `UNIT_IDS`, `REQUIRES_<ID>`, `OWNS_<ID>` — rather than by reading these
+manifests. That is a duplication, and it is deliberate.
+
+The selection has to be computed **before anything is installed**, and a YAML read there is
+fail-closed where the rest of that script is fail-tolerant. The evidence is in the same
+file: its pins comparison falls back from `python3 -c 'import yaml'` to `uv run --with
+pyyaml`, and `uv` is installed by `unit_base_toolchain()` — the *first* unit. So
+`--only coding-pack` on a fresh Mac could need a parser that does not exist yet, and a
+PyYAML-less Mac would go from "installs everything" to "installs nothing". No test in this
+repo could see it, because the harness dies on a missing PyYAML long before that path.
+
+The copy is kept honest from this side instead, by **P8**. It lives in `scripts/verify/`,
+where the manifests are the source of truth and where a YAML parser is a reasonable
+precondition, and it fails on any divergence.
+
+P8 checks the copy in two ways, because reading it is not enough. (a)–(d) below *read*
+`bootstrap-mac.sh`, with regexes anchored on `^NAME="..."` — so they see the table's string
+literals and nothing else. Between those literals and anything a user sees sits a `case`
+dispatch (`requires_of`, `owns_of`), which the script uses instead of `${!ref}` because an
+indirectly-read global is SC2034 to ShellCheck and a warning is a red gate here. One word
+changed inside that dispatch produces a wrong install plan with every literal in the file
+still matching the manifests perfectly. So **(f) runs the script**: for each unit id it
+executes `bootstrap-mac.sh --dry-run --only <id>` and compares the plan and the "would
+install" list to the closure and the `owns` entries computed here from the YAML. That is
+what makes `--dry-run`'s "would install" list a claim about *this catalog* rather than a
+restatement of that script — mechanically, by (d) for the declarations and by (f) for the
+code that prints them.
+
+Running the installer from a linter is safe only because of what `--dry-run` is: pure
+computation over the table, answered before the platform guard, the Homebrew guard and
+every write. `test-base-install.sh`'s H2/H2b/H3 assert exactly that — a fresh `$HOME` stays
+empty, a populated one stays byte-identical, and no `uname` is ever asked — so (f) forks a
+bash and touches nothing, on any OS, with or without Homebrew.
+
+---
 
 ## What the validator checks
 
-Seven properties. Each one has a negative control in `data-lint.yml` or in the notes
+Eight properties. Each one has a negative control in `data-lint.yml` or in the notes
 below, because an assertion that cannot fail is the only kind that is never noticed.
 
 1. **Schema & identity** — `id` == stem, `manifest_version == 1`, all 17 keys present,
@@ -274,6 +315,31 @@ below, because an assertion that cannot fail is the only kind that is never noti
    `runbook` and `manual_steps[].doc` resolve, anchors included.
 6. **Secrets** — the `store`-conditioned rules above, forward and reverse.
 7. **Freshness** — `verified_on` parses, is not in the future, and is not stale.
+8. **Installer table** — `bootstrap-mac.sh`'s copy of this catalog (§5 above) matches it:
+   (a) `UNIT_IDS` is exactly the units whose installer is that script with
+   `status: present`; (b) that list is a topological order of their `requires` graph,
+   because the script's call order *is* that list, filtered; (c) each `REQUIRES_<ID>`
+   equals the manifest's `requires` **intersected with `UNIT_IDS`**, so `base-goose`
+   dropping `base-secrets` (which has `installer: null`) is asserted rather than assumed;
+   (d) each `OWNS_<ID>` equals the manifest's `brew_formula` / `brew_cask` / `home_path`
+   targets; (e) **reverse**, every `config/skills/<name>/` is claimed as a `repo_file` by
+   exactly one unit; (f) **executed**, `--dry-run --only <id>` for every id prints a plan
+   that is the manifests' `requires` closure in a topological order, and a "would install"
+   list that is exactly those units' `owns` entries, in plan order.
+
+8(f) is what covers the `case` dispatch (§5 above): (a)–(d) read the declarations, and a
+one-word change to `requires_of` or `owns_of` leaves every declaration correct while
+`--only base-goose` plans a one-unit install with no `uv`. Measured before it existed: that
+mutation left `check-units.sh` green *and* `test-base-install.sh` at "49 passed, 0 failed".
+It is skipped when (a)–(d) already failed — running `--only` against a table that does not
+match the manifests would restate that divergence in a message about the dispatch, which
+is not where the fault is. Negative control: `data-lint.yml`, "a case arm that ignores its
+REQUIRES_* must fail".
+
+8(e) is the totality gate. The installer enumerates skills per unit by name rather than
+globbing `config/skills/`, precisely so `--without opencode` cannot quietly install a
+`coding-pack` skill. The cost is that a thirteenth skill directory would be installed by
+nobody, so an unclaimed one is a FAIL naming the directory.
 
 `UNCLAIMABLE` is `{check-coverage.sh, check-goose-template.sh}`: both are repo/CI gates
 rather than unit checks, so demanding an owner for them would mint a fake unit.
@@ -285,4 +351,7 @@ rather than unit checks, so demanding an owner for them would mint a fake unit.
 2. Copy the schema above. Fill every key; `null`/`[]` where there is nothing.
 3. Where something is missing, **say so**: `installer: null`, `verify: []` with a
    `no-verify` blocker, `runbook: null` with a `no-runbook` blocker.
-4. `scripts/verify/check-units.sh` and `yamllint --strict -c .yamllint.yml config/units/`.
+4. If the unit's installer is `scripts/mac/bootstrap-mac.sh` with `status: present`, add it
+   to that script's `UNIT_IDS` / `REQUIRES_<ID>` / `OWNS_<ID>` table too, in a position
+   that keeps `UNIT_IDS` topologically ordered. P8 fails until you do.
+5. `scripts/verify/check-units.sh` and `yamllint --strict -c .yamllint.yml config/units/`.

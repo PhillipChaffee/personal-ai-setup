@@ -86,6 +86,55 @@ Nothing here is overwritten on a re-run, so a skill or agent file you have
 edited stays edited. The flip side: an edited file is also never *updated* —
 delete it and re-run the bootstrap to take a new version from the repo.
 
+### Choosing what to install
+
+The bootstrap is five **units**, one per manifest in
+[`config/units/`](../../config/units/README.md). With no flags all five run,
+which is what the section above describes. The flags pick a subset:
+
+| Flag | Meaning |
+|---|---|
+| `--with ID[,ID]` | add `ID` (and whatever it requires) to the default set |
+| `--without ID[,ID]` | drop `ID`, and anything left needing it |
+| `--only ID[,ID]` | install exactly `ID` plus what `ID` requires, nothing else |
+| `--dry-run` | print the resolved plan and exit, touching nothing |
+
+The units and their dependencies:
+
+| Unit | What it installs | Requires |
+|---|---|---|
+| `base-toolchain` | uv, node, jq, the Tailscale cask | — |
+| `base-goose` | goose CLI + Desktop cask, the pin, `~/.config/goose` | `base-toolchain` |
+| `opencode` | the OpenCode CLI, `~/.config/opencode/opencode.json` | `base-goose` |
+| `base-skills` | the `connect-service` skill | `base-goose` |
+| `coding-pack` | the eleven ported skills, the agents, `AGENTS.md` | `opencode` |
+
+```bash
+./scripts/mac/bootstrap-mac.sh --dry-run              # what would happen, and nothing else
+./scripts/mac/bootstrap-mac.sh --without opencode     # goose only, no OpenCode
+./scripts/mac/bootstrap-mac.sh --only base-toolchain  # just uv/node/jq/Tailscale
+```
+
+Three things worth knowing before you use them:
+
+- **`--only` replaces the default set; `--with` adds to it.** `--only coding-pack`
+  installs four units (coding-pack needs opencode, which needs base-goose, which
+  needs base-toolchain) and leaves `connect-service` out. `--with coding-pack`
+  installs all five, because coding-pack was already in the default set.
+- **Excluding something another unit needs is refused, not half-done.**
+  `--without opencode` also drops `coding-pack` and says so on stdout, because
+  nothing else needs opencode. But `--only coding-pack --without opencode` names
+  coding-pack explicitly, so it exits `2` naming both rather than installing
+  OpenCode agents onto a machine with no OpenCode.
+- **`--dry-run` really touches nothing** — no `$HOME`, no `brew`, not even a
+  `uname`. It answers before the macOS check and before the Homebrew check, so
+  it works on a Mac that has neither.
+
+One residual: `pai doctor` is **not** selection-aware yet. On a selective
+install it reports the units you left out as missing skills and tells you to
+re-run the bootstrap. That is recorded on `coding-pack`'s manifest and is
+tracked separately; nothing is actually wrong with the install.
+
 ## 2. Store your keys in the Keychain
 
 ```bash
