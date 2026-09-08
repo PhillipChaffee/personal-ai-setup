@@ -234,9 +234,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-          # The empty-diff proof below compares against origin/main, which a
-          # depth-1 clone does not have.
-          fetch-depth: 0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
@@ -246,30 +243,37 @@ jobs:
       - name: check-units.sh --offline
         run: scripts/verify/check-units.sh --offline
 
-      # AC#5 (#36), discharged by construction rather than by argument. The
-      # manifests describe the installers; they must not touch them. Comment
-      # anchors would have needed an argument about test-base-install.sh's
-      # strip_noise(); an empty diff needs none.
+      # AC#5 (#36) used to be discharged here by a text freeze: "the VPS
+      # installer is byte-identical to main". THE FREEZE IS GONE, and the
+      # property it stood in for is now asserted directly and more strongly.
       #
-      # NARROWED to the VPS installer by #37. scripts/mac/bootstrap-mac.sh is
-      # what #37 carves into selectable units, so a text freeze on it is no
-      # longer a statement about behaviour -- it is a veto on the ticket. The
-      # property the freeze was standing in for ("the Mac install does not
-      # change") is now asserted directly and more strongly by assertion A14b in
-      # scripts/verify/test-base-install.sh: it runs the pre-carve blob and the
-      # working tree into two fake $HOMEs and diffs the resulting trees, which
-      # catches a behaviour change that a byte-identical-source rule can only
-      # approximate. deploy-vps.sh has no such differential, so it stays frozen.
-      - name: The VPS installer is byte-identical to main
-        if: github.event_name == 'pull_request'
-        run: |
-          set -euo pipefail
-          git fetch --quiet origin main
-          if ! git diff --quiet origin/main -- scripts/vps/deploy-vps.sh; then
-            echo "::error::a manifest/data PR must not change VPS install behaviour, and scripts/vps/deploy-vps.sh changed:"
-            git diff --stat origin/main -- scripts/vps/deploy-vps.sh
-            exit 1
-          fi
+      # #37 already narrowed the freeze to deploy-vps.sh with the reasoning
+      # "bootstrap-mac.sh is what #37 carves into selectable units, so a text
+      # freeze on it is a veto on the ticket rather than a statement about
+      # behaviour; assertion A14b asserts the property instead". #41 is the same
+      # ticket for the brain, and it lands the same replacement: V0/V1/V1b in
+      # scripts/verify/test-deploy-vps.sh run the pre-carve deploy-vps.sh (a git
+      # blob pinned by sha) and the working tree's against
+      # scripts/verify/fake-host.sh, then compare the PRIVILEGED SEQUENCE and
+      # the file tree byte for byte, modes and symlink targets included.
+      #
+      # SEQUENCE, not set, and that distinction is why this freeze may go. The
+      # first version of V1 sorted both logs and compared multisets, which is
+      # NOT stronger than a text freeze: a pure reordering of the deploy passed
+      # it, and the freeze this step used to run would have caught one. V1 now
+      # compares the two logs in order, against a two-edit allowlist expressed
+      # as a patch, and install-test.yml's `a reordered unit call site must fail
+      # V1` step moves a whole unit call site to keep that honest.
+      #
+      # With that, it is stronger than an empty source diff in both directions:
+      # it catches a behaviour change made through a file the freeze did not
+      # name (register-schedules.sh, a systemd unit body), and it does not veto
+      # a comment. V0 is the other half — an unreachable pinned baseline, or one
+      # re-pinned to a post-carve revision, FAILS rather than skipping, so this
+      # replacement cannot quietly evaporate the way a deleted step would. It
+      # runs in install-test.yml's `brain deploy against fakes` job, which is
+      # where the fakes and the fetch-depth: 0 it needs already live.
+      # `fetch-depth: 0` is dropped here with the step that needed it.
 
       # NEGATIVE TEST 1 — an unknown TOP-LEVEL key. Deliberately not the
       # connectors probe's shape: check-connectors.sh makes an unknown top-level
@@ -412,13 +416,43 @@ jobs:
           }
           echo "check-units.sh correctly rejected a case arm that ignores its REQUIRES_*."
 
+      # NEGATIVE TEST 5 — P5's ban on bare installer line references.
+      #
+      # The rule exists because #37 and #41 each re-anchored every prefixed
+      # `deploy-vps.sh:NNN` and each left the BARE continuations pointing at
+      # unrelated code, and a bare ref is invisible to the grep that finds
+      # them. The mutation is therefore the exact regression: turn a
+      # written-out reference back into a continuation. It must break even
+      # though the number itself is still perfectly in range, because range is
+      # not the property under test.
+      - name: Negative test — a bare installer line reference must fail
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/units-negative-lineref"; rm -rf "$work"; mkdir -p "$work"
+          git archive HEAD | tar -x -C "$work"
+          before="$(grep -c 'then deploy-vps.sh:764 needs a tailnet IPv4' "$work/config/units/brain.yaml")"
+          [ "$before" -eq 1 ] \
+            || { echo "::error::the anchor line is gone (found $before) — this control is inert"; exit 1; }
+          sed -i 's|then deploy-vps.sh:764 needs a tailnet IPv4|then :764 needs a tailnet IPv4|' \
+            "$work/config/units/brain.yaml"
+          if out="$("$work/scripts/verify/check-units.sh" --offline 2>&1)"; then
+            echo "::error::check-units.sh accepted a bare ':764' continuation of a deploy-vps.sh reference"
+            exit 1
+          fi
+          printf '%s\n' "$out" | grep -qF "continues a deploy-vps.sh reference as a bare ':764'" || {
+            echo "::error::the gate failed without naming the bare reference"
+            printf '%s\n' "$out"
+            exit 1
+          }
+          echo "check-units.sh correctly rejected a bare installer line reference."
+
       # The monthly run. continue-on-error until the catalog closes: --strict
       # also promotes the two REVERSE-closure checks, and every check-*.sh and
       # every secrets.env.example key is unclaimable until all 18 manifests
       # exist. A scheduled job that is red on arrival trains people to ignore
       # it — the same argument that makes staleness a NOTE in the required job.
       # FLIP THIS TO false IN THE PR THAT ADDS THE REMAINING 15 MANIFESTS; the
-      # three negative tests above are what keep --strict honest until then.
+      # five negative tests above are what keep --strict honest until then.
       - name: check-units.sh --strict (monthly)
         if: github.event_name == 'schedule'
         continue-on-error: true

@@ -188,6 +188,61 @@ The script is idempotent — it's also the upgrade path later. It:
   CLI; pause it in the Desktop Scheduler UI or remove it until you have a
   budgeting source) — see [`docs/automations.md`](../automations.md).
 
+### Choosing what gets installed
+
+Four of the pieces above are **selectable units**, and everything else is the
+brain core, which always runs:
+
+| unit | what it is | what skipping it costs |
+| --- | --- | --- |
+| `google-workspace` | `~/.google_workspace_mcp` → `/data/workspace-mcp` | Google OAuth tokens land on the **unencrypted** root disk instead |
+| `telegram-gateway` | `goose-telegram-gateway.service`, enabled when `TELEGRAM_BOT_TOKEN` is set | no phone gateway ([40-phone-setup.md](40-phone-setup.md)) |
+| `code-agents` | rootless podman, the `code-agent:local` image, `/data/code-agents`, `code-agent-manager.service` | no code agents ([70-code-agents.md](70-code-agents.md)) |
+| `automations` | `register-schedules.sh` — the goose scheduler roster | no scheduled recipes; the disabled fallback timers are still installed |
+
+```bash
+# see the plan without touching anything
+agent@brain$ ~/personal-ai-setup/scripts/vps/deploy-vps.sh --dry-run
+
+# skip the expensive one: no apt install, no subuid range, no image build
+agent@brain$ ~/personal-ai-setup/scripts/vps/deploy-vps.sh --without code-agents
+```
+
+`code-agents` is the one worth a decision. Selected, it apt-installs podman +
+uidmap + slirp4netns and grants the `agent` user a subordinate id range **on
+the first deploy** — both are guarded, so later deploys skip them — and then
+enables linger and runs a **multi-minute `podman build`** on **every** deploy,
+whether or not the feature is ever enabled. Deselected, none of that happens
+and `check-code-agents.sh` reports SKIP rather than FAIL.
+
+Three things to know:
+
+- **The brain core is not selectable.** The path-root migration, the goose
+  config install, the systemd unit files, the `goose-serve` restart and the
+  `/status` gate run on every invocation, including `--only automations`. Every
+  selective run prints one line saying so.
+- **Deselecting is not uninstalling.** Nothing removes what an earlier deploy
+  already installed; `--without code-agents` on a brain that already has the
+  plane leaves the image, the volumes, the subuid range and the linger setting
+  exactly where they are. `pai remove` does not exist yet.
+- **Deselecting is also not freezing.** `--without code-agents` on a brain that
+  already has the plane does not restart `code-agent-manager.service`, so a
+  deploy whose `git pull` shipped new manager code leaves the **old process**
+  serving the new file — with `check-code-agents.sh --probe` still green,
+  because the old process answers `/api/health`, `/api/chats`, stop, wake and
+  delete identically. A route added in that deploy 404s, and a 404 from a stale
+  process is indistinguishable from a route that was never written. This is the
+  same `enable --now`-is-a-no-op failure the explicit `systemctl restart` in the
+  unit body exists to prevent, now reachable by choice rather than by accident.
+  If you deselected the unit and then pulled manager changes, re-run
+  `--only code-agents` (or `sudo systemctl restart code-agent-manager.service`).
+  Deploy when nothing is mid-turn: the restart SIGTERMs every chat container.
+
+If a selected unit fails, the deploy stops there and names it — `ERROR: unit
+'code-agents' failed`, plus which units completed and which never ran — and
+the safety-net trap brings `goose-serve` (and the gateway, if it was enabled)
+back up before exiting. Re-run just that one with `--only code-agents`.
+
 Then give the brain a **real TLS certificate** for its tailnet name — iOS
 and every stock client trust it natively, and it's a one-liner because
 Tailscale mints Let's Encrypt certs for `ts.net` names (this is why

@@ -3,13 +3,14 @@
 # podman, the code-agent:local image, /data/code-agents and the session
 # manager on port 4300.
 #
-# DESCRIBES TODAY. deploy-vps.sh:323-371 is the second-largest region in
-# either installer - only brain's path-root migration at :107-245 is bigger -
-# and, unusually for this catalog, this unit has a real verify script that
-# probes a live plane. What it does NOT have is a
-# unit_code_agents() function. #37 carved the MAC installer only, so
-# deploy-vps.sh still has no unit functions at all and status: planned asserts
-# that absence.
+# DESCRIBES TODAY. deploy-vps.sh:661-720 is the second-largest region in
+# either installer - only brain's path-root migration at deploy-vps.sh:390-516
+# is bigger - and, unusually for this catalog, this unit has a real verify
+# script that probes a live plane. It is now unit_code_agents(), gated by
+# `deploy-vps.sh --with/--without/--only code-agents`, which is the one
+# selection in this catalog that saves real time and real disk: an apt install
+# on the first deploy (guarded by `command -v podman`) and a multi-minute image
+# build on EVERY deploy, both of which every brain used to pay for.
 id: code-agents
 manifest_version: 1
 verified_on: "2026-09-07"
@@ -30,7 +31,7 @@ cost:
 installer:
   script: scripts/vps/deploy-vps.sh
   function: unit_code_agents
-  status: planned
+  status: present
 
 # The strongest verify script in the catalog: --probe creates a scratch chat,
 # asserts the container cannot reach /data, asserts the environment carries no
@@ -42,7 +43,7 @@ runbook: docs/setup/70-code-agents.md
 secrets:
   - key: OPENCODE_SERVER_PASSWORD
     # HTTP Basic for the manager gateway AND every per-chat server behind it.
-    # deploy-vps.sh:347-348 enables the unit only when this and the PAT are
+    # deploy-vps.sh:690-691 enables the unit only when this and the PAT are
     # both non-empty.
     store: vps
     secret: true
@@ -72,15 +73,15 @@ owns:
   - {kind: repo_file, target: scripts/vps/systemd/code-agent-manager.service}
   - {kind: container_image, target: "code-agent:local"}
   - {kind: systemd_unit, target: code-agent-manager.service}
-  # deploy-vps.sh:343-344. The directory holds one volume per chat; repos.json
+  # deploy-vps.sh:686-687. The directory holds one volume per chat; repos.json
   # is seeded from the example by install_template, which never clobbers an
   # existing file.
   - {kind: data_path, target: /data/code-agents}
   - {kind: data_path, target: /data/code-agents/repos.json}
   # Host-level side effects with no file to name, all from deploy-vps.sh:
-  # :329-332 installs the packages, :336-337 grants agent a subordinate id
-  # range, :338 keeps /run/user/1000 alive so a system unit can drive rootless
-  # podman as agent.
+  # deploy-vps.sh:672-675 installs the packages, deploy-vps.sh:679-680 grants
+  # agent a subordinate id range, and deploy-vps.sh:681 keeps /run/user/1000
+  # alive so a system unit can drive rootless podman as agent.
   - {kind: manual, target: "apt packages: podman, uidmap, slirp4netns"}
   - {kind: manual, target: "subuid/subgid range 100000-165535 for user agent"}
   - {kind: manual, target: "loginctl linger for user agent"}
@@ -109,17 +110,24 @@ manual_steps:
 blockers:
   - id: deploy-stops-every-running-chat
     severity: warn
-    detail: deploy-vps.sh:366 restarts the manager rather than starting it, and
+    detail: deploy-vps.sh:710 restarts the manager rather than starting it, and
       the unit's ExecStopPost stops everything labelled code-agent=1, which
       runs during the stop half of a restart. Volumes, agent branches and
       transcripts survive; an in-flight turn and OpenCode's in-memory
       permission asks do not. Deploy when nothing is mid-turn.
-  - id: install-is-unconditional-enable-is-not
+  - id: absent-is-indistinguishable-from-failed
     severity: note
-    detail: The packages, the image build, /data/code-agents and the systemd
-      unit are installed on every deploy whether or not the feature is wanted;
-      only enabling is conditional on the two secrets. A brain that will never
-      run code agents still pays the apt install and the image build.
+    detail: "check-code-agents.sh now exits 2 (SKIP, not FAIL) when neither
+      code-agent-manager.service nor /data/code-agents exists, so a brain
+      deployed with --without code-agents does not carry a permanently-red
+      check. It CANNOT tell that state apart from a code-agents install that
+      failed: there is no signal on the host that distinguishes them. If you
+      did select the unit, re-run `deploy-vps.sh --only code-agents` and read
+      its output. That ambiguity is the price of the gate, and it is written
+      down here rather than left in nobody's head. The precondition is keyed on
+      the deploy artifacts ALONE and deliberately not on `podman` being absent:
+      GitHub's ubuntu runners ship podman system-wide, so an AND that included
+      it would never fire and the arm would be inert."
   - id: chats-share-the-brains-data-volume
     severity: warn
     detail: Each chat gets its own volume under /data/code-agents, on the same
@@ -135,10 +143,18 @@ blockers:
       The runbook this manifest names is reachable only from
       docs/code-agents.md and docs/troubleshooting.md, so a reader following
       the setup docs in order never arrives at it.
+  - id: enable-is-still-conditional-on-the-two-secrets
+    severity: note
+    detail: The gate and the enable answer different questions and both still
+      apply. `--without code-agents` means "do not provision this at all";
+      the two-secret test at deploy-vps.sh:690-691 means "the credentials are
+      not there yet". Selecting the unit with an empty OPENCODE_SERVER_PASSWORD
+      or GITHUB_CODE_AGENT_PAT still installs everything and leaves the manager
+      disabled, exactly as before.
   - id: image-build-is-unpinned-at-the-base
     severity: note
     detail: podman build pulls the OpenCode base image on first run
-      (deploy-vps.sh:339-342). config/pins.yaml has exactly one top-level key,
+      (deploy-vps.sh:682-685). config/pins.yaml has exactly one top-level key,
       goose, so whatever the Containerfile's base resolves to on the day of a
       deploy is what ships - the same class of drift the workspace-mcp
       fragment pins away, on a surface nothing here pins.

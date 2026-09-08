@@ -4,7 +4,7 @@
 # tokens it writes.
 #
 # DESCRIBES TODAY. The asymmetry is the point: the brain has a real script
-# region (deploy-vps.sh:282-300 moves the token directory onto the LUKS
+# region (deploy-vps.sh:578-604 moves the token directory onto the LUKS
 # volume), and the Mac has nothing of its own — base-goose copies the rendered
 # config.yaml and the human does the rest. One installer field cannot say
 # "half", so the script region is named and the Mac gap is a blocker.
@@ -26,7 +26,7 @@ cost: []
 installer:
   script: scripts/vps/deploy-vps.sh
   function: unit_google_workspace
-  status: planned
+  status: present
 
 # check-mcp.sh proves the extension can complete one real goose run per
 # authorized account. It cannot prove the OAuth app is published (see the
@@ -75,7 +75,7 @@ owns:
   # the SOURCE of the workspace-mcp block, not the assembled artifact.
   - {kind: repo_file, target: config/goose/extensions.d/workspace-mcp.yaml}
   - {kind: repo_file, target: config/mcp/workspace-mcp.env.example}
-  # deploy-vps.sh:287-300. The link is created (and an existing real directory
+  # deploy-vps.sh:587-599. The link is created (and an existing real directory
   # migrated) so the refresh tokens live on the encrypted volume rather than
   # the root disk. Both ends are this unit's.
   - {kind: home_path, target: ~/.google_workspace_mcp}
@@ -115,7 +115,7 @@ blockers:
     detail: installer names deploy-vps.sh because that is the only script that
       does anything unit-specific. On the Mac nothing points
       ~/.google_workspace_mcp anywhere, so the refresh tokens sit in the
-      unencrypted home directory - the exact placement deploy-vps.sh:282-286
+      unencrypted home directory - the exact placement deploy-vps.sh:578-581
       explains it is avoiding on the brain.
   - id: publication-state-is-unverified
     severity: warn
@@ -131,7 +131,7 @@ blockers:
       fragment itself being read.
   - id: repos-tokens-are-not-inventoried
     severity: note
-    detail: deploy-vps.sh:283-286 records that ~/.google_workspace_mcp was the
+    detail: deploy-vps.sh:578-581 records that ~/.google_workspace_mcp was the
       upstream default as of 2026-08-20 and asks the operator to verify after
       the first auth that no token file appears elsewhere. Nothing automates
       that verification.

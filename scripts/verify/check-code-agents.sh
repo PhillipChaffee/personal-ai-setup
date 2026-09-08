@@ -70,6 +70,35 @@ else
   fi
 fi
 
+# ---- deselected, or not installed? ------------------------------------------
+# deploy-vps.sh --without code-agents is now a supported thing to do, and
+# without this arm it would ship a permanently-RED check: cli.sh maps exit 2 to
+# SKIP and everything else to FAIL, so `pai verify` would report a failure for a
+# plane nobody asked for.
+#
+# THE PRECONDITION IS THE DEPLOY ARTIFACTS ONLY, deliberately NOT "podman is
+# absent": GitHub's ubuntu runners ship podman system-wide, so a three-way AND
+# including it would never fire and this whole arm would be inert.
+#
+# IT CANNOT TELL "deselected" FROM "the code-agents install failed", and there
+# is no signal on the host that would let it. That ambiguity is the price of
+# AC1 and it is written down here and in config/units/code-agents.yaml rather
+# than left in nobody's head.
+#
+# PAI_DATA_ROOT / PAI_SYSTEMD_DIR are the same testing-only seam
+# deploy-vps.sh carries; unset, they are the literals they replaced.
+DATA_ROOT="${PAI_DATA_ROOT:-/data}"
+SYSTEMD_DIR="${PAI_SYSTEMD_DIR:-/etc/systemd/system}"
+if [ "$MODE" = "local" ] &&
+   [ ! -e "$SYSTEMD_DIR/code-agent-manager.service" ] &&
+   [ ! -d "$DATA_ROOT/code-agents" ]; then
+  die 2 "no code-agents plane on this host — skipping." \
+    "Neither $SYSTEMD_DIR/code-agent-manager.service nor $DATA_ROOT/code-agents exists." \
+    "That is the expected state after 'deploy-vps.sh --without code-agents'." \
+    "It is ALSO what a failed code-agents install looks like: if you did select" \
+    "the unit, re-run 'deploy-vps.sh --only code-agents' and read its output."
+fi
+
 CURL="curl -sS --max-time 15"
 [ "$INSECURE" = "yes" ] && CURL="$CURL -k"
 BASE="https://$HOST:$PORT"

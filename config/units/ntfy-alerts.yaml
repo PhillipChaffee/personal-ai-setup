@@ -36,7 +36,7 @@ installer: null
 # a test double that test-code-agent-manager.sh drives - it proves the MANAGER
 # publishes correctly, against a fake server, and says nothing about whether
 # this deployment's topic works. The only thing anywhere that reads NTFY_TOPIC
-# for presence is deploy-vps.sh:76-83, which refuses to deploy on an EMPTY
+# for presence is deploy-vps.sh:344-350, which refuses to deploy on an EMPTY
 # value and accepts any typo. check-code-agents.sh:253 names the key only to
 # assert a chat container CANNOT read it out of its own environment - the
 # opposite direction, and evidence about isolation rather than about delivery.
@@ -45,8 +45,8 @@ runbook: docs/automations.md#delivery-recipes-email-their-own-results-plus-a-fai
 
 secrets:
   - key: NTFY_TOPIC
-    # base-secrets also claims this key: it is one of the four deploy-vps.sh
-    # hard-requires at :76-83, which is a property of the deploy gate rather
+    # base-secrets also claims this key: it is one of the four hard-requires at
+    # deploy-vps.sh:344-350, which is a property of the deploy gate rather
     # than of this unit. Same key, two units, one store - the validator checks
     # each entry against the roster its own `store` names.
     store: vps
@@ -118,7 +118,7 @@ uninstall:
   reason: "There is nothing to remove: no account, no subscription, no
     installed file outside the repo checkout. Abandoning a topic means
     deleting the two variables by hand, and unsetting NTFY_TOPIC makes
-    deploy-vps.sh:76-83 refuse to deploy at all."
+    deploy-vps.sh:344-350 refuse to deploy at all."
 
 notes: >-
   NTFY_AGENT_TOPIC is deliberately NOT claimed here. It is a second topic on a

@@ -39,14 +39,28 @@ GITHUB_CODE_AGENT_PAT=<the fine-grained PAT>
 
 ```bash
 ssh agent@<your-brain>.<your-tailnet>.ts.net
-cd ~/personal-ai-setup && ./scripts/vps/deploy-vps.sh
+cd ~/personal-ai-setup && ./scripts/vps/deploy-vps.sh --only code-agents
 ```
 
-The code-agents section installs podman (rootless), builds the
-`code-agent:local` image (first build pulls the OpenCode base — a few
-minutes), installs `code-agent-manager.service`, and — because both secrets
-are now present — enables it. Expect
-`code agents: enabled (manager on the tailnet, port 4300)` in the output.
+`--only code-agents` runs the brain core (which is never skippable) plus this
+one unit, which is what you want when the rest of the brain is already
+deployed. A plain `./scripts/vps/deploy-vps.sh` does the same thing plus the
+other three units; both are fine here.
+
+The unit installs podman (rootless), builds the `code-agent:local` image
+(first build pulls the OpenCode base — a few minutes), installs
+`code-agent-manager.service`, and — because both secrets are now present —
+enables it. Expect `code agents: restarted (manager on the tailnet, port
+4300)` in the output.
+
+**This is the one unit worth deselecting if you do not want it.** It is opt-in
+now: `./scripts/vps/deploy-vps.sh --without code-agents` skips the apt
+install, the subuid range, the linger setting and the image build entirely, and
+`check-code-agents.sh` then reports SKIP instead of FAIL. Note that skipping
+does not *remove* anything an earlier deploy installed. Note too that
+`check-code-agents.sh` cannot tell "you deselected this" apart from "the
+install failed" — if you did select the unit and the check is skipping, re-run
+`deploy-vps.sh --only code-agents` and read its output.
 
 ## 3. Fill in the repo allowlist
 

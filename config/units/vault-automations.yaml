@@ -8,7 +8,7 @@
 # guarantees a scheduled failure every week - the run dies on the missing file
 # and the watchdog fires an alert - so the script skips them, and unregisters
 # them if an earlier deploy added them. It is installed by the same
-# deploy-vps.sh:381 call as `automations`, conditionally.
+# deploy-vps.sh:744 call as `automations`, conditionally.
 id: vault-automations
 manifest_version: 1
 verified_on: "2026-09-07"
@@ -24,10 +24,11 @@ requires: [life-vault, automations]
 # claims. docs/automations.md:33 and :35 name the models these two run on.
 cost: []
 
-# The registration path is real - deploy-vps.sh:381 runs
+# The registration path is real - deploy-vps.sh:740 runs
 # register-schedules.sh, which adds these two the moment their prerequisites
 # exist - so naming the installer here is accurate. `planned` asserts that no
-# unit_vault_automations() function exists in it yet.
+# unit_vault_automations() function exists in it, and it should stay that way:
+# see the not-separately-selectable blocker below.
 installer:
   script: scripts/vps/deploy-vps.sh
   function: unit_vault_automations
@@ -90,9 +91,22 @@ blockers:
       failing - but that script is `brain`'s single claim, and a verify script
       may be claimed by exactly one unit. Nothing asserts that these two ARE
       registered once their inputs exist.
+  - id: not-separately-selectable
+    severity: note
+    detail: "There is no `--without vault-automations`. deploy-vps.sh's unit
+      ids are google-workspace, telegram-gateway, code-agents and automations,
+      and these two recipes ride inside unit_automations() -> the ORDER loop in
+      register-schedules.sh. Their real gate is the PREREQ map at
+      register-schedules.sh:91-94, which is a fact about the FILES rather than
+      about a flag, and which already unregisters them if the vault goes away.
+      So `--without automations` deselects both this unit and `automations`,
+      and nothing deselects this one alone. Writing
+      unit_vault_automations() would need a second gate inside
+      register-schedules.sh that disagreed with the PREREQ map on exactly the
+      brains where the map is right."
   - id: budget-checkin-has-no-fallback-timer
     severity: warn
-    detail: deploy-vps.sh:309 installs fallback timers for four ids and
+    detail: deploy-vps.sh:613 installs fallback timers for four ids and
       budget-checkin is not one of them, so if the native scheduler hits the
       failure mode at docs/automations.md:158-163 there is nothing to flip
       this recipe to. docs/automations.md:181-182 says to model a new timer on
