@@ -393,8 +393,12 @@ if [ "$DRY_RUN" -eq 1 ]; then
   echo "==> would install:"
   # At the manifests' granularity, which is why ~/.config/goose/custom_providers
   # and ~/.config/opencode/agents appear as directories rather than as the files
-  # inside them: it makes the plan mechanically checkable against the catalog by
-  # P8(d) instead of against this script's cp loops.
+  # inside them: it makes the plan mechanically checkable against the catalog
+  # instead of against this script's cp loops. P8(d) checks the OWNS_* strings;
+  # P8(f) RUNS this loop -- `--dry-run --only <id>` for every id -- and compares
+  # what it prints to config/units/. The second one is not redundant: owns_of()'s
+  # `case` sits between the strings and this printf, and one word changed inside
+  # it prints another unit's list with every OWNS_* still correct.
   for want_id in $SELECTED; do
     for own_item in $(owns_of "$want_id"); do
       case "$own_item" in

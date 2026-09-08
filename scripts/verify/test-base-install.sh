@@ -626,14 +626,51 @@ if leg select; then
   # passed for both would be testing neither.
   F5_RC="$(run_bootstrap_flags f5 "$WORK/home-f5" --only coding-pack)"
   F5_HOME="$WORK/home-f5"
+  # THE BREW GOLDEN IS WHAT OBSERVES base-toolchain, and without it this
+  # assertion did not cover the resolution its own failure message names. The
+  # four filesystem probes below are all produced by base-goose, opencode and
+  # coding-pack; base-toolchain installs no file into $HOME at all, so its
+  # ONLY evidence is what it asked brew for. Measured, before this was added:
+  # rewriting `requires_of`'s `base-goose)` arm to `printf '%s' ""` drops
+  # base-toolchain out of this closure -- no uv, no node, no jq, no tailscale --
+  # and F5 still passed, in a green 49/0 run.
+  #
+  # Hand-typed like A1 and G4, never derived from $FORMULAE_*. It is A1's list
+  # exactly: base-skills is the one unit left out here and it asks brew for
+  # nothing, so a four-unit closure and the five-unit default buy the same 16
+  # lines. That coincidence is the reason the skip count below is asserted too.
+  cat >"$WORK/golden-f5.txt" <<'EOF'
+brew list --formula --versions uv
+brew install uv
+brew list --formula --versions node
+brew install node
+brew list --formula --versions jq
+brew install jq
+brew list --cask --versions tailscale
+brew install --cask tailscale
+brew list --formula --versions block-goose-cli
+brew install block-goose-cli
+brew list --cask --versions block-goose
+brew install --cask block-goose
+brew list --pinned
+brew pin block-goose-cli
+brew list --formula --versions opencode
+brew install anomalyco/tap/opencode
+EOF
+  F5_SKIPS="$(count_in "$WORK/out/f5.log" '^==> skipping ')"
+  F5_BREW_OK=0
+  diff -u "$WORK/golden-f5.txt" "$WORK/brew-f5.log" >"$WORK/f5.diff" 2>&1 || F5_BREW_OK=1
   [ "$F5_RC" = "0" ] &&
     [ ! -e "$F5_HOME/.agents/skills/connect-service" ] &&
     [ -d "$F5_HOME/.agents/skills/ship" ] &&
     [ -f "$F5_HOME/.config/opencode/AGENTS.md" ] &&
     [ -f "$F5_HOME/.config/goose/config.yaml" ] &&
+    [ "$F5_BREW_OK" -eq 0 ] &&
+    [ "$F5_SKIPS" -eq 1 ] &&
     grep -qF "==> skipping base-skills" "$WORK/out/f5.log" &&
-    ok "F5: --only coding-pack installs its requires closure and NOT base-skills" || {
-    bad "F5: --only coding-pack did not resolve to exactly {base-toolchain, base-goose, opencode, coding-pack} (rc=$F5_RC)"
+    ok "F5: --only coding-pack installs all four of its closure (16-line brew golden) and skips only base-skills" || {
+    bad "F5: --only coding-pack did not resolve to exactly {base-toolchain, base-goose, opencode, coding-pack} (rc=$F5_RC, $F5_SKIPS skip line(s), brew golden rc=$F5_BREW_OK)"
+    evidence "$WORK/f5.diff"
     evidence "$WORK/out/f5.log"
   }
 
@@ -743,10 +780,27 @@ if leg select; then
   H_HOME="$WORK/home-dry"
   H_RC="$(run_bootstrap_flags h "$H_HOME" --dry-run)"
 
-  # H1 — the plan, hand-typed. Six lines, in dependency order, kebab-cased and
-  # indented (a column-0 unit_*() name printed here would be counted as a call
-  # site by units_lint.py's P3). The banner is NOT among them: --dry-run answers
-  # before the platform guard, so there is nothing before the plan.
+  # H1 — THE WHOLE DEFAULT DRY RUN, hand-typed. Thirty-two lines: the plan
+  # header, the five units in dependency order, the `would install` banner, and
+  # all 25 items the five units own. Typed out of config/units/*.yaml's `owns`
+  # blocks in manifest order, NEVER pasted from a run of the script — the same
+  # rule as A1 and G4, for the same reason (an expectation derived from the code
+  # under test compares the code to itself and can never fail).
+  #
+  # It is the whole file and not `head -N`. This assertion USED to clip to six
+  # lines, which meant the banner and every owns line were compared to nothing:
+  # `owns_of`'s `opencode)` arm could be rewritten to print `$OWNS_BASE_SKILLS`
+  # -- dropping the opencode formula and printing connect-service twice -- with
+  # the whole harness green. Measured, before this was widened: 49 passed.
+  #
+  # This is also the ONLY assertion anywhere that sees opencode's and
+  # coding-pack's owns lines. H4 pins a whole log too, but for
+  # `--dry-run --without opencode`, whose plan excludes both by construction.
+  #
+  # Kebab-cased and indented, both deliberately: a column-0 unit_*() name
+  # printed here would be counted as a call site by units_lint.py's P3. And
+  # there is no `==> personal-ai Mac bootstrap` banner above the plan --
+  # --dry-run answers before the platform guard, so nothing precedes it.
   cat >"$WORK/golden-h.txt" <<'EOF'
 ==> plan (5 units, in dependency order):
   base-toolchain
@@ -754,12 +808,37 @@ if leg select; then
   opencode
   base-skills
   coding-pack
+==> would install:
+  brew formula  uv
+  brew formula  node
+  brew formula  jq
+  brew cask     tailscale
+  brew formula  block-goose-cli
+  brew cask     block-goose
+  file          ~/.config/goose/config.yaml
+  file          ~/.config/goose/custom_providers
+  file          ~/.config/goose/.goosehints
+  brew formula  anomalyco/tap/opencode
+  file          ~/.config/opencode/opencode.json
+  file          ~/.agents/skills/connect-service
+  file          ~/.agents/skills/ci-lint-test
+  file          ~/.agents/skills/clean-plan
+  file          ~/.agents/skills/code-review
+  file          ~/.agents/skills/deep-research
+  file          ~/.agents/skills/looping-code-review
+  file          ~/.agents/skills/looping-plan-review
+  file          ~/.agents/skills/mr-review
+  file          ~/.agents/skills/plan-review
+  file          ~/.agents/skills/pre-mr-checklist
+  file          ~/.agents/skills/refactor-planner
+  file          ~/.agents/skills/ship
+  file          ~/.config/opencode/agents
+  file          ~/.config/opencode/AGENTS.md
 EOF
-  head -6 "$WORK/out/h.log" >"$WORK/actual-h.txt" 2>/dev/null || true
-  if [ "$H_RC" = "0" ] && diff -u "$WORK/golden-h.txt" "$WORK/actual-h.txt" >"$WORK/h1.diff" 2>&1; then
-    ok "H1: --dry-run prints the five units in dependency order and exits 0"
+  if [ "$H_RC" = "0" ] && diff -u "$WORK/golden-h.txt" "$WORK/out/h.log" >"$WORK/h1.diff" 2>&1; then
+    ok "H1: --dry-run prints exactly the 32-line five-unit plan and its 25 owned items"
   else
-    bad "H1: the --dry-run plan is not the five units in dependency order (rc=$H_RC)"
+    bad "H1: the default --dry-run output is not the 32-line golden (rc=$H_RC)"
     evidence "$WORK/h1.diff"
   fi
 
@@ -795,15 +874,24 @@ EOF
     evidence "$WORK/h2b.diff"
   fi
 
-  # H3 — ZERO EXTERNAL CALLS, including `uname`. The plan is pure computation
-  # over the unit table, so --dry-run answers before the platform guard and
-  # before the Homebrew guard: an empty deny log proves nothing left the seam,
-  # and an empty brew log proves the seam itself was never used. Together they
-  # are what makes `bootstrap-mac.sh --dry-run` honest on a Mac with no brew.
+  # H3 — NO TOOLCHAIN CALL, AND NO `uname`. The plan is pure computation over
+  # the unit table, so --dry-run answers before the platform guard and before
+  # the Homebrew guard: an empty deny log proves nothing on the wall was
+  # reached, and an empty brew log proves the seam itself was never used.
+  # Together they are what makes `bootstrap-mac.sh --dry-run` honest on a Mac
+  # with no Homebrew, and on a Linux box.
+  #
+  # NOT "no external call at all", which is what this used to claim and which is
+  # false: `dirname` at bootstrap-mac.sh:107 forks before the dry-run exit, and
+  # neither log can see it. What these two logs cover is the operative claim --
+  # nothing from $DENY_NAMES (brew, uname, uv, goose, sudo, curl, ...) and
+  # nothing through the seam. `dirname` is a pure string function of
+  # $BASH_SOURCE that every POSIX userland has; that it is a fork rather than a
+  # builtin is not a dependency on the machine's state.
   H3_DENY="$(count_in "$WORK/deny-h.log" '.')"
   H3_BREW="$(count_in "$WORK/brew-h.log" '.')"
   [ "$H3_DENY" -eq 0 ] && [ "$H3_BREW" -eq 0 ] &&
-    ok "H3: --dry-run made no external call at all (deny log and brew log both empty)" || {
+    ok "H3: --dry-run reached for no toolchain binary and never asked what OS this is (deny log and brew log both empty)" || {
     bad "H3: --dry-run reached outside itself ($H3_DENY denied call(s), $H3_BREW brew call(s))"
     evidence "$WORK/deny-h.log"
   }

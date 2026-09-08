@@ -57,6 +57,13 @@ THE EIGHT PROPERTIES, and what each catches that the others do not:
                          allowed to exist. It also closes the catalog over
                          config/skills/: a skill directory no unit claims is a
                          skill the installer will never install.
+                         AND IT RUNS THE SCRIPT. (a)-(d) read the declarations;
+                         between them and any answer a user sees sits a `case`
+                         dispatch, and one word changed inside it plans a
+                         one-unit install with no uv while every declaration
+                         still matches. So (f) executes `--dry-run --only <id>`
+                         for every id and compares what it PRINTS to the
+                         manifests. See dry_run_plan() for why that is safe.
 
 THE ADVISORY SPLIT. P5-reverse, P6-reverse and P7's age arm are NOTE under
 --offline and FAIL under --strict. Every manifest carries the same
@@ -75,6 +82,7 @@ import argparse
 import datetime as dt
 import os
 import re
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -165,6 +173,23 @@ OWN_KIND_PREFIX: Final[dict[str, str]] = {
     "brew_cask": "cask:",
     "home_path": "home:",
 }
+
+# The same three kinds as bootstrap-mac.sh's --dry-run SPELLS them, read back
+# for P8(f). Two spellings of one mapping is the price of comparing what the
+# installer prints against what the manifests say instead of against itself.
+DRY_RUN_KIND_PREFIX: Final[dict[str, str]] = {
+    "brew formula": "brew:",
+    "brew cask": "cask:",
+    "file": "home:",
+}
+PLAN_HEADER_RE: Final = re.compile(r"^==> plan \((\d+) units, in dependency order\):$")
+PLAN_ID_RE: Final = re.compile(r"^  [a-z0-9-]+$")
+OWNS_HEADER: Final = "==> would install:"
+OWNS_LINE_RE: Final = re.compile(r"^  (brew formula|brew cask|file) +(\S.*)$")
+# A bound, not a tuning knob. The closure and cascade loops in bootstrap-mac.sh
+# are `while [ $PASS -lt 8 ]`, so --dry-run is milliseconds; anything near this
+# is a hang, and a lint that hangs a CI job is worse than one that fails it.
+DRY_RUN_TIMEOUT: Final = 60
 
 # check-*.sh files that no unit can legitimately claim, with the reason. These
 # are repo/CI gates rather than unit checks, so demanding an owner for them
@@ -860,6 +885,153 @@ def shell_suffix(uid: str) -> str:
     return uid.upper().replace("-", "_")
 
 
+def dry_run_plan(uid: str) -> tuple[list[str], list[str], list[str]]:
+    """RUN `bootstrap-mac.sh --dry-run --only <uid>`; return (plan, owns, problems).
+
+    P8(f) EXECUTES the installer rather than reading it, and that is the whole
+    point of it. (a)-(d) above are regexes anchored on `^NAME="..."`, so they
+    see the string LITERALS and nothing else; the `case` dispatch that maps an
+    id to one of those literals -- chosen over `${!ref}` because an indirectly
+    read global is SC2034 to ShellCheck, and a warning is a red gate here -- sits
+    between the literals and every user-visible answer, and no amount of reading
+    the declarations covers it. Measured: rewriting one arm to `printf '%s' ""`
+    makes `--only base-goose` plan a one-unit install with no uv, and the
+    declarations still match the manifests perfectly.
+
+    Running it is safe here in a way it would not be for any other subcommand:
+    `--dry-run` answers from pure computation over the table and exits BEFORE
+    the platform guard, the Homebrew guard and every write, which
+    test-base-install.sh's H2/H2b/H3 assert as "a fresh $HOME stays empty, a
+    populated one stays byte-identical, and no `uname` is ever asked". So this
+    forks a bash, and touches nothing -- on any OS, with or without Homebrew.
+
+    PAI_EXEC is scrubbed from the child's environment: it is the test seam, and
+    a developer with it exported would otherwise hit the containment gate's
+    exit 2 and see this property fail for a reason that is not about the table.
+    """
+    env = {k: v for k, v in os.environ.items() if k != "PAI_EXEC"}
+    try:
+        proc = subprocess.run(  # noqa: S603 - fixed argv, no shell, path derived from __file__
+            [str(BOOTSTRAP_MAC), "--dry-run", "--only", uid],
+            capture_output=True, text=True, timeout=DRY_RUN_TIMEOUT, env=env, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return ([], [], [f"{MAC_INSTALLER} --dry-run --only {uid} could not be run: {exc}"])
+    if proc.returncode != 0:
+        # stderr's FIRST line only. On a non-zero exit stdout still holds the
+        # whole plan, and echoing 25 lines of it buries the complaint that
+        # actually explains the exit -- "unknown unit id", say, or the
+        # containment gate.
+        why = next((line for line in proc.stderr.splitlines() if line.strip()), "(no stderr)")
+        return ([], [], [f"{MAC_INSTALLER} --dry-run --only {uid} exited {proc.returncode}, "
+                         f"not 0: {why}"])
+    return parse_dry_run(uid, proc.stdout)
+
+
+def parse_dry_run(uid: str, out: str) -> tuple[list[str], list[str], list[str]]:
+    """Split a --dry-run transcript into (plan ids, owns items, problems).
+
+    STRICT, and fail-closed on every shape it does not recognise: a parser that
+    shrugged at an unexpected line would turn a garbled plan into an empty list,
+    and an empty list compares equal to an empty expectation. The `owns` items
+    come back in the `brew:`/`cask:`/`home:` spelling owned_items() uses, so the
+    two sides of the comparison are built from different sources.
+
+    WHITESPACE-TOLERANT ON THE COLUMN, deliberately: the exact rendering is
+    pinned bytewise by test-base-install.sh's H1 and H4 goldens. What this owns
+    is the SEMANTICS -- which units, which kinds, which targets, in which order.
+    """
+    lines = out.splitlines()
+    if not lines or (head := PLAN_HEADER_RE.match(lines[0])) is None:
+        return ([], [], [f"{MAC_INSTALLER} --dry-run --only {uid} did not open with a plan "
+                         f"header: {(lines[0] if lines else '')!r}"])
+    count = int(head.group(1))
+    plan = [line[2:] for line in lines[1 : 1 + count]]
+    rest = lines[1 + count :]
+    if len(plan) != count or any(not PLAN_ID_RE.match(line) for line in lines[1 : 1 + count]):
+        return ([], [], [f"{MAC_INSTALLER} --dry-run --only {uid} announced {count} unit(s) but "
+                         f"did not print {count} indented unit id(s)"])
+    if not rest or rest[0] != OWNS_HEADER:
+        return ([], [], [f"{MAC_INSTALLER} --dry-run --only {uid} did not print "
+                         f"{OWNS_HEADER!r} after its plan"])
+    owns: list[str] = []
+    for line in rest[1:]:
+        match = OWNS_LINE_RE.match(line)
+        if match is None:
+            return ([], [], [f"{MAC_INSTALLER} --dry-run --only {uid} printed a 'would install' "
+                             f"line in no recognised kind: {line!r}"])
+        owns.append(DRY_RUN_KIND_PREFIX[match.group(1)] + match.group(2))
+    return (plan, owns, [])
+
+
+def requires_closure(uid: str, requires: dict[str, list[str]]) -> set[str]:
+    """Return the units `--only <uid>` must install, per the MANIFESTS.
+
+    Computed here from `requires` rather than read out of the installer, which
+    is what makes the comparison in check_dispatch() a comparison of two
+    independent things instead of the script agreeing with itself.
+    """
+    seen = {uid}
+    stack = [uid]
+    while stack:
+        for dep in requires.get(stack.pop(), []):
+            if dep not in seen:
+                seen.add(dep)
+                stack.append(dep)
+    return seen
+
+
+def check_dispatch(
+    by_stem: dict[str, Manifest], expected: Sequence[str], requires: dict[str, list[str]],
+) -> list[str]:
+    """P8(f): what `--dry-run --only <id>` actually PRINTS, for every id."""
+    # ONCE, not once per unit: P3 already reports an unexecutable installer per
+    # manifest that names it, and five more copies of the same sentence here
+    # buries every other finding in the run.
+    if not os.access(BOOTSTRAP_MAC, os.X_OK):
+        return [f"{MAC_INSTALLER} is not executable — P8(f) cannot run its --dry-run"]
+    out: list[str] = []
+    for uid in expected:
+        plan, owns, problems = dry_run_plan(uid)
+        if problems:
+            out.extend(problems)
+            continue
+        want_plan = requires_closure(uid, requires)
+        if set(plan) != want_plan:
+            missing = ", ".join(sorted(want_plan - set(plan))) or "-"
+            extra = ", ".join(sorted(set(plan) - want_plan)) or "-"
+            out.append(f"--only {uid} plans {len(plan)} unit(s), not the manifests' requires "
+                       f"closure (missing: {missing}; extra: {extra}) — requires_of()'s case "
+                       f"dispatch, not REQUIRES_*, is what resolves that")
+            continue
+        seen: set[str] = set()
+        for pid in plan:
+            out.extend(
+                f"--only {uid} plans {pid} before {dep}, which {pid} requires — the units run "
+                f"in the order this plan prints them"
+                for dep in requires.get(pid, [])
+                if dep in plan and dep not in seen
+            )
+            seen.add(pid)
+        want_owns = [item for pid in plan for item in owned_items(by_stem[pid])]
+        if owns != want_owns:
+            # The FIRST divergence, not both lists: a 25-item dump buries the
+            # one line that moved, and the printer emits them in plan order, so
+            # the first mismatch is where the wrong OWNS_* was reached. zip's
+            # strict=False is load bearing -- the lists differ in LENGTH here as
+            # often as in content (a dropped brew formula is the mutation this
+            # exists for), and raising would replace a diagnostic with a crash.
+            at = next((i for i, (a, b) in enumerate(zip(owns, want_owns, strict=False)) if a != b),
+                      min(len(owns), len(want_owns)))
+            got = owns[at] if at < len(owns) else "(end of list)"
+            want = want_owns[at] if at < len(want_owns) else "(end of list)"
+            out.append(f"--only {uid} would install {len(owns)} item(s), not the {len(want_owns)} "
+                       f"its plan's manifests own; first divergence at item {at + 1}: printed "
+                       f"{got}, manifests say {want} — owns_of()'s case dispatch, not OWNS_*, "
+                       f"is what prints that")
+    return out
+
+
 def mac_installer_units(units: Sequence[Manifest]) -> list[str]:
     """List the unit ids bootstrap-mac.sh claims to install TODAY, in catalog order."""
     out: list[str] = []
@@ -962,13 +1134,17 @@ def prop_installer_table(units: Sequence[Manifest]) -> Findings:
                            f'resolves --with/--without/--only against that table')
         return result
     expected = mac_installer_units(units)
-    result.hard.extend(compare_sets("UNIT_IDS", declared, expected))
+    # The declaration findings, kept apart from the skill-closure ones above:
+    # P8(f) below is only meaningful against a table that already matches, and
+    # an unclaimed config/skills/ directory says nothing about that table.
+    table: list[str] = []
+    table.extend(compare_sets("UNIT_IDS", declared, expected))
     by_stem = {unit.stem: unit for unit in units}
     requires: dict[str, list[str]] = {
         uid: [dep for dep in strings(by_stem[uid].data.get("requires")) if dep in expected]
         for uid in expected
     }
-    result.hard.extend(check_table_order(declared, requires))
+    table.extend(check_table_order(declared, requires))
     for uid in expected:
         if uid not in declared:
             continue  # compare_sets already named it.
@@ -982,9 +1158,18 @@ def prop_installer_table(units: Sequence[Manifest]) -> Findings:
         ):
             words = shell_words(text, name)
             if words is None:
-                result.hard.append(f'{MAC_INSTALLER} declares no {name}="..." for unit {uid}')
+                table.append(f'{MAC_INSTALLER} declares no {name}="..." for unit {uid}')
                 continue
-            result.hard.extend(compare_sets(name, words, want))
+            table.extend(compare_sets(name, words, want))
+    result.hard.extend(table)
+    # P8(f). Everything above this line READS the file; this RUNS it. See
+    # dry_run_plan() for why the declarations matching is not the same claim as
+    # the installer resolving them, and why --dry-run is the safe way to ask.
+    # Skipped when the declarations already diverge: --only against a table that
+    # does not match the manifests would restate that divergence a second time,
+    # in a message about the dispatch, which is not where the fault is.
+    if not table:
+        result.hard.extend(check_dispatch(by_stem, expected, requires))
     return result
 
 
@@ -1050,7 +1235,7 @@ def catalog_facts(units: Iterable[Manifest]) -> list[str]:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="units_lint.py",
-        description="Validate config/units/*.yaml. Speaks to nothing.",
+        description="Validate config/units/*.yaml. Speaks to no network.",
     )
     parser.add_argument("--offline", action="store_true", help="default; kept for symmetry")
     parser.add_argument(

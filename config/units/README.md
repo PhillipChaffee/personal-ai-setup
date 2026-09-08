@@ -254,7 +254,9 @@ scripts/verify/check-units.sh --strict     # promotes the three advisory checks 
 ```
 
 Exit `0` clean, `1` findings, `2` usage or a missing precondition. Needs `python3` with
-PyYAML (falls back to `uv run --with pyyaml`). Speaks to nothing.
+PyYAML (falls back to `uv run --with pyyaml`). Speaks to no network. It does run one local
+program — `bootstrap-mac.sh --dry-run`, once per unit, for P8(f) — which writes nothing and
+needs neither Homebrew nor macOS.
 
 ### 5. Why the Mac installer keeps its own copy of this catalog
 
@@ -272,8 +274,26 @@ repo could see it, because the harness dies on a missing PyYAML long before that
 
 The copy is kept honest from this side instead, by **P8**. It lives in `scripts/verify/`,
 where the manifests are the source of truth and where a YAML parser is a reasonable
-precondition, and it fails on any divergence. `--dry-run`'s "would install" list is
-therefore a claim about *this catalog*, printed by the installer.
+precondition, and it fails on any divergence.
+
+P8 checks the copy in two ways, because reading it is not enough. (a)–(d) below *read*
+`bootstrap-mac.sh`, with regexes anchored on `^NAME="..."` — so they see the table's string
+literals and nothing else. Between those literals and anything a user sees sits a `case`
+dispatch (`requires_of`, `owns_of`), which the script uses instead of `${!ref}` because an
+indirectly-read global is SC2034 to ShellCheck and a warning is a red gate here. One word
+changed inside that dispatch produces a wrong install plan with every literal in the file
+still matching the manifests perfectly. So **(f) runs the script**: for each unit id it
+executes `bootstrap-mac.sh --dry-run --only <id>` and compares the plan and the "would
+install" list to the closure and the `owns` entries computed here from the YAML. That is
+what makes `--dry-run`'s "would install" list a claim about *this catalog* rather than a
+restatement of that script — mechanically, by (d) for the declarations and by (f) for the
+code that prints them.
+
+Running the installer from a linter is safe only because of what `--dry-run` is: pure
+computation over the table, answered before the platform guard, the Homebrew guard and
+every write. `test-base-install.sh`'s H2/H2b/H3 assert exactly that — a fresh `$HOME` stays
+empty, a populated one stays byte-identical, and no `uname` is ever asked — so (f) forks a
+bash and touches nothing, on any OS, with or without Homebrew.
 
 ---
 
@@ -303,7 +323,18 @@ below, because an assertion that cannot fail is the only kind that is never noti
    dropping `base-secrets` (which has `installer: null`) is asserted rather than assumed;
    (d) each `OWNS_<ID>` equals the manifest's `brew_formula` / `brew_cask` / `home_path`
    targets; (e) **reverse**, every `config/skills/<name>/` is claimed as a `repo_file` by
-   exactly one unit.
+   exactly one unit; (f) **executed**, `--dry-run --only <id>` for every id prints a plan
+   that is the manifests' `requires` closure in a topological order, and a "would install"
+   list that is exactly those units' `owns` entries, in plan order.
+
+8(f) is what covers the `case` dispatch (§5 above): (a)–(d) read the declarations, and a
+one-word change to `requires_of` or `owns_of` leaves every declaration correct while
+`--only base-goose` plans a one-unit install with no `uv`. Measured before it existed: that
+mutation left `check-units.sh` green *and* `test-base-install.sh` at "49 passed, 0 failed".
+It is skipped when (a)–(d) already failed — running `--only` against a table that does not
+match the manifests would restate that divergence in a message about the dispatch, which
+is not where the fault is. Negative control: `data-lint.yml`, "a case arm that ignores its
+REQUIRES_* must fail".
 
 8(e) is the totality gate. The installer enumerates skills per unit by name rather than
 globbing `config/skills/`, precisely so `--without opencode` cannot quietly install a

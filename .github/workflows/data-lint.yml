@@ -360,6 +360,58 @@ jobs:
           }
           echo "check-units.sh correctly rejected a 'present' status with no function."
 
+      # NEGATIVE TEST 4 — P8(f), the arm that RUNS bootstrap-mac.sh instead of
+      # reading it.
+      #
+      # P8(a)-(d) are regexes anchored on `^NAME="..."`, so they see the table's
+      # string LITERALS. Between those literals and anything a user sees sits a
+      # `case` dispatch (requires_of/owns_of), chosen over `${!ref}` because an
+      # indirectly-read global is SC2034 to shellcheck and a warning is a red
+      # gate in this repo. This mutation is one word inside that dispatch, and
+      # it leaves every literal in the file untouched: `--only base-goose` then
+      # plans a ONE-unit install with no uv, no node, no jq and no tailscale,
+      # while unit_base_goose()'s pins ladder still falls back to `uv run`.
+      #
+      # Measured on the tree before P8(f) existed: this exact sed left
+      # check-units.sh green AND scripts/verify/test-base-install.sh at
+      # "49 passed, 0 failed". That is what makes it worth a step.
+      #
+      # It greps for the MESSAGE. An exit-code-only assertion would go green off
+      # any other finding the sed happened to provoke.
+      - name: Negative test — a case arm that ignores its REQUIRES_* must fail
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/units-negative-dispatch"; mkdir -p "$work"
+          git archive HEAD | tar -x -C "$work"
+          # shellcheck disable=SC2016  # $REQUIRES_BASE_GOOSE is the bash text
+          # being matched, not a variable this step reads: it has to reach sed
+          # unexpanded, so the pattern is single-quoted on purpose.
+          sed -i 's|^\(    base-goose)     printf .%s. \)"\$REQUIRES_BASE_GOOSE"|\1""|' \
+            "$work/scripts/mac/bootstrap-mac.sh"
+          # The sed must have BITTEN. A pattern that silently stopped matching
+          # (the arm reformatted, the variable renamed) would leave the tree
+          # pristine, check-units.sh green, and this step reporting P8(f) as
+          # inert when the only inert thing is the sed.
+          grep -qF 'base-goose)     printf '"'"'%s'"'"' ""' \
+            "$work/scripts/mac/bootstrap-mac.sh" || {
+            echo "::error::the requires_of mutation did not apply — this control is inert"
+            exit 1
+          }
+          if out="$("$work/scripts/verify/check-units.sh" --offline 2>&1)"; then
+            echo "::error::check-units.sh accepted a requires_of arm that drops its own dependency"
+            exit 1
+          fi
+          # `--` before the pattern: it starts with two dashes, so grep would
+          # otherwise read it as an option, exit 2 with its own usage, and this
+          # step would report P8(f) as inert. (Measured: that is exactly how it
+          # failed first. Same trap as test-base-install.sh's F4.)
+          printf '%s\n' "$out" | grep -qF -- "--only base-goose plans 1 unit(s)" || {
+            echo "::error::the gate failed without naming the dispatch — P8(f) is inert"
+            printf '%s\n' "$out"
+            exit 1
+          }
+          echo "check-units.sh correctly rejected a case arm that ignores its REQUIRES_*."
+
       # The monthly run. continue-on-error until the catalog closes: --strict
       # also promotes the two REVERSE-closure checks, and every check-*.sh and
       # every secrets.env.example key is unclaimable until all 18 manifests

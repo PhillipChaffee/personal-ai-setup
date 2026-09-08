@@ -51,8 +51,10 @@ Usage: check-units.sh [--offline | --strict] [--help]
 
 A future-dated verified_on FAILs in BOTH modes: there is no benign reason.
 
-Needs python3 with PyYAML (falls back to `uv run --with pyyaml`). Speaks to
-nothing, needs no credentials, and needs no goose.
+Needs python3 with PyYAML (falls back to `uv run --with pyyaml`). Speaks to no
+network, needs no credentials, and needs no goose. It does run one local
+program: P8(f) executes `bootstrap-mac.sh --dry-run` once per unit, which
+writes nothing and needs neither Homebrew nor macOS.
 Exit: 0 ok, 1 findings, 2 usage/precondition.
 EOF
 }
