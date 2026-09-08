@@ -336,6 +336,13 @@ if [ "$PROBE" = "yes" ] && [ -n "$AUTH" ]; then
     # is refused with a 409 whenever a real chat is up. That is a SKIP with the
     # reason on screen, never a silent pass.
     CHATS_ROOT="${CODE_AGENT_ROOT:-$DATA_ROOT/code-agents}/chats"
+    # Chat A's own published port, re-read from the create response already in
+    # hand rather than parsed further up — the manifests cite this file by line
+    # and every addition here stays below the lines they name. It is the
+    # published-port arm's POSITIVE CONTROL: A tries its own port over the same
+    # three host addresses it tries B's on, so a dead container->host route
+    # reports as a skip instead of as isolation.
+    APORT="$(printf '%s' "$CHAT_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("port",""))' 2>/dev/null || true)"
     # shellcheck disable=SC2086
     B_JSON="$($CURL $AUTH -X POST -H 'Content-Type: application/json' \
         -d '{"repo":"_probe","task":"cross-chat isolation probe"}' "$BASE/api/chats" || true)"
@@ -345,7 +352,12 @@ if [ "$PROBE" = "yes" ] && [ -n "$AUTH" ]; then
       pass "second probe chat created ($BID) — the cross-chat probe has a subject"
       # No credential in this argv: the probe script reads the password out of
       # the container's own environment (podman exec argv is visible in ps).
-      probe_cross_chat_reach "$CN" "code-agent-$BID" "$BID" "$CHATS_ROOT/$BID" "$BPORT"
+      # $BASE is the gateway the manager is actually serving on (the brain's
+      # tailnet IP, non-loopback) — the proxy arm's target and its control.
+      [ -n "$APORT" ] ||
+        note "chat A's own port is unknown — the published-port arm will skip"
+      probe_cross_chat_reach "$CN" "${APORT:-0}" "code-agent-$BID" "$BID" \
+        "$CHATS_ROOT/$BID" "$BPORT" "$BASE"
       # shellcheck disable=SC2086
       $CURL $AUTH -X DELETE "$BASE/api/chats/$BID?purge=1" >/dev/null 2>&1 || true
       if "$CA_ENGINE" container exists "code-agent-$BID" 2>/dev/null; then
@@ -418,6 +430,11 @@ cat <<'EOF'
   [ ] Out-of-workspace read: ask a chat to read /etc/hostname — the
       external_directory=deny probe proves the policy is LOADED, only a real
       turn proves it is ENFORCED.
+  [ ] If --probe SKIPPED the cross-chat proxy arm, settle it by hand: the
+      question is whether this brain's gateway address is reachable from
+      inside a chat's network namespace at all. Read the SKIP's reason first
+      (it quotes what wget said), then see issue #115 — the authorization gap
+      is certain either way; reachability only decides whether it is live.
 EOF
 
 finish --skips

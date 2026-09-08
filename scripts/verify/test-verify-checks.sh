@@ -525,23 +525,61 @@ EOF
 chmod +x "$WORK/fake-engine"
 CA_ENGINE="$WORK/fake-engine"
 
-# A wget whose verdict is the fixture's, keyed on the URL: 127.0.0.1:4096 is
-# chat A's own server (the network arm's positive control), anything else is
-# the reach at chat B.
+# A wget whose every answer is the fixture's, keyed on the URL. FIVE separate
+# dials, and that is the fix rather than a tidy-up: the version this replaces
+# had two (`CA_FAKE_CTL` for chat A's own loopback, `CA_FAKE_NET` for
+# everything else), so "the container->host route is dead" and "chat B's port
+# is protected" were THE SAME FIXTURE VALUE. A probe cannot be shown to tell
+# two states apart by a harness that cannot express them separately.
+#
+#   CA_FAKE_TOOL   A's own server at 127.0.0.1:4096, inside A's netns
+#   CA_FAKE_ROUTE  A's OWN published port on the host — the route control
+#   CA_FAKE_NET    chat B's published port on the host — the vector
+#   CA_FAKE_GWCTL  the manager gateway's /api/health — the proxy control
+#   CA_FAKE_GW     the gateway's /chat/<B>/session — the vector
+#
+# Each is `ok`, an HTTP status, or anything else for "could not connect".
+# Statuses are printed in busybox wget's own wording, because that string is
+# what ca_try() parses to tell a refusal from an unreachable host.
 mkdir -p "$WORK/bin"
 cat > "$WORK/bin/wget" <<'EOF'
 #!/usr/bin/env bash
 url=""
 for arg in "$@"; do url="$arg"; done
 case "$url" in
-  *127.0.0.1:4096*) exit "${CA_FAKE_CTL:-0}" ;;
-  *) exit "${CA_FAKE_NET:-1}" ;;
+  *127.0.0.1:4096*)  verdict="${CA_FAKE_TOOL:-ok}" ;;
+  *:4310/session)    verdict="${CA_FAKE_ROUTE:-down}" ;;
+  *:4311/session)    verdict="${CA_FAKE_NET:-down}" ;;
+  *:4300/api/health) verdict="${CA_FAKE_GWCTL:-down}" ;;
+  *:4300/chat/*)     verdict="${CA_FAKE_GW:-down}" ;;
+  *)                 verdict=down ;;
+esac
+case "$verdict" in
+  ok) exit 0 ;;
+  [1-5][0-9][0-9])
+    echo "wget: server returned error: HTTP/1.1 $verdict Refused" >&2
+    exit 1
+    ;;
+  *)
+    echo "wget: can't connect to remote host: Connection refused" >&2
+    exit 1
+    ;;
 esac
 EOF
 chmod +x "$WORK/bin/wget"
 export CA_FAKE_ROOT="$WORK/view" CA_FAKE_PATH="$WORK/bin:$PATH"
 export CA_FAKE_HOST_FROM="$WORK/chats" CA_FAKE_HOST_TO=""
-export CA_FAKE_CTL=0 CA_FAKE_NET=1
+# The dials at their ISOLATED values: wget works, the container->host route is
+# live (A reaches its own published port), chat B's port is closed, the gateway
+# is up and refuses B's session to A.
+#
+# THAT LAST ONE IS NOT WHAT THE BRAIN DOES TODAY. `proxy()` performs no
+# per-chat authorization (issue #115), so a reachable gateway serves chat B to
+# chat A. The fixture describes the shape the probe must call a PASS; the
+# shapes the brain can actually produce (a 2xx, and an unreachable gateway) are
+# fed in below and must NOT both look like this one.
+export CA_FAKE_TOOL=ok CA_FAKE_ROUTE=ok CA_FAKE_NET=down
+export CA_FAKE_GWCTL=ok CA_FAKE_GW=403
 
 # The host side: two chat volumes exactly where the manager puts them. Chat B's
 # container writes into the real one, so "the host path" and "B's volume" are
@@ -552,21 +590,28 @@ VIEW_A="$WORK/view/code-agent-chat-a/fs/chat"
 echo "$VIEW_A" > "$WORK/view/code-agent-chat-a/chatpath"
 echo "$WORK/chats/chat-b" > "$WORK/view/code-agent-chat-b/chatpath"
 
-probe_pair() { # probe_pair <b_dir> — the two containers are always the same
-  run_probe probe_cross_chat_reach code-agent-chat-a code-agent-chat-b \
-    chat-b "$1" 4311
+probe_pair() { # probe_pair <b_dir> [gateway] — the containers never change.
+  # 4310 is chat A's own published port, 4311 is chat B's. `${2-...}` and not
+  # `${2:-...}` so a caller can pass an EMPTY gateway on purpose.
+  run_probe probe_cross_chat_reach code-agent-chat-a 4310 code-agent-chat-b \
+    chat-b "$1" 4311 "${2-https://fixture.invalid:4300}"
 }
 
-# ISOLATED: the host chats path resolves to nothing inside chat A, and chat B's
-# port is unreachable.
+# ISOLATED: the host chats path resolves to nothing inside chat A, chat B's
+# port is closed, and the gateway refuses B's session.
 CA_FAKE_HOST_TO="$WORK/view/code-agent-chat-a/fs/nohost"
 probe_pair "$WORK/chats/chat-b"
 saw "isolated view: the positive control fires" \
   "PASS  cross-chat control: chat A reads its OWN marker (the probe is live)"
 saw "isolated view: no filesystem path reaches chat B" \
   "PASS  chat A cannot read chat B's volume"
-saw "isolated view: chat B's port is unreachable, control confirmed" \
-  "PASS  chat A cannot reach chat B's server on the host's published port"
+# The PASS sentence NAMES the host address the route control got through on.
+# It cannot be reached without a proven container->host round trip, which is
+# the property the old arm was missing.
+saw "isolated view: the route is proven live and B's port is still closed" \
+  "PASS  chat A reaches the host (via host.containers.internal) but NOT chat B's published port"
+saw "isolated view: the gateway refuses chat B's session to chat A" \
+  "PASS  the gateway refused chat A's request for chat B's session (http:403)"
 
 # THE BROKEN INPUT (host path): /data/code-agents/chats is visible inside chat
 # A's container — the exact path issue #17 B1 names.
@@ -601,27 +646,42 @@ saw "chat B's volume reachable under some OTHER path is still a FAIL" \
 rm -rf "$WORK/view/code-agent-chat-a/fs/var"
 echo "$WORK/chats/chat-b" > "$WORK/view/code-agent-chat-b/chatpath"
 
-# THE BROKEN INPUT (network): the filesystem is clean and chat A can still read
-# chat B by talking to its server with the password every container holds.
-CA_FAKE_NET=0
+# THE BROKEN INPUT (published port): the filesystem is clean and chat A can
+# still read chat B by talking to its server with the password every container
+# holds.
+CA_FAKE_NET=ok
 probe_pair "$WORK/chats/chat-b"
 saw "a filesystem-clean chat that can reach B's PORT is still a FAIL" \
   "FAIL  chat A reached chat B's opencode server over the network:"
 saw "...naming the host address it got through on" "via host.containers.internal"
-CA_FAKE_NET=1
+CA_FAKE_NET=down
 
-# THE VACUOUS SHAPE (network): wget cannot reach chat A's own server either, so
-# "B was unreachable" measured nothing. Must be a SKIP, never a PASS.
-CA_FAKE_CTL=1
+# THE VACUOUS SHAPE THIS WHOLE ARM WAS REWRITTEN FOR, and the one the shipped
+# probe reported as isolation. The container->host route is dead: chat A cannot
+# reach its OWN published port on any of the three host addresses, so chat B's
+# silence at the same three addresses measures nothing. This is the DEFAULT on
+# rootless podman — allow_host_loopback=false, chat ports bound to 127.0.0.1.
+#
+# CA_FAKE_NET is `down` here and `down` in the isolated run above. The ONLY
+# difference between a PASS and this SKIP is CA_FAKE_ROUTE, which is exactly
+# the distinction the old single-dial fixture could not make and the old
+# loopback control could not detect.
+CA_FAKE_ROUTE=down
 probe_pair "$WORK/chats/chat-b"
-saw "a dead network control is a SKIP, not a pass" \
-  "SKIP  cross-chat network arm NOT exercised (control: unreachable)"
-absent "...and the pass sentence is nowhere in that run" \
-  "cannot reach chat B's server"
-CA_FAKE_CTL=0
+saw "a dead container->host route is a SKIP, not isolation" \
+  "SKIP  cross-chat published-port arm NOT exercised (no container->host route)"
+absent "...and no pass sentence about chat B's port survives it" \
+  "but NOT chat B's published port"
+absent "...nor the sentence the old probe printed on exactly this input" \
+  "cannot reach chat B's server on the host's published port"
+# The loopback control still answers `ok` here — it always did. Keeping it as
+# the SKIP's sub-reason is what separates "no wget" from "no route".
+saw "...and the note reports the loopback control that used to gate this arm" \
+  "A's own server inside its netns answered: ok"
+CA_FAKE_ROUTE=ok
 
-# An image with no wget at all reports the vector as untested by name. PATH is
-# narrowed to symlinks for exactly the commands the probe script needs.
+# An image with no wget at all reports BOTH network vectors as untested by
+# name. PATH is narrowed to symlinks for exactly the commands the probe needs.
 mkdir -p "$WORK/minbin"
 for tool in cat find; do
   command -v "$tool" >/dev/null 2>&1 || continue
@@ -629,12 +689,66 @@ for tool in cat find; do
 done
 CA_FAKE_PATH="$WORK/minbin"
 probe_pair "$WORK/chats/chat-b"
-saw "an image with no wget says the vector is untested" "control: nowget"
+saw "an image with no wget says the published-port vector is untested" \
+  "A's own server inside its netns answered: nowget"
+saw "...and the proxy vector too, rather than sweeping it clean" \
+  "SKIP  cross-chat proxy arm NOT exercised (gateway control: nowget)"
 CA_FAKE_PATH="$WORK/bin:$PATH"
+
+# --- 5c. the manager's own proxy: the shortest cross-chat path (issue #115) --
+# /chat/<id>/<path> takes any chat id, does no per-chat authorization, is gated
+# only by a global password every container is handed, and WAKES a stopped chat
+# to serve it. No mount bug and no port guess is needed. The three outcomes
+# below are the three the probe has to keep apart; collapsing "unreachable"
+# into "protected" is the same false negative 5b just removed.
+
+# THE BROKEN INPUT: the gateway serves chat B's session to chat A.
+CA_FAKE_GW=ok
+probe_pair "$WORK/chats/chat-b"
+saw "the gateway serving B's session to A is a FAIL, loudly" \
+  "FAIL  chat A DROVE chat B through the manager's proxy (/chat/<B-id>/session)"
+saw "...and points at the issue that owns the credential model" "issue #115"
+absent "...and claims no isolation anywhere in that run" \
+  "PASS  the gateway refused"
+CA_FAKE_GW=403
+
+# THE VACUOUS SHAPE: the gateway is not reachable from inside the container's
+# netns at all. UNPROVEN on a real brain either way — the chat ports are
+# loopback-bound but the gateway binds the tailnet IP, which slirp4netns does
+# forward. So this must SKIP and say what wget said, never pass.
+CA_FAKE_GWCTL=down CA_FAKE_GW=down
+probe_pair "$WORK/chats/chat-b"
+saw "an unreachable gateway is a SKIP naming wget's own answer" \
+  "SKIP  cross-chat proxy arm NOT exercised (gateway control: down:wget: can't connect"
+absent "...and never renders as a refusal" "PASS  the gateway refused"
+CA_FAKE_GWCTL=ok CA_FAKE_GW=403
+
+# The gateway is reachable but will not take the credential the container
+# holds. That IS isolation — a different sentence, because it is a different
+# fact, and it is what fixing #115 by option 2 would look like from here.
+CA_FAKE_GWCTL=401 CA_FAKE_GW=401
+probe_pair "$WORK/chats/chat-b"
+saw "a gateway that rejects the container's credential is a PASS of its own" \
+  "PASS  the gateway is reachable from chat A but refuses the credential it holds"
+CA_FAKE_GWCTL=ok CA_FAKE_GW=403
+
+# The gateway answered, but not about chat B: a 404 means the probe lost its
+# subject between the create and the read. Neither a refusal nor a read.
+CA_FAKE_GW=404
+probe_pair "$WORK/chats/chat-b"
+saw "a 404 from the proxy is INCONCLUSIVE, not a refusal" \
+  "SKIP  cross-chat proxy arm INCONCLUSIVE — gateway up, /chat/<B>/session said http:404"
+CA_FAKE_GW=403
+
+# No gateway address to try at all — a caller that could not work out where the
+# manager is listening. Named as such rather than silently omitted.
+probe_pair "$WORK/chats/chat-b" ""
+saw "no gateway address is a SKIP that says so" \
+  "SKIP  cross-chat proxy arm NOT exercised (gateway control: nogateway)"
 
 # THE VACUOUS SHAPE (staging): chat A's container has no workspace to write
 # into, so the marker never lands. Nothing may be reported about isolation
-# after that — four misses of a file that does not exist are four misses of
+# after that — a clean sweep for a file that does not exist is a sweep of
 # nothing.
 echo "$WORK/view/code-agent-chat-a/fs/no-such-volume" \
   > "$WORK/view/code-agent-chat-a/chatpath"

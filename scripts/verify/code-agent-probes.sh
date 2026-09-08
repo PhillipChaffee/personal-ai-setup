@@ -192,23 +192,36 @@ else:
 
 # --------------------------------------- B1: another chat is out of reach ---
 
-# probe_cross_chat_reach <a_container> <b_container> <b_id> <b_dir> <b_port>
+# probe_cross_chat_reach <a_container> <a_port> <b_container> <b_id> <b_dir>
+#                        <b_port> <gateway_url>
 #
 # THE ONE PROBE HERE THAT TESTS BEHAVIOUR RATHER THAN POLICY. Two chats exist;
 # each container stages a nonce in its OWN workspace — through the container,
 # not from the host, because a rootless podman volume's files belong to a
 # subordinate uid and a host-side write would fail for a reason that has
 # nothing to do with isolation. Then chat A's container is asked to go and get
-# chat B's, four ways:
+# chat B's. THREE VECTORS, reported as three verdicts:
 #
-#   1. B's volume at its host path (/data/code-agents/chats/<B>/...) — the path
-#      B1 names outright.
-#   2. Out of A's own mount by relative traversal (/chat/../<B>/...).
-#   3. Any path at all: a bounded find(1) for the marker filename anywhere in
-#      A's filesystem, compared by CONTENT so A finding its own does not count.
-#   4. Over the network: B's opencode server on the host's published port. A
-#      filesystem-only probe would miss this entirely, and it is the vector
-#      that does not depend on the mount being right.
+#   1. THE FILESYSTEM. Tried three ways, but they are one vector, not three:
+#      B's volume at its host path (/data/code-agents/chats/<B>/...), the path
+#      issue #17 B1 names outright; relative traversal out of A's own mount
+#      (/chat/../<B>/...); and a bounded find(1) for the marker filename
+#      ANYWHERE in A's filesystem, compared by CONTENT so A finding its own
+#      does not count. The scan subsumes the other two — no working runtime
+#      lets a relative path escape a bind mount, so the traversal try is
+#      expected to be redundant and is kept only because it costs one cat(1)
+#      and names the vector explicitly when it does hit. One verdict.
+#   2. B'S PUBLISHED PORT. The manager publishes each chat on
+#      127.0.0.1:<port> of the HOST, so this needs the container->host route,
+#      not the mount.
+#   3. THE MANAGER'S OWN PROXY — the shortest path of the three and the one
+#      that needs neither a mount bug nor a port guess. `/chat/<id>/<path>` is
+#      a wildcard with NO per-chat authorization: Handler.proxy() looks the id
+#      up and serves it, Handler.authed() compares one global PASSWORD, and
+#      run_container() hands that same value to every chat container as
+#      OPENCODE_SERVER_PASSWORD. Cited by symbol and not by line on purpose —
+#      issue #115 carries the line numbers and owns the credential model; this
+#      arm owns finding out whether the gateway is reachable from in here.
 #
 # THE CREDENTIAL IS NEVER PASSED IN. The script reads OPENCODE_SERVER_PASSWORD
 # out of the container's OWN environment, which is both the repo's standing
@@ -216,21 +229,34 @@ else:
 # `podman exec` argv is world-readable in ps) and the more faithful test: the
 # question is what the agent can do with what the agent already has.
 #
-# EVERY ARM HAS A POSITIVE CONTROL, because the failure mode of a probe like
-# this is passing for a reason that has nothing to do with isolation:
-#   * filesystem: A must be able to read ITS OWN marker, and it must contain
-#     A's nonce. If it cannot, the probe reports that and fails rather than
-#     recording four clean misses as four clean misses.
-#   * network: A must be able to reach its OWN opencode server on 127.0.0.1
-#     inside its netns with the same credential and the same tool. If it
-#     cannot, the network arm is reported as NOT EXERCISED (a skip), never as
-#     a pass — "wget is missing" and "the host is unreachable" produce the same
-#     exit status and mean opposite things.
+# EVERY ARM HAS A POSITIVE CONTROL THAT EXERCISES THE ARM'S OWN PRECONDITION.
+# That sentence used to be false for the network arm and it is the reason this
+# probe was rewritten. The old control was `wget http://127.0.0.1:4096/session`
+# — chat A's own server inside chat A's OWN netns. It proves wget, base64 and
+# the credential work; it NEVER touches the container->host route that all
+# three of the arm's target addresses depend on. Rootless podman's default is
+# `allow_host_loopback=false` and the chat ports publish to 127.0.0.1 only, so
+# on a brain where that route is dead the old control answered "ok", no NET
+# line was emitted, and the probe printed a green isolation verdict for a
+# vector it had never exercised. The controls now are:
+#   * filesystem: A must read ITS OWN marker and it must hold A's nonce. If it
+#     cannot, the probe says so and fails rather than recording misses.
+#   * published port: A must reach ITS OWN published port on the host, over
+#     the same three host addresses B is tried on. A miss there means the
+#     route is dead, which is a SKIP. A hit at A's own port plus a miss at B's
+#     is the only shape that is isolation.
+#   * manager proxy: A must reach the gateway's /api/health. Unreachable is a
+#     SKIP naming the reason wget gave, never a pass.
+# `TOOL:` (A's own server on loopback inside its netns) is kept, demoted from
+# a gate to the sub-reason a SKIP quotes: it separates "no wget in the image"
+# from "the route is closed".
 #
-# DOES NOT PROVE: that no vector exists. It proves these four are closed. A
-# shared kernel is a shared kernel (issue #17 Phase 3 names micro-VMs).
+# DOES NOT PROVE: that no vector exists. It proves these three are closed on
+# the brain it ran on. A shared kernel is a shared kernel (issue #17 Phase 3
+# names micro-VMs).
 probe_cross_chat_reach() {
-  local a_container="$1" b_container="$2" b_id="$3" b_dir="$4" b_port="$5"
+  local a_container="$1" a_port="$2" b_container="$3" b_id="$4" b_dir="$5"
+  local b_port="$6" gateway="${7:-}"
   local nonce_a nonce_b script out
 
   nonce_a="pai-own-$$-${RANDOM:-0}"
@@ -247,7 +273,7 @@ probe_cross_chat_reach() {
     return 0
   fi
 
-  script="$(ca_cross_chat_script "$b_id" "$b_dir" "$b_port" "$nonce_b")"
+  script="$(ca_cross_chat_script "$b_id" "$b_dir" "$a_port" "$b_port" "$nonce_b" "$gateway")"
   out="$(ca_exec "$a_container" "$script")"
 
   ca_cross_chat_verdict "$nonce_a" "$out"
@@ -261,12 +287,29 @@ ca_stage_marker() {
 cat \"/chat/workspace/$CA_MARKER\" 2>/dev/null || true"
 }
 
-# ca_cross_chat_script <b_id> <b_dir> <b_port> <nonce_b>
+# ca_cross_chat_script <b_id> <b_dir> <a_port> <b_port> <nonce_b> <gateway_url>
 #
 # Emitted rather than inlined so the harness can read it, and written for
-# BUSYBOX ASH (the base image is Alpine): no arrays, no [[, no ${var//}.
+# BUSYBOX ASH (the base image is Alpine): no arrays, no [[, no ${var//}, no
+# `local`. It runs WITHOUT errexit, and every arm is written so that a failing
+# command is data rather than an abort.
+#
+# It prints one tagged line per observation and decides nothing:
+#   OWN:<nonce>     the marker A found in its own workspace (the fs control)
+#   READ:<path>     B's nonce, read at a path A could NAME
+#   SCAN:<path>     B's nonce, found anywhere under / (the arm that subsumes)
+#   TOOL:<answer>   A's own server on 127.0.0.1:4096, inside A's netns
+#   ROUTE:<host>    A reached ITS OWN published port via that host address
+#                   — the container->host route control
+#   NET:<host>      A reached B's published port via that host address
+#   GWCTL:<answer>  the manager gateway's /api/health, from inside A
+#   GW:<answer>     the gateway's /chat/<B>/session, from inside A
+#
+# <answer> is `ok`, `http:<code>`, `down:<what wget said>`, `nowget`, or
+# `nogateway`. The distinction is the whole point: "refused" and "could not be
+# reached" are opposite results that both make wget exit non-zero.
 ca_cross_chat_script() {
-  local b_id="$1" b_dir="$2" b_port="$3" nonce_b="$4"
+  local b_id="$1" b_dir="$2" a_port="$3" b_port="$4" nonce_b="$5" gateway="$6"
   cat <<EOS
 own=\$(cat "/chat/workspace/$CA_MARKER" 2>/dev/null || true)
 if [ -n "\$own" ]; then echo "OWN:\$own"; fi
@@ -284,27 +327,59 @@ for f in \$(find / -maxdepth 8 -name "$CA_MARKER" -type f 2>/dev/null || true); 
 done
 
 tok=\$(printf 'opencode:%s' "\${OPENCODE_SERVER_PASSWORD:-}" | base64 2>/dev/null | tr -d '\\n')
-if command -v wget >/dev/null 2>&1; then
-  if wget -q -T 5 -O /dev/null --header="Authorization: Basic \$tok" \
-      "http://127.0.0.1:4096/session" 2>/dev/null; then
-    echo "NETCTL:ok"
-  else
-    echo "NETCTL:unreachable"
+gw="$gateway"
+gwopt=""
+case "\$gw" in https://*) gwopt="--no-check-certificate" ;; esac
+
+# ca_try <url> [flag] -> ok | http:<code> | down:<first line wget printed>
+# \$tok never leaves this function's argv-to-wget; nothing here echoes it.
+ca_try() {
+  err=\$(wget -q -T 5 -O /dev/null \$2 --header="Authorization: Basic \$tok" "\$1" 2>&1)
+  if [ \$? -eq 0 ]; then echo ok; return 0; fi
+  code=\$(printf '%s' "\$err" | sed -n 's|.*HTTP/[0-9.]* *\\([0-9][0-9][0-9]\\).*|\\1|p' | head -n1)
+  if [ -z "\$code" ]; then
+    code=\$(printf '%s' "\$err" | sed -n 's|.*error: *\\([45][0-9][0-9]\\).*|\\1|p' | head -n1)
   fi
+  if [ -n "\$code" ]; then echo "http:\$code"; return 0; fi
+  echo "down:\$(printf '%s' "\$err" | head -n1 | cut -c1-80)"
+  return 0
+}
+
+# The gateway's cert names the brain's tailnet HOSTNAME and this reaches it by
+# IP, so a validating client fails for a reason that is not isolation. An agent
+# that wanted in would skip validation; so does this. If the wget in the image
+# does not know the flag, the retry without it keeps the reason honest.
+ca_gw() {
+  r=\$(ca_try "\$1" "\$gwopt")
+  case "\$r" in
+    down:*) if [ -n "\$gwopt" ]; then r=\$(ca_try "\$1" ""); fi ;;
+  esac
+  printf '%s\\n' "\$r"
+}
+
+if command -v wget >/dev/null 2>&1; then
+  echo "TOOL:\$(ca_try "http://127.0.0.1:4096/session")"
   for h in host.containers.internal 10.0.2.2 10.88.0.1; do
-    wget -q -T 5 -O /dev/null --header="Authorization: Basic \$tok" \
-      "http://\$h:$b_port/session" 2>/dev/null || continue
-    echo "NET:\$h"
+    if [ "\$(ca_try "http://\$h:$a_port/session")" = "ok" ]; then echo "ROUTE:\$h"; fi
+    if [ "\$(ca_try "http://\$h:$b_port/session")" = "ok" ]; then echo "NET:\$h"; fi
   done
+  if [ -n "\$gw" ]; then
+    echo "GWCTL:\$(ca_gw "\$gw/api/health")"
+    echo "GW:\$(ca_gw "\$gw/chat/$b_id/session")"
+  else
+    echo "GWCTL:nogateway"
+  fi
 else
-  echo "NETCTL:nowget"
+  echo "TOOL:nowget"
+  echo "GWCTL:nowget"
 fi
 EOS
 }
 
-# ca_cross_chat_verdict <nonce_a> <probe-output> — three verdicts, one per arm.
+# ca_cross_chat_verdict <nonce_a> <probe-output> — four verdicts: the control,
+# then one per vector (filesystem, published port, manager proxy).
 ca_cross_chat_verdict() {
-  local nonce_a="$1" out="$2" own reads netctl nets
+  local nonce_a="$1" out="$2" own reads tool route nets gwctl gw
 
   own="$(printf '%s\n' "$out" | sed -n 's/^OWN://p' | head -n1)"
   if [ "$own" = "$nonce_a" ]; then
@@ -328,18 +403,85 @@ ca_cross_chat_verdict() {
     printf '%s\n' "$reads"
   fi
 
-  netctl="$(printf '%s\n' "$out" | sed -n 's/^NETCTL://p' | head -n1)"
+  tool="$(printf '%s\n' "$out" | sed -n 's/^TOOL://p' | head -n1)"
+  route="$(printf '%s\n' "$out" | sed -n 's/^ROUTE://p' | head -n1)"
   nets="$(printf '%s\n' "$out" | sed -n 's/^NET:/  via /p')"
+  ca_published_port_verdict "$tool" "$route" "$nets"
+
+  gwctl="$(printf '%s\n' "$out" | sed -n 's/^GWCTL://p' | head -n1)"
+  gw="$(printf '%s\n' "$out" | sed -n 's/^GW://p' | head -n1)"
+  ca_manager_proxy_verdict "$gwctl" "$gw"
+  return 0
+}
+
+# ca_published_port_verdict <tool> <route> <nets> — vector 2.
+#
+# THE ORDER IS THE FIX. A miss at B's port is only isolation if the route that
+# would have carried a hit is known to work, and the only way to know that is
+# to have carried one: chat A's own published port, over the same three host
+# addresses. Everything else is a SKIP.
+ca_published_port_verdict() {
+  local tool="$1" route="$2" nets="$3"
   if [ -n "$nets" ]; then
     fail "chat A reached chat B's opencode server over the network:"
     printf '%s\n' "$nets"
     note "Every container holds OPENCODE_SERVER_PASSWORD, so reachability is access."
-  elif [ "$netctl" = "ok" ]; then
-    pass "chat A cannot reach chat B's server on the host's published port"
+  elif [ -n "$route" ]; then
+    pass "chat A reaches the host (via $route) but NOT chat B's published port"
   else
-    skip "cross-chat network arm NOT exercised (control: ${netctl:-no answer})"
-    note "A's own server was unreachable from inside A, so 'B unreachable' proves nothing."
-    note "nowget = the image has no wget; add one, or this vector stays untested."
+    skip "cross-chat published-port arm NOT exercised (no container->host route)"
+    note "A could not reach its OWN published port on host.containers.internal,"
+    note "10.0.2.2 or 10.88.0.1, so B's silence measures nothing. Rootless podman"
+    note "defaults to allow_host_loopback=false and chat ports bind 127.0.0.1."
+    note "A's own server inside its netns answered: ${tool:-no answer}"
+    note "(nowget = the image has no wget; add one or this vector stays untested.)"
   fi
+  return 0
+}
+
+# ca_manager_proxy_verdict <gwctl> <gw> — vector 3, and the loudest FAIL here.
+#
+# The gateway's /chat/<id>/<path> takes any chat id and does no per-chat
+# authorization; the only gate is one global password that every container is
+# handed. So if the gateway's address is reachable from inside a chat's netns,
+# any agent can read or drive any other chat — and WAKE a stopped one to do it.
+# Whether it is reachable is the open question (issue #115), which is why
+# "could not reach it" must land as a SKIP: rendering that as a pass is the
+# same false negative the published-port arm used to ship.
+ca_manager_proxy_verdict() {
+  local gwctl="$1" gw="$2"
+  case "$gw" in
+    ok)
+      fail "chat A DROVE chat B through the manager's proxy (/chat/<B-id>/session)"
+      note "The gateway answered 2xx for another chat's session with the credential"
+      note "chat A already holds. No mount bug and no port guess is needed for this."
+      note "This is issue #115: proxy() does no per-chat authorization and every"
+      note "container gets the one global gateway password. Fix the credential"
+      note "model there; this probe only reports it."
+      return 0
+      ;;
+  esac
+  case "$gwctl:$gw" in
+    ok:http:401|ok:http:403)
+      pass "the gateway refused chat A's request for chat B's session ($gw)"
+      ;;
+    http:401:*|http:403:*)
+      pass "the gateway is reachable from chat A but refuses the credential it holds"
+      note "Control: /api/health answered $gwctl to the container's own password."
+      ;;
+    ok:*)
+      skip "cross-chat proxy arm INCONCLUSIVE — gateway up, /chat/<B>/session said ${gw:-nothing}"
+      note "Not a refusal and not a read. A 404 means the gateway no longer knows"
+      note "chat B, so the probe lost its subject; anything else needs a look."
+      ;;
+    *)
+      skip "cross-chat proxy arm NOT exercised (gateway control: ${gwctl:-no answer})"
+      note "The gateway was unreachable from inside chat A, so 'B was not served'"
+      note "measures nothing. nogateway = no address was passed to the probe;"
+      note "nowget = the image has no wget; down:… is what wget said."
+      note "Issue #115 stays open either way: the authorization gap is certain,"
+      note "reachability only decides whether it is exploitable today."
+      ;;
+  esac
   return 0
 }

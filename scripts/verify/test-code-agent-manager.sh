@@ -428,6 +428,15 @@ assert written["permission"]["bash"]["git push*"] == "allow", written
 rendered = chat_dir / "home" / ".config" / "opencode" / "AGENTS.md"
 assert rendered.is_file(), "AGENTS.md was not rendered into the chat volume"
 assert rendered.read_bytes() == mod.AGENTS_TEMPLATE.read_bytes(), "AGENTS.md was altered"
+# A DRIFT-LOCK BETWEEN TWO STRINGS IN THIS REPO, and nothing more. It is NOT
+# evidence about any pull request: the agent writes the body, so no assertion
+# here can make one say anything. What it holds together is a pair that has to
+# agree — the label AGENTS.md tells the agent to write, and AGENT_PR_MARKER,
+# which pull_to_wire greps for when it reports `agent_authored`. Rename one
+# without the other and every pull silently reads agent_authored: false, which
+# looks exactly like a model that stopped following the convention. The
+# OBSERVABLE for the convention itself is that field on /api/pulls; the three
+# assertions below it are what test it.
 assert mod.AGENT_PR_MARKER in rendered.read_text().lower(), \
     "the instructions no longer name the marker pull_to_wire looks for"
 
@@ -456,6 +465,24 @@ assert "agent_authored" not in none, none
 # Issue #17 C1's "exposes exactly" list named five things; the dispatcher
 # serves twelve API routes plus the proxy, and the docstring had drifted three
 # routes behind. Derived from the dispatch tables so the NEXT route cannot.
+#
+# MATCHED AS WHOLE ROUTES, NOT AS SUBSTRINGS, and that is a bug fix rather than
+# a refinement. `route not in doc` can never report a route that is a PREFIX of
+# another documented one, and five of the twelve are: /api/chats (shadowed by
+# /api/chats/<id>/...), /api/chats/<id>, /api/chats/<id>/pulls, /api/repos
+# (shadowed by /api/repos/<name>/branches) and /api/permissions (named in this
+# docstring's own PROSE as well as its table). Delete the `GET /api/chats` row
+# and the substring version reported a clean sweep. So the docstring's route
+# TABLE is parsed into a set of exact paths, and membership is tested in it.
+VERBS = {"GET", "POST", "DELETE", "PUT", "PATCH", "*"}
+
+def doc_route(line):
+    """The route a docstring table row documents, or None if it is not one."""
+    parts = line.split()
+    if len(parts) >= 2 and parts[0] in VERBS and parts[1].startswith("/"):
+        return parts[1].split("[")[0]   # DELETE /api/chats/<id>[?purge=1]
+    return None
+
 def readable(pattern):
     text = pattern.lstrip("^").rstrip("$")
     for regex, shown in (("([a-zA-Z0-9-]+)", "<id>"), ("([0-9]+)", "<n>"),
@@ -465,20 +492,46 @@ def readable(pattern):
         return [text.replace("(wake|stop)", "wake"), text.replace("(wake|stop)", "stop")]
     return [text]
 
-def undocumented(doc):
+def served():
     routes = list(mod.Handler.API_READS)
     for name in dir(mod.Handler):
         if name.startswith("ROUTE_"):
             routes.extend(readable(getattr(mod.Handler, name).pattern))
-    return sorted(r for r in routes if r not in doc)
+    return sorted(set(routes))
 
+def undocumented(doc):
+    documented = {r for r in (doc_route(l) for l in doc.splitlines()) if r}
+    return sorted(r for r in served() if r not in documented)
+
+def drop_route(doc, route):
+    """Delete the rows documenting exactly <route> — not the rows it prefixes."""
+    return "\n".join(l for l in doc.splitlines() if doc_route(l) != route)
+
+routes = served()
+assert len(routes) == 12, f"expected twelve routes, derived {len(routes)}: {routes}"
 missing = undocumented(mod.__doc__)
 assert not missing, f"routes served but not in the module docstring: {missing}"
-# The gate's own falsifiability, fed in once: drop one documented route and it
-# has to be named. Without this, a `readable()` that produced nothing would
-# report a clean sweep forever.
-mutilated = "\n".join(l for l in mod.__doc__.splitlines() if "/api/permissions" not in l)
-assert undocumented(mutilated) == ["/api/permissions"], undocumented(mutilated)
+
+# THE GATE'S OWN FALSIFIABILITY, fed in once per route rather than once. The
+# shipped version deleted every line CONTAINING "/api/permissions" — which took
+# the prose mention with it — and checked one route that happens not to be
+# shadowed, so the blind spot was invisible from inside the test. Each route is
+# now dropped on its own and has to come back named, prefix-shadowed or not.
+for route in routes:
+    holed = drop_route(mod.__doc__, route)
+    assert holed != mod.__doc__, f"drop_route removed no row for {route}"
+    assert undocumented(holed) == [route], (route, undocumented(holed))
+
+# ...and the blindness is real, not hypothetical. `blind` is every route the
+# SUBSTRING rule cannot report when its own row is deleted; asserting on the
+# set keeps this comment checkable and makes the day a route stops being
+# shadowed a day this test says so out loud.
+def substring_undocumented(doc):
+    return sorted(r for r in served() if r not in doc)
+
+blind = sorted(r for r in routes if not substring_undocumented(drop_route(mod.__doc__, r)))
+assert blind == ["/api/chats", "/api/chats/<id>", "/api/chats/<id>/pulls",
+                 "/api/permissions", "/api/repos"], blind
 PY
 if "${MANAGER_PY[@]}" "$WORK/preflight-shapes.py" "$REPO_ROOT/scripts/vps/code-agent-manager.py"
 then
@@ -488,6 +541,7 @@ then
   ok "the container's AGENTS.md is rendered into the chat volume, and a missing one is survivable"
   ok "agent_authored is true/false from the PR body, and absent when GitHub sent none"
   ok "every route the dispatcher serves is named in the module docstring"
+  ok "...and holing any ONE route's row — prefix-shadowed or not — reports exactly it"
 else
   bag="state-shape / config-template / instructions / route-doc checks"
   bad "$bag (see the assertion above)"

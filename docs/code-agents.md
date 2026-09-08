@@ -73,8 +73,15 @@ tells the agent to open its pull requests itself and to put
 **Nothing enforces that.** The agent writes the body; the manager performs no
 git operation after create-time and never touches the PR. An agent that omits
 the line produces a pull request indistinguishable from a human's, and no check
-in this repo can make it otherwise. Testing that the instruction *file* contains
-the sentence would assert something about this repo and nothing about any PR.
+in this repo can make it otherwise.
+
+There *is* a test that the instruction file names the marker
+(`test-code-agent-manager.sh`), and it is worth being precise about what it
+does: it is a **drift-lock between two strings in this repo**, not evidence
+about any pull request. `AGENTS.md`'s label and the `AGENT_PR_MARKER` constant
+the manager greps for have to stay spelled the same, because renaming one
+without the other makes every pull read `agent_authored: false` — which is
+indistinguishable from a model that quietly stopped following the convention.
 
 What exists instead is an **observable**: the manager's GitHub sweep reads each
 pull request's body and reports `agent_authored` on `GET /api/pulls` and
@@ -99,14 +106,33 @@ delivered branch carries no personal name or email (issue #17 C4).
   other chat's files. Its environment carries only what it needs — model
   key(s) + the git PAT. CPU/memory caps keep a test suite from starving the
   interactive brain. `check-code-agents.sh --probe` verifies this **on the
-  brain it is run on**: it stands a second chat up and makes chat A try to read
-  chat B's volume by host path, by traversal out of its own mount, by a bounded
-  search of its whole filesystem, and over the network at chat B's published
-  port with the server password every container holds. Every arm carries a
-  positive control, so a miss that happened for the wrong reason is reported as
-  such rather than counted as isolation. CI runs the same probes against
-  fixtures (`test-verify-checks.sh`), which proves the probes fire — it proves
-  nothing about podman.
+  brain it is run on**: it stands a second chat up and makes chat A go after
+  chat B three ways, one verdict each —
+  1. **the filesystem**, tried at B's host path, by relative traversal out of
+     A's own mount, and by a bounded `find` over A's whole filesystem compared
+     by content. That is one vector tried three ways, not three vectors: the
+     scan subsumes the other two, and no working runtime lets a relative path
+     leave a bind mount anyway.
+  2. **chat B's published port on the host**, with the server password every
+     container holds.
+  3. **the manager's own `/chat/<id>/<path>` proxy** — the shortest path of the
+     three, needing neither a mount bug nor a port guess (see the proxy note
+     below).
+
+  Every arm's positive control exercises *that arm's own precondition*: A must
+  read its own marker; A must reach **its own** published port over a host
+  address before B's silence at the same address means anything; A must reach
+  the gateway's `/api/health` before "the gateway did not serve B" means
+  anything. A miss whose route was never shown to work is reported as a SKIP,
+  never counted as isolation. CI runs the same probes against fixtures
+  (`test-verify-checks.sh`), which proves the probes fire — it proves nothing
+  about podman.
+- **The gateway proxy is not per-chat authorized** (issue #115). Every
+  container is handed the one gateway password, and `/chat/<id>/<path>`
+  authorizes no ids against callers — so a chat that can route to the gateway
+  can read or drive any other chat, and wake a stopped one to do it. Whether a
+  container *can* route there is what the probe's third arm measures; the fix
+  is a credential-model change and belongs to that issue.
 - **Egress is unrestricted (accepted risk, MVP).** The agent's shell can
   reach the internet — it needs the model APIs and GitHub anyway. Combined
   with repo-content injection this is a data-exfiltration path; the accepted
@@ -174,6 +200,11 @@ the app and the OpenCode desktop client both speak the full opencode API — and
 it is why the `/share` refusal has to come from the chat's own resolved config
 (`"share": "disabled"`, probed by `check-code-agents.sh --probe`) rather than
 from a blocked route here.
+
+The `<id>` is **not authorized against the caller**, and that is not deliberate
+— it is issue #115. Authentication here answers "do you know the password",
+never "which chat are you", and every chat container is handed that same
+password. Anything that can reach this gateway can therefore drive any chat.
 
 ## Operations quick reference
 

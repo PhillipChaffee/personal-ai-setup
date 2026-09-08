@@ -17,8 +17,13 @@ CONVENTION. The agent writes its own PR body, so it can leave any of this out
 and nothing in this repo stops it. What the stack does have is an OBSERVABLE:
 the manager's GitHub sweep reports `agent_authored` per pull request (true when
 the marker line below is in the body), so a convention that quietly stopped
-being followed is visible on /api/pulls instead of being assumed. Asserting
-that this FILE contains a sentence would prove nothing about any PR.
+being followed is visible on /api/pulls instead of being assumed.
+
+DO NOT RENAME THE MARKER LABEL without changing AGENT_PR_MARKER in
+scripts/vps/code-agent-manager.py. test-code-agent-manager.sh asserts the two
+still agree — a DRIFT-LOCK between two strings in this repo, not evidence about
+any PR. If they drift, every pull reads `agent_authored: false`, which looks
+exactly like a model that stopped writing the line.
 -->
 
 You are an autonomous coding agent running headless in a container on the

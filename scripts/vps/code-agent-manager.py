@@ -47,6 +47,15 @@ added cannot go undocumented the same way.
                                         path under it is forwarded verbatim,
                                         with no route allowlist of its own.
 
+The <id> in that last one is NOT authorized against the caller — there is no
+per-chat identity anywhere in this file. authed() answers "do you know the
+secret", the secret is one module-level PASSWORD, and run_container hands that
+same value to every chat container as OPENCODE_SERVER_PASSWORD. So any caller
+holding it can read or drive ANY chat, and wake a stopped one to do it. That
+is issue #115, which owns the fix (per-chat tokens, or not giving containers
+the gateway password at all); check-code-agents.sh --probe reports whether the
+gateway is reachable from inside a chat's network namespace.
+
 Environment (from /data/secrets.env via the systemd unit):
     OPENCODE_SERVER_PASSWORD  required — auth for this gateway AND the
                               per-chat opencode servers behind it
