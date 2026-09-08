@@ -71,6 +71,19 @@ THE ASSERTIONS, and what each catches that the others do not:
       are unchanged and the inventory is closed, which is enough to turn a
       silent rename into a review conversation and is not enough to tell you the
       page is up.
+  A9  no RETIRED_TERMS entry has come back into README.md. The one assertion
+      here that looks at HAND-WRITTEN prose, and the narrowest thing in the
+      file -- see check_retired_terms for what it does not do.
+
+WHAT NONE OF THIS COVERS, said plainly because a generated block invites the
+opposite assumption: A1-A8 verify the GENERATED regions and the tree they are
+rendered from. They cannot read the paragraph a human wrote beside them. This
+repo shipped a README bullet telling the reader to run OpenCode's `/connect`
+in the same section as a GENERATED row saying the bootstrap writes that
+credential itself, and every assertion above was green through it. A9 is the
+only answer offered, and it is a named-string denylist, not comprehension: it
+catches a retired term someone remembered to enrol, and nothing else. For prose
+in general the gate is review.
 
 NOT ASSERTED, deliberately: "every manifest id appears in the menu" and "the row
 count equals the manifest count". The renderer globs config/units/, so A1 already
@@ -168,6 +181,30 @@ PERMALINKS: Final[dict[str, str]] = {
 }
 
 PERMALINK_RE: Final = re.compile(r"^permalink:\s*(\S.*?)\s*$", re.MULTILINE)
+
+# A9's roster: a step a landed change DELETED, mapped to the reason, so the
+# failure message can name the commit that retired it rather than just refuse.
+# The key is matched as a plain substring, and it carries its backticks on
+# purpose -- `/connect` is the OpenCode command, /connectors and
+# /connect-service are directories, and only the backticked form is the claim.
+#
+# ENROLLING A TERM IS THE RETIRING CHANGE'S JOB, and that is this check's real
+# limit: it fires for terms someone remembered to add here. #106 wrote "there is
+# no /connect step any more" into three files without adding a fourth line here,
+# which is exactly how the README came to advertise the step anyway.
+RETIRED_TERMS: Final[dict[str, str]] = {
+    "`/connect`": ("#106 -- bootstrap-mac.sh writes ~/.local/share/opencode/auth.json "
+                   "itself via scripts/mac/opencode-auth.sh, and "
+                   "config/units/opencode.yaml says connect-zen is GONE, not demoted"),
+}
+
+# A9's scope, one file. README.md is the file this engine owns and the only one
+# where hand-written prose sits inches from a region rendered off the manifests,
+# so a stale term here contradicts the same document. A tree-wide sweep would
+# need an allowlist for the page that DOCUMENTS the retirement
+# (docs/setup/20-mac-setup.md's "There is no `/connect` step any more" is correct
+# prose and must stay), and that wart is not worth paying for one string.
+RETIRED_TERMS_DOC: Final = "README.md"
 
 # The menu's row order. `sorted()` over the tier STRINGS would give
 # base, default_on, opt_in by luck of the alphabet; this says it on purpose, so
@@ -337,6 +374,15 @@ def read_exact(path: Path) -> str:
     CRLF README identical to an LF render. This repo has shipped that exact bug
     once already -- see goose_template.read_exact, whose measurement is the
     reason this helper is copied rather than skipped.
+
+    IT HAS ITS OWN PROBES, and needed them. Every other helper in this file is
+    pinned by A1: change what a renderer emits and the committed bytes stop
+    matching. This one sits on BOTH sides of that comparison, so weakening it
+    weakens the comparison symmetrically and A1 stays green. Measured on this
+    branch: swap this body for `path.read_text()` and test-docs-lint.sh reported
+    21 probes, 22 ok, 0 failed -- fully green -- and a CRLF README then passed
+    check-docs.sh 9/0. The two "read_exact" probes in test-docs-lint.sh are what
+    close that.
     """
     return path.read_bytes().decode("utf-8")
 
@@ -429,18 +475,31 @@ def doc_target(runbook: str) -> str:
     NOT a style choice, and not laziness. units_lint's slugify() collapses runs
     of hyphens (`re.sub(r"-+", "-", ...)`); GitHub's does not, so a heading like
     `## 3. OpenCode -> Zen`, whose arrow leaves two spaces, anchors as
-    `#3-opencode--zen` on GitHub and as `#3-opencode-zen` in units_lint. THIRTEEN
-    of this catalog's anchors are wrong on GitHub for that reason (measured
-    across all 18 manifests; lychee agrees, and confirms `--` is what resolves).
-    Nothing had noticed, because no tracked .md linked to them -- units_lint is
-    the only reader, and it validates them against its own slugger.
+    `#3-opencode--zen` on GitHub and as `#3-opencode-zen` in units_lint. Nothing
+    had noticed, because no tracked .md linked to them -- units_lint is the only
+    reader, and it validates them against its own slugger.
 
-    Rendering the fragment here would put all thirteen into a file lychee DOES
-    read, turning somebody else's bug into this gate's red build. Rendering the
-    document is both correct and sufficient: the runbook is a document, and the
-    manifest keeps the precise section for `pai list`. Fixing slugify() and
-    re-anchoring thirteen references across seven manifests is its own change,
-    in its own PR, with its own negative test.
+    THE NUMBERS, because an earlier draft of this docstring stated one that was
+    six times the truth. Measured with lychee --offline over a generated file of
+    every anchored doc ref in config/units/:
+
+      49  anchored doc refs across all manifest fields (runbook, manual_steps,
+          notes, blockers), 36 of them distinct
+      12  of those 49 do not resolve on GitHub, 9 distinct anchors, spread
+          across 7 of the 18 manifests
+       8  manifests carry a fragment on the `runbook:` field, which is the ONLY
+          field this menu renders
+       2  of those 8 are among the broken ones (opencode, telegram-gateway)
+
+    So rendering the fragment here would add exactly TWO lychee errors to
+    README.md, not twelve and not thirteen: the other ten live in fields the menu
+    never touches. Two red links in the repo's front door is still the wrong
+    trade for a precision nobody asked for, and rendering the document is both
+    correct and sufficient -- the runbook is a document, and the manifest keeps
+    the precise section for `pai list`. But the reason is "two avoidable errors
+    in the one file everybody reads", not "thirteen". Fixing slugify() and
+    re-anchoring those 12 references across 7 manifests is its own change, in its
+    own PR, with its own negative test.
     """
     return runbook.partition("#")[0]
 
@@ -673,6 +732,20 @@ def check_permalinks() -> list[str]:
     files must still declare their registered permalink, AND no other file under
     docs/ may declare one at all. Without the reverse half, a fourth published
     URL appears with nobody having decided to publish it.
+
+    TWO KNOWN GAPS IN THE REVERSE HALF, neither of which any file in this tree
+    exercises today, both left as prose rather than code because code for a
+    hypothetical is code nobody can test:
+
+      * it rglobs docs/**.md only, so a `permalink:` minted in README.md, in
+        config/**/README.md or in vault-template/ is invisible to it. Publishing
+        from outside docs/ has never happened and would not work under the Pages
+        config, which is why the scope is docs/ and not the whole tree.
+      * PERMALINK_RE is applied to the whole file with no fence awareness, so a
+        `permalink: /x/` shown INSIDE a ```yaml example in some docs/*.md would
+        be reported as an unregistered published URL. units_lint.heading_slugs
+        carries the fence-tracking loop this would need; lift it here on the day
+        a doc needs to show a permalink rather than declare one.
     """
     out: list[str] = []
     for rel, want in sorted(PERMALINKS.items()):
@@ -697,6 +770,41 @@ def check_permalinks() -> list[str]:
                f"and no other doc declares one")]
 
 
+def check_retired_terms() -> list[str]:
+    """A9. The one assertion here that reads HAND-WRITTEN prose, and it is a denylist.
+
+    WHAT IT IS FOR. Every other assertion in this file checks a generated region
+    against the tree it is rendered from, and a generated region cannot see the
+    paragraph beside it. README.md shipped a bullet telling the reader to run
+    OpenCode's `/connect` -- a step #106 had already deleted -- in the same
+    section as a GENERATED row that says the bootstrap writes that credential
+    itself. A1-A8 were all green. This is the cheap gate that would have caught
+    it.
+
+    WHAT IT IS NOT. It does not read prose, compare prose to code, or know
+    anything about OpenCode. It greps README.md for strings a human enrolled in
+    RETIRED_TERMS, which means it only ever catches the retirement somebody
+    remembered to write down. Do not read a green A9 as "the README is true".
+
+    IT GREPS THE WHOLE FILE, generated regions included, and that is not an
+    oversight: a manifest `summary:` that reintroduced a retired term would be
+    just as wrong, and would arrive in the README through the menu.
+    """
+    lines = read_exact(REPO_ROOT / RETIRED_TERMS_DOC).splitlines()
+    out: list[str] = []
+    for term, because in sorted(RETIRED_TERMS.items()):
+        out += [
+            bad(f"{RETIRED_TERMS_DOC} line {n} still describes {term}, which was retired: "
+                f"{because}")
+            for n, line in enumerate(lines, 1)
+            if term in line
+        ]
+    if out:
+        return out
+    return [ok(f"no retired step is named anywhere in {RETIRED_TERMS_DOC} "
+               f"(RETIRED_TERMS holds {len(RETIRED_TERMS)})")]
+
+
 # EXTRA_CHECKS is where a region's own assertions live. A new region appends its
 # checks here; nothing else in this file has to know about them.
 EXTRA_CHECKS: Final[tuple[Callable[[], list[str]], ...]] = (
@@ -705,6 +813,7 @@ EXTRA_CHECKS: Final[tuple[Callable[[], list[str]], ...]] = (
     check_counts,
     check_cells,
     check_permalinks,
+    check_retired_terms,
 )
 
 

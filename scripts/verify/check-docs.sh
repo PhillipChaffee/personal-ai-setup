@@ -43,20 +43,42 @@ Usage: check-docs.sh [--check | --write] [--help]
             assertion in that file's docstring must hold. This is what CI runs.
   --write   re-render every region in place, then check. Run this after adding
             a unit manifest, a skill, a connector, or anything else the map
-            counts — and commit the result.
+            counts — and commit the result. Mutually exclusive with --check.
 
 Needs python3 with PyYAML (falls back to `uv run --with pyyaml`). Speaks to no
 network and needs no credentials. Exit: 0 ok, 1 findings, 2 usage/precondition.
 EOF
 }
 
-MODE="--check"
-case "${1:-}" in
-  -h|--help) usage; exit 0 ;;
-  ""|--check) ;;
-  --write) MODE="--write" ;;
-  *) die_usage "unknown argument: $1" ;;
-esac
+# A LOOP AND A SHIFT, exactly as check-units.sh does it, and here it is not
+# stylistic. This was `case "${1:-}"` with no loop: every argument after the
+# first was silently discarded, so `check-docs.sh --check --no-such-flag` exited
+# 0 with the bogus flag gone -- and, in the direction that costs something,
+# `check-docs.sh --write --check` performed the WRITE. This is the only gate in
+# scripts/verify/ with a mode that edits tracked files; it is the last one that
+# may drop a word of its own argv.
+#
+# AND MUTUALLY EXCLUSIVE, which check-units.sh does not need. Its two modes both
+# only read, so last-wins is harmless there. Here "last wins" would make whether
+# README.md gets rewritten depend on which order two flags were typed in, and
+# docs_lint.py's own parser already refuses the pair
+# (add_mutually_exclusive_group); the wrapper says the same thing rather than
+# quietly picking one.
+MODE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --check|--write)
+      if [ -n "$MODE" ] && [ "$MODE" != "$1" ]; then
+        die_usage "--check and --write are mutually exclusive (got $MODE then $1)"
+      fi
+      MODE="$1"
+      ;;
+    *) die_usage "unknown argument: $1" ;;
+  esac
+  shift
+done
+[ -n "$MODE" ] || MODE="--check"
 
 # ---- python runner ----------------------------------------------------------
 # lib.sh's py_runner. The assignment is deliberate: `read -r -a PY <<<"$(...)"`

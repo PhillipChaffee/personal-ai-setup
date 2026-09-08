@@ -45,7 +45,7 @@ the menu below is generated from:
 Excluding a unit that something else still needs is refused with exit 2, rather
 than half-installed.
 
-**Three things after the bootstrap are interactive on purpose.** All three are
+**Two things after the bootstrap are interactive on purpose.** Both are
 credentials or consent that no script may invent on your behalf:
 
 - **Your API keys** — `scripts/mac/keychain-secrets.sh` prompts for each one
@@ -53,9 +53,12 @@ credentials or consent that no script may invent on your behalf:
   `~/.zshrc`.
 - **The Tailscale sign-in** — you sign the Mac into your own tailnet, from the
   app the bootstrap installed.
-- **OpenCode's `/connect`** — run `opencode` in any project, type `/connect`,
-  pick OpenCode Zen and paste the key. The bootstrap only prints the
-  instruction; it never types it for you.
+
+OpenCode's Zen credential is *not* a third one: the bootstrap writes
+`~/.local/share/opencode/auth.json` itself, from `$OPENCODE_ZEN_API_KEY`. If the
+first bullet above is where you set that key for the first time, then the
+bootstrap ran before the key existed — open a new terminal and re-run either the
+bootstrap or `scripts/mac/opencode-auth.sh` on its own.
 
 **The brain is different: it cannot be made unattended, by design.** It has five
 interactive points, and every one of them is key material this repo deliberately
@@ -154,7 +157,7 @@ Siri Shortcut ─────┤            OpenCode CLI (coding, local)      �
 | **Goose** (hub agent, on the brain) | General-purpose agent under Linux Foundation / AAIF governance — explicitly "not just for code": research, writing, automation, personal admin. MCP-native extensions, built-in Memory, custom providers for Zen and Together, recipes + built-in cron scheduler. Pinned to stable 1.x (2.0 is in RC churn). |
 | **Goose Desktop** (Mac) | Full desktop UI, attached to the brain as a remote client over goose's Agent Client Protocol ("remote ACP" in the diagram) — same sessions as the phone. Also hosts the Scheduler UI (pause / run-now / per-run history). |
 | **goose CLI** (Mac) | Local offline fallback hub when the brain is unreachable. |
-| **OpenCode CLI** (Mac) | The daily coding driver — dedicated open-source coding agent with first-party Zen integration (`/connect`), per-agent cheap-model routing, and the same MCP servers. Runs locally; coding sessions don't need the brain. |
+| **OpenCode CLI** (Mac) | The daily coding driver — dedicated open-source coding agent with first-party Zen integration (the credential the bootstrap writes), per-agent cheap-model routing, and the same MCP servers. Runs locally; coding sessions don't need the brain. |
 | **Code agents** (on the brain) | Claude Code-style autonomous coding chats: one container per chat (idle chats spin down, volumes persist), live streaming + permission asks to your devices, any model per chat, PRs as the deliverable. Managed by `code-agent-manager` behind the tailnet on port 4300. See [`docs/code-agents.md`](docs/code-agents.md). |
 | **Goose iOS app** | Primary phone surface: thin remote client tunneling to the brain (experimental; fallback chain documented in `docs/setup/40-phone-setup.md`). |
 | **Pal Chat** (iPhone) | BYOK backup chat straight to Together — works even if the brain is down. Backup precisely because its history is device-local. |

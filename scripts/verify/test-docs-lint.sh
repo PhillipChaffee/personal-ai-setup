@@ -1,14 +1,27 @@
 #!/usr/bin/env bash
 # test-docs-lint.sh — the negative harness for check-docs.sh / docs_lint.py.
 #
-# EVERY ASSERTION IN docs_lint.py IS FED A BROKEN INPUT HERE ONCE, and the probe
-# greps the MESSAGE rather than the exit code. That distinction is the whole
-# point: check-docs.sh exits non-zero for a missing PyYAML, for a stale region,
-# for a dangling annotation and for a traceback, so an exit-code-only probe goes
-# green with the assertion it claims to test DELETED. This repo has shipped a
-# "byte for byte" check that passed on a CRLF file and a differential that
-# sorted both sides; the counter at the bottom of this file exists because it
-# has also shipped a harness that skipped its own probes and exited 0.
+# EVERY ASSERTION IN docs_lint.py (A1-A9) IS FED A BROKEN INPUT HERE ONCE, and
+# the probe greps the MESSAGE rather than the exit code. That distinction is the
+# whole point: check-docs.sh exits non-zero for a missing PyYAML, for a stale
+# region, for a dangling annotation and for a traceback, so an exit-code-only
+# probe goes green with the assertion it claims to test DELETED. This repo has
+# shipped a "byte for byte" check that passed on a CRLF file and a differential
+# that sorted both sides; the counter at the bottom of this file exists because
+# it has also shipped a harness that skipped its own probes and exited 0.
+#
+# THE RENDERER'S HELPERS ARE NOT PROBED SEPARATELY, and do not need to be: A1
+# compares committed bytes against a fresh render, so changing what _prefix,
+# note_for, short_check or installer_cell emits makes A1 red on its own. ONE
+# helper escapes that, and it has its own probes below -- read_exact sits on
+# BOTH sides of A1's comparison, so weakening it weakens the comparison
+# symmetrically. Measured before those probes existed: swapping its body for
+# `path.read_text()` left this harness at 21 probes, 22 ok, 0 failed.
+#
+# THE ARGUMENT PARSER IS PROBED HERE TOO, not only in test-pai.sh. check-docs.sh
+# is the one gate in scripts/verify/ with a mode that edits tracked files, and
+# the probe that proves `--write --check` writes NOTHING has to run against a
+# throwaway tree.
 #
 # HOW A PROBE WORKS. A pristine copy of the working tree is made once, and every
 # probe starts from a fresh copy OF THAT COPY, mutates exactly one thing, and
@@ -52,7 +65,7 @@ trap 'cleanup; exit 130' INT TERM HUP
 
 # The count is asserted at the bottom. Raise it in the same commit that adds a
 # probe; a probe that stops running takes this number with it.
-EXPECTED_PROBES=21
+EXPECTED_PROBES=28
 PROBES=0
 probe() {
   PROBES=$((PROBES + 1))
@@ -281,6 +294,19 @@ run_docs
 expect_fail "A3: a new config/ subdirectory that no map line covers is caught" \
   "config/prompts is not on the repo map"
 
+# TWO PROBES BECAUSE COVERED_DIRS HAS FOUR ELEMENTS. The one above mutates
+# config/, so it exercises only the "config" entry: shrinking COVERED_DIRS to
+# ("config",) -- dropping the repo root, docs/ and scripts/ -- left this harness
+# fully green, and nothing greps the PASS line's scope string. This one is at
+# the repo ROOT, which is the "" entry and the element most likely to be
+# "simplified" away because it is the one that does not look like a directory.
+fresh
+mkdir -p "$TREE/zz-probe-dir"
+printf 'placeholder\n' >"$TREE/zz-probe-dir/example.md"
+run_docs
+expect_fail "A3: a new directory at the REPO ROOT that no map line covers is caught" \
+  "zz-probe-dir is not on the repo map"
+
 # ---- A4: a hardcoded count ---------------------------------------------------
 # The "11 skills" regression, re-created: replace the {n} placeholder with the
 # number that happens to be right today. A1 alone would then compare a
@@ -364,6 +390,89 @@ subst "$TREE/docs/roadmap.md" "# Roadmap" $'---\npermalink: /roadmap/\n---\n\n# 
 run_docs
 expect_fail "A8: a NEW published URL nobody registered is caught too" \
   "which is a published URL nobody registered"
+
+# ---- A9: a retired step, back in the README's hand-written prose --------------
+# THE ONE ASSERTION ABOUT PROSE, and the reason it exists is this exact edit.
+# The README shipped a bullet telling the reader to run OpenCode's `/connect` —
+# deleted by #106 — in the same section as a GENERATED row saying the bootstrap
+# writes that credential itself, and A1-A8 were green through it, because a
+# rendered region cannot see the paragraph beside it.
+fresh
+subst "$TREE/README.md" \
+  '- **The Tailscale sign-in**' \
+  $'- **OpenCode\'s `/connect`** — run `opencode`, type `/connect`, paste the key.\n- **The Tailscale sign-in**'
+run_docs
+# shellcheck disable=SC2016  # the backticks are Markdown code spans in the
+# message A9 prints, not command substitution; single quotes keep them literal.
+expect_fail "A9: the retired /connect step, put back into the README's prose, is caught" \
+  'still describes `/connect`, which was retired'
+
+# ---- read_exact: the byte comparison really is a byte comparison --------------
+# NOT COVERED BY A1, which is the whole point: read_exact is on BOTH sides of
+# A1's `==`, so replacing it with Path.read_text() (universal newlines) makes a
+# CRLF file compare equal to an LF render and every probe above stays green.
+# Measured on this branch before these two existed: 21 probes, 22 ok, 0 failed
+# with the mutation in place, and a CRLF README passing check-docs.sh 9/0.
+#
+# Half one: CR inside the REGION, markers untouched, so A5 passes and A1 is the
+# assertion that has to notice. This is the claim in read_exact's docstring.
+fresh
+"${PY[@]}" - "$TREE/README.md" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+data = path.read_bytes()
+begin = b"<!-- pai-docs:begin repo-map -->\n"
+end = b"<!-- pai-docs:end repo-map -->"
+# .index raises if the markers moved, which aborts the run under `set -e` rather
+# than leaving a probe testing an unmutated file. Same contract as `subst`.
+start = data.index(begin) + len(begin)
+stop = data.index(end)
+path.write_bytes(data[:start] + data[start:stop].replace(b"\n", b"\r\n") + data[stop:])
+PY
+run_docs
+expect_fail "read_exact: a CR inside the region makes A1 STALE — it compares BYTES" \
+  "README.md region 'repo-map' is STALE"
+
+# Half two: the whole file as CRLF, which is the shape a Windows editor or a
+# core.autocrlf checkout actually produces. A5 is what catches this one, because
+# the marker's own line ending is part of the file.
+fresh
+"${PY[@]}" - "$TREE/README.md" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+data = path.read_bytes()
+path.write_bytes(data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+PY
+run_docs
+expect_fail "read_exact: a wholly CRLF README is refused, not silently normalised" \
+  "must be alone on its own line"
+
+# ---- check-docs.sh's own argv ------------------------------------------------
+# This was `case "${1:-}"` with no loop and no shift, so every word after the
+# first was silently discarded: `--check --no-such-flag` exited 0 with the bogus
+# flag gone, and `--write --check` performed the WRITE. The tree is made STALE
+# first, so "README.md is byte-identical afterwards" is a claim about a write
+# that was REFUSED, not about a write that had nothing to do.
+fresh
+mkdir -p "$TREE/config/skills/zz-probe"
+printf '# probe skill\n' >"$TREE/config/skills/zz-probe/SKILL.md"
+BEFORE="$(cksum <"$TREE/README.md")"
+run_docs --write --check
+AFTER="$(cksum <"$TREE/README.md")"
+expect_fail "argv: --write --check is refused instead of quietly writing" \
+  "--check and --write are mutually exclusive"
+expect_same "argv: ...and README.md is untouched, though --write had real work to do" \
+  "$BEFORE" "$AFTER"
+
+# The read-only half of the same bug.
+fresh
+run_docs --check --no-such-flag
+expect_fail "argv: an unknown flag AFTER a valid one is still an unknown flag" \
+  "unknown argument: --no-such-flag"
 
 # ---- the wrapper's died-without-a-verdict rule -------------------------------
 # A traceback exits non-zero with zero FAIL lines, and `finish` would call that a

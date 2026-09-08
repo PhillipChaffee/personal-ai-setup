@@ -2003,23 +2003,29 @@ fi
 # NAMED, NOT NUMBERED. The section numbers above are claimed in landing order
 # and three open PRs each planned "a new section 10"; a name cannot collide.
 #
-# TWO ASSERTIONS AND NO MORE, on purpose. scripts/verify/docs_lint.py lives on
+# THREE ASSERTIONS AND NO MORE, on purpose. scripts/verify/docs_lint.py lives on
 # the coverage-exempt side of .coveragerc (`omit = scripts/verify/*`) and has
 # its own harness, scripts/verify/test-docs-lint.sh, which feeds a broken input
 # to every one of its assertions. What is NOT covered there is the thing this
 # file owns: that cli.sh's `docs)` arm reaches it at all, and that an unknown
 # flag comes back as check-docs.sh's own usage error rather than as a word this
-# dispatcher silently drops. Both run through bin/pai and both cost ZERO
-# coverage -- cli.sh execs a plain python3 under py_runner, outside $PAI_PY,
+# dispatcher silently drops. All three run through bin/pai and all three cost
+# ZERO coverage -- cli.sh execs a plain python3 under py_runner, outside $PAI_PY,
 # exactly as the `bin/pai list` assertion in section 7 notes.
 #
-# NEITHER OF THESE MAY BE `pai docs --write`. That is a writing verb, and a test
-# that ran it would rewrite the checkout it is running in.
+# NONE OF THESE MAY BE `pai docs --write`. That is a writing verb, and a test
+# that ran it would rewrite the checkout it is running in. The probe that proves
+# `--write --check` writes nothing lives in test-docs-lint.sh, which runs against
+# a throwaway copy of the tree and can afford to be wrong.
+#
+# ONE ARGUMENT AND $'\n', NOT TWO ARGUMENTS. lib.sh's `fail() { echo "FAIL  $1"; }`
+# prints $1 and drops the rest, so a two-argument call silently loses half of a
+# diagnostic that only ever appears when something is already broken.
 if "$REPO_ROOT/bin/pai" docs >/dev/null 2>&1; then
   pass "bin/pai docs exits 0: the generated regions in README.md are current"
 else
-  fail "bin/pai docs did not exit 0 — README.md's generated regions are stale," \
-       "or the docs) arm does not reach scripts/verify/check-docs.sh"
+  fail "bin/pai docs did not exit 0 — README.md's generated regions are stale,"$'\n'\
+"      or the docs) arm does not reach scripts/verify/check-docs.sh"
 fi
 
 DOCS_RC=0
@@ -2028,6 +2034,20 @@ if [ "$DOCS_RC" -eq 2 ] && printf '%s\n' "$DOCS_OUT" | grep -qF "check-docs.sh: 
   pass "bin/pai docs forwards flags verbatim: an unknown one is check-docs.sh's exit 2"
 else
   fail "bin/pai docs --no-such-flag gave exit $DOCS_RC:"$'\n'"$DOCS_OUT"
+fi
+
+# THE SAME BOGUS FLAG, SECOND. Not a duplicate of the probe above: check-docs.sh
+# parsed `case "${1:-}"` with no loop and no shift, so it read argument one and
+# discarded the rest -- `pai docs --no-such-flag` exited 2 while
+# `pai docs --check --no-such-flag` exited 0 with the bogus word gone. A probe
+# that only ever passes ONE argument cannot tell those two apart, which is why
+# this one passes two.
+DOCS2_RC=0
+DOCS2_OUT="$("$REPO_ROOT/bin/pai" docs --check --no-such-flag 2>&1)" || DOCS2_RC=$?
+if [ "$DOCS2_RC" -eq 2 ] && printf '%s\n' "$DOCS2_OUT" | grep -qF "check-docs.sh: unknown argument"; then
+  pass "bin/pai docs --check --no-such-flag is exit 2 too: no argument is dropped"
+else
+  fail "bin/pai docs --check --no-such-flag gave exit $DOCS2_RC:"$'\n'"$DOCS2_OUT"
 fi
 
 # Nothing sections 8 and 9 spawned may survive them. The trap at the top of this

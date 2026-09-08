@@ -48,8 +48,9 @@ Notes on reading the table:
   Treat it like `zen-anthropic`: ~30-day retention, hard rule 2 applies. (OpenCode
   reaches Zen's GPT models natively, and OpenAI's open-weight `gpt-oss` models are
   already on `together`.)
-- "OpenCode → Zen" rows run in the OpenCode CLI (your coding driver), connected to Zen via
-  `/connect`. They never pass through Goose or the brain.
+- "OpenCode → Zen" rows run in the OpenCode CLI (your coding driver), connected to Zen by
+  the credential `bootstrap-mac.sh` writes to `~/.local/share/opencode/auth.json`. They
+  never pass through Goose or the brain.
 - The **code agents** row is the one deliberately unpinned job class: model choice is
   per-chat at kick-off (`docs/code-agents.md`), defaulting to `deepseek-v4-flash`. The
   hard rules still bind — the session manager refuses zen-free models for any repo not
