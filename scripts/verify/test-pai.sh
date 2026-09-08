@@ -2546,9 +2546,11 @@ fi
 # is read by no shell ever again. Nothing tells the user. A hardlink loses the
 # same way, one inode at a time.
 #
-# ALL NINE ARMS BELOW GO RED against scripts/mac/keychain-secrets.sh as this PR
-# first wrote it. That was run: one `git checkout` of that one file, one harness
-# run, nine failures. Each has its own reason:
+# NINE OF THE TEN ARMS BELOW GO RED against scripts/mac/keychain-secrets.sh as
+# this PR first wrote it. That was run: one `git checkout` of that one file, one
+# harness run, nine failures. The tenth (a link to a directory) is about the
+# refusal's wording, not the link bug, and names its own discriminator where it
+# stands. Each of the nine has its own reason:
 #   symlink        the link is gone and the dotfiles copy is unchanged
 #   through it     the block is in ~/.zshrc, not in the dotfiles repo
 #   its mode       755 (a symlink's OWN lstat mode, which BSD `stat -f %A`
@@ -2725,6 +2727,36 @@ if [ "$KC_RC" = "2" ] && printf '%s\n' "$KC_OUT" | grep -qF "never reaches a fil
 else
   fail "a symlink loop was not refused (exit $KC_RC):"$'\n'"$KC_OUT"
 fi
+
+# --- a symlink to something that is not a file ---
+# THE ONE ARM HERE THAT IS NOT ABOUT THE PRE-FIX SCRIPT. A ~/.zshrc pointing at
+# a stale directory already refused and already wrote nothing, but it refused by
+# falling through to the marker counts, where `grep -cF` on a directory errors,
+# `|| true` swallows it, and the count is the empty string -- so the user was
+# told " begin markers (want exactly 1)". Nothing in install_block writes to
+# anything but a regular file, so the refusal says that. This arm asserts the
+# MESSAGE, which is the only thing that changed; delete the `[ -f "$target" ]`
+# guard and it goes red on the empty-count text while the exit code stays 2.
+KC_NOTFILE="$KC_DOTFILES/not-a-file"
+# Separate calls so the flags say what each one is for: $ZSHRC is a link the
+# previous arm left behind (-f removes the link, never its target), $KC_NOTFILE
+# is a directory this arm rebuilds.
+rm -f "$ZSHRC"
+rm -rf "$KC_NOTFILE"
+mkdir -p "$KC_NOTFILE"
+printf 'keepme\n' >"$KC_NOTFILE/inside"
+ln -s "$KC_NOTFILE" "$ZSHRC"
+kc_run
+if [ "$KC_RC" != "2" ]; then
+  fail "a link to a directory was not refused (exit $KC_RC):"$'\n'"$KC_OUT"
+elif ! printf '%s\n' "$KC_OUT" | grep -qF "is not a regular file"; then
+  fail "the refusal did not say what is wrong:"$'\n'"$KC_OUT"
+elif [ ! -L "$ZSHRC" ] || [ "$(cat "$KC_NOTFILE/inside")" != "keepme" ]; then
+  fail "the refusal disturbed the link or the directory behind it"
+else
+  pass "a link to a directory is refused by name, not by an empty marker count"
+fi
+rm -rf "$KC_NOTFILE"
 
 # Back to a plain file: everything below writes through $ZSHRC and must not be
 # reading a link this section happened to leave behind.

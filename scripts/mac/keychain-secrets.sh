@@ -376,6 +376,11 @@ install_block() {
   # would become a fresh writable regular file holding the block, and the file
   # the user actually edits and commits would never change again.
   if [ -e "$target" ]; then
+    # A link to a DIRECTORY, or to a device node, reaches the marker counts
+    # below with an empty count from a `grep` that errored, and refuses with
+    # " begin markers (want exactly 1)" -- safe, and unreadable. Nothing here
+    # writes to anything but a regular file, so say that instead.
+    [ -f "$target" ] || bail "$target is not a regular file"
     [ -w "$target" ] || bail "$target is not writable"
     [ "$(link_count "$target")" = "1" ] || in_place=1
   else

@@ -149,12 +149,16 @@ the manifest-side contract is in
 
 - **Mac** — everything in the macOS Keychain via `scripts/mac/keychain-secrets.sh`
   (wraps `security add-generic-password` / `find-generic-password`; the store prompt
-  never puts the secret in shell history). It asks only for the secrets the units you
-  installed actually keep there — `pai secrets --host mac` prints that roster, names and
-  prompts only — and it regenerates the marked export block in `~/.zshrc` in place,
-  leaving every line outside the markers untouched. Goose itself keeps provider keys in
-  the Keychain by default — **never set `GOOSE_DISABLE_KEYRING`** on the Mac, which would
-  downgrade to a plaintext `secrets.yaml`.
+  never puts the secret in shell history). It asks for the secrets kept there by the
+  units you *name* with `--units`, defaulting to `base` + `default_on`; the same roster,
+  names and prompts only, is what `pai secrets --host mac` prints — read "The bare form
+  is not an audit of your Keychain" below before treating it as one. It then regenerates
+  the marked export block in `~/.zshrc` in place, leaving every line outside the markers
+  untouched. Where `~/.zshrc` is a symlink into a dotfiles repo it writes *through* the
+  link and takes the mode from the file at the end of it, so a file naming every
+  credential on the machine never lands at the symlink's own 0755. Goose itself keeps
+  provider keys in the Keychain by default — **never set `GOOSE_DISABLE_KEYRING`** on the
+  Mac, which would downgrade to a plaintext `secrets.yaml`.
 - **Brain** — headless Linux has no keyring, so stack-wide secrets live in
   `/data/secrets.env`, `chmod 600`, owned by `agent`, on the encrypted volume, injected
   via systemd `EnvironmentFile`. The variable roster (names only) is
