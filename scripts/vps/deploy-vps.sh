@@ -8,14 +8,50 @@
 # goose-serve, and re-registers the schedule roster.
 set -euo pipefail
 
-REPO_DIR="/home/agent/personal-ai-setup"
-SECRETS_FILE="/data/secrets.env"
+# --------------------------------------------------------------- the seam --
+# PAI_* — TESTING ONLY. Never set any of these on a real brain.
+#
+# This script's whole job is side effects on a host, and until this block
+# existed nothing could execute a line of it: seven absolute roots were baked
+# in as literals. They are now overridable, so scripts/verify/test-deploy-vps.sh
+# can run the entire deploy inside a throwaway directory against
+# scripts/verify/fake-host.sh. UNSET, every one of them expands to exactly the
+# literal it replaced — a real deploy is unchanged.
+#
+# The gate below is the interlock, and it is three independent refusals
+# (fake-exec.sh:28-34's rule, which test-base-install.sh A15/A16 already prove
+# fires on the first routed call):
+#   1. PAI_FAKE_ROOT set  -> every root must be lexically under it,
+#   2. ...including $HOME, because the migration writes ~/.config/goose,
+#      ~/.local/share/goose and ~/.local/state/goose whether or not any other
+#      root moved, and
+#   3. any PAI_* root set WITHOUT PAI_FAKE_ROOT is refused outright, so a stray
+#      `export PAI_DATA_ROOT=/tmp/x` in a shell profile cannot half-contain a
+#      real deploy.
+PAI_FAKE_ROOT="${PAI_FAKE_ROOT:-}"
+REPO_DIR="${PAI_REPO_DIR:-/home/agent/personal-ai-setup}"
+DATA_ROOT="${PAI_DATA_ROOT:-/data}"
+SYSTEMD_DIR="${PAI_SYSTEMD_DIR:-/etc/systemd/system}"
+# Hoisted from its old home just above the `-x` probe further down. It is a
+# plain assignment with no command substitution, so moving it above the
+# preflight changes nothing about what runs — but the containment gate has to
+# see it, and a root the gate cannot see is a root that is not contained.
+GOOSE_BIN="${PAI_GOOSE_BIN:-/home/agent/.local/bin/goose}"
+# /etc/subuid is READ, never written — but it decides whether `usermod
+# --add-subuids` runs at all, so leaving it pointing at the real file would
+# make the code-agents containment claim false on any Linux box that already
+# happens to carry an `agent:` line.
+SUBUID_FILE="${PAI_SUBUID_FILE:-/etc/subuid}"
+
+SECRETS_FILE="$DATA_ROOT/secrets.env"
 # GOOSE_PATH_ROOT: one absolute root holding goose's config/, data/ AND
 # state/ (goose-serve.service sets the same value). LEGACY_DATA_DIR is where
 # data/ alone used to live, before state/ — the llm_request logs — was found
 # sitting on the unencrypted root disk.
-GOOSE_ROOT="/data/goose"
-LEGACY_DATA_DIR="/data/goose-data"
+GOOSE_ROOT="$DATA_ROOT/goose"
+LEGACY_DATA_DIR="$DATA_ROOT/goose-data"
+WMCP_ROOT="$DATA_ROOT/workspace-mcp"
+CODE_AGENTS_ROOT="$DATA_ROOT/code-agents"
 GOOSE_CONFIG_DIR="$HOME/.config/goose"
 SERVE_PORT=3284
 
@@ -44,12 +80,31 @@ REPO_URL="${1:-${REPO_URL:-}}"
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
 
+# --------------------------------------------------- seam containment gate
+# BEFORE the preflight, on purpose: the preflight already probes $DATA_ROOT and
+# reads $SECRETS_FILE, so a gate placed after it would have let a half-set
+# environment touch the real host before refusing.
+if [[ -n "$PAI_FAKE_ROOT" ]]; then
+  for pai_root in "$REPO_DIR" "$DATA_ROOT" "$SYSTEMD_DIR" "$GOOSE_BIN" "$SUBUID_FILE" "$HOME"; do
+    case "$pai_root" in
+      "$PAI_FAKE_ROOT"/*) ;;
+      *) fail "PAI_FAKE_ROOT is set but '$pai_root' is not under it.
+       Refusing to run: a half-contained test seam writes to the real host." ;;
+    esac
+  done
+  unset pai_root
+elif [[ -n "${PAI_REPO_DIR:-}${PAI_DATA_ROOT:-}${PAI_SYSTEMD_DIR:-}${PAI_GOOSE_BIN:-}${PAI_SUBUID_FILE:-}" ]]; then
+  fail "a PAI_* root is set without PAI_FAKE_ROOT.
+       These variables exist only for scripts/verify/test-deploy-vps.sh, and
+       they are refused unless the whole tree is contained under one root."
+fi
+
 # ---------------------------------------------------------------- preflight
 [[ $(id -u) -ne 0 ]] || fail "run as the 'agent' user, not root (the script sudos only where needed)."
 [[ "$(id -un)" == "agent" ]] || echo "WARNING: expected to run as 'agent', running as '$(id -un)'." >&2
 
-if ! mountpoint -q /data; then
-  fail "/data is not mounted. First boot: run 'sudo $REPO_DIR/scripts/vps/luks-setup.sh --device <path>'.
+if ! mountpoint -q "$DATA_ROOT"; then
+  fail "$DATA_ROOT is not mounted. First boot: run 'sudo $REPO_DIR/scripts/vps/luks-setup.sh --device <path>'.
        After a reboot: run 'sudo $REPO_DIR/scripts/vps/luks-unlock.sh'."
 fi
 
@@ -85,7 +140,6 @@ for var in GOOGLE_OAUTH_CLIENT_ID GOOGLE_OAUTH_CLIENT_SECRET; do
   [[ -n "${!var:-}" ]] || echo "WARNING: $var is empty — the Gmail/Calendar extension and the admin recipes will fail until it is set (docs/setup/30-google-oauth.md)." >&2
 done
 
-GOOSE_BIN="/home/agent/.local/bin/goose"
 [[ -x "$GOOSE_BIN" ]] || command -v goose >/dev/null || \
   fail "goose CLI not found at $GOOSE_BIN — cloud-init should have installed it (infra/terraform/templates/cloud-init.yaml.tftpl). Reinstall with the pinned installer from that file."
 command -v tailscale >/dev/null || fail "tailscale CLI not found — cloud-init should have installed and joined the tailnet."
@@ -284,37 +338,37 @@ fi
 # (the upstream default as of 2026-08-20). Point that at the encrypted
 # volume so the tokens live on /data, never the unencrypted root disk.
 # Verify after the first auth: if token files appear elsewhere, adjust here.
-echo "==> Linking ~/.google_workspace_mcp -> /data/workspace-mcp"
+echo "==> Linking ~/.google_workspace_mcp -> $WMCP_ROOT"
 WMCP_LINK="$HOME/.google_workspace_mcp"
 if [[ -d "$WMCP_LINK" && ! -L "$WMCP_LINK" ]]; then
   echo "    migrating existing $WMCP_LINK onto the encrypted volume"
-  mkdir -p /data/workspace-mcp
-  cp -an "$WMCP_LINK/." /data/workspace-mcp/
+  mkdir -p "$WMCP_ROOT"
+  cp -an "$WMCP_LINK/." "$WMCP_ROOT/"
   rm -rf "$WMCP_LINK"
 fi
-mkdir -p /data/workspace-mcp
+mkdir -p "$WMCP_ROOT"
 # -T: the block above removes a real directory here, so this should always be
 # a plain link creation — if it is not, fail loudly rather than nesting the
 # link inside a surviving token directory on the root disk.
-ln -sfnT /data/workspace-mcp "$WMCP_LINK" || fail "$WMCP_LINK is still a real directory — the OAuth tokens did not move to /data/workspace-mcp.
+ln -sfnT "$WMCP_ROOT" "$WMCP_LINK" || fail "$WMCP_LINK is still a real directory — the OAuth tokens did not move to $WMCP_ROOT.
        Move it aside by hand and re-run."
 
 # ------------------------------------------------------------- systemd
 echo "==> Installing systemd units (sudo)"
-sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/goose-serve.service" /etc/systemd/system/goose-serve.service
+sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/goose-serve.service" "$SYSTEMD_DIR/goose-serve.service"
 # The scheduler-fallback units are installed so the one-command flip in
 # docs/automations.md works — but they are NEVER enabled here. Timers are
 # renamed to goose-recipe@<id>.timer to match the template service instance.
-sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/fallback/goose-recipe@.service" "/etc/systemd/system/goose-recipe@.service"
+sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/fallback/goose-recipe@.service" "$SYSTEMD_DIR/goose-recipe@.service"
 for t in morning-brief inbox-triage weekly-review health-followups; do
-  sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/fallback/$t.timer" "/etc/systemd/system/goose-recipe@$t.timer"
+  sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/fallback/$t.timer" "$SYSTEMD_DIR/goose-recipe@$t.timer"
 done
 sudo systemctl daemon-reload
-sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/tls-cert-renew.service" /etc/systemd/system/tls-cert-renew.service
-sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/tls-cert-renew.timer" /etc/systemd/system/tls-cert-renew.timer
+sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/tls-cert-renew.service" "$SYSTEMD_DIR/tls-cert-renew.service"
+sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/tls-cert-renew.timer" "$SYSTEMD_DIR/tls-cert-renew.timer"
 sudo systemctl enable --now tls-cert-renew.timer >/dev/null
-sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/goose-telegram-gateway.service" /etc/systemd/system/goose-telegram-gateway.service
-if grep -q '^TELEGRAM_BOT_TOKEN=..*' /data/secrets.env 2>/dev/null; then
+sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/goose-telegram-gateway.service" "$SYSTEMD_DIR/goose-telegram-gateway.service"
+if grep -q '^TELEGRAM_BOT_TOKEN=..*' "$SECRETS_FILE" 2>/dev/null; then
   sudo systemctl enable --now goose-telegram-gateway.service >/dev/null
   echo "    telegram gateway: enabled (token present)"
 else
@@ -333,19 +387,19 @@ if ! command -v podman >/dev/null 2>&1; then
 fi
 # Rootless podman needs subordinate id ranges for agent, and the system unit
 # needs agent's user runtime dir (/run/user/1000) kept alive by linger.
-grep -q '^agent:' /etc/subuid 2>/dev/null || \
+grep -q '^agent:' "$SUBUID_FILE" 2>/dev/null || \
   sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 agent
 sudo loginctl enable-linger agent >/dev/null 2>&1 || true
 echo "    building code-agent image (pulls the OpenCode base on first run)"
 podman build -q -t code-agent:local \
   -f "$REPO_DIR/config/code-agents/Containerfile" \
   "$REPO_DIR/config/code-agents" >/dev/null
-mkdir -p /data/code-agents/chats
-install_template "$REPO_DIR/config/code-agents/repos.example.json" /data/code-agents/repos.json
-sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/code-agent-manager.service" /etc/systemd/system/code-agent-manager.service
+mkdir -p "$CODE_AGENTS_ROOT/chats"
+install_template "$REPO_DIR/config/code-agents/repos.example.json" "$CODE_AGENTS_ROOT/repos.json"
+sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/code-agent-manager.service" "$SYSTEMD_DIR/code-agent-manager.service"
 sudo systemctl daemon-reload
-if grep -q '^OPENCODE_SERVER_PASSWORD=..*' /data/secrets.env 2>/dev/null && \
-   grep -q '^GITHUB_CODE_AGENT_PAT=..*' /data/secrets.env 2>/dev/null; then
+if grep -q '^OPENCODE_SERVER_PASSWORD=..*' "$SECRETS_FILE" 2>/dev/null && \
+   grep -q '^GITHUB_CODE_AGENT_PAT=..*' "$SECRETS_FILE" 2>/dev/null; then
   sudo systemctl enable code-agent-manager.service >/dev/null
   # RESTART, not `enable --now`. `--now` means `start`, which is a NO-OP on a
   # unit that is already running — so every deploy after the first one shipped
