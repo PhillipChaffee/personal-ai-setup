@@ -1761,6 +1761,17 @@ else
   fail "units projection probe failed:"$'\n'"$OUT"
 fi
 
+# The dispatch arm itself, against the REAL catalogue. The probe above calls
+# projection() directly, so without this the `units` case in main() is the one
+# statement in doctor.py nothing executes — and an arm that is never dispatched
+# is an arm that can be deleted with every assertion still green.
+UNITS_OUT="$(pai units "$CLEAN" --field id)"
+if printf '%s\n' "$UNITS_OUT" | grep -qx "base-goose"; then
+  pass "pai units reaches the dispatch and reads the shipped catalogue"
+else
+  fail "pai units --field id did not list base-goose:"$'\n'"$UNITS_OUT"
+fi
+
 # --- 10b. `pai verify` runs what the manifests name, in a miniature repo ------
 # cli.sh and doctor.py both resolve the repo root from their own path, so a
 # tree with the same four files in the same four places IS a repo as far as they

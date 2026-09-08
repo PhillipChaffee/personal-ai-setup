@@ -103,8 +103,15 @@ installer:                        # or null (see the table above)
   status: planned                           # planned | present
 
 # ---- what proves it works -------------------------------------------------
+# This IS the roster `pai verify` runs — it derives it from every manifest's
+# `verify:`, so a unit that gains a check gains it in the sweep with no second
+# edit anywhere. An entry may carry arguments after the path when the script's
+# modes are different checks (`check-security.sh --local`); the arguments are
+# not validated, because that would mean keeping a copy of each script's option
+# vocabulary here, and the script already refuses an unknown flag with exit 2.
 verify:
   - scripts/verify/check-goose.sh
+  - scripts/verify/check-security.sh --local   # path + argv, when the mode matters
 runbook: docs/setup/20-mac-setup.md         # or `path#anchor`, or null
 
 # ---- credentials, BY NAME ONLY --------------------------------------------
@@ -156,7 +163,7 @@ notes: null                       # free text; nothing reads it
 | `requires` | list[str] | each names an existing manifest; graph acyclic |
 | `cost` | list[{`line`,`amount`,`source`}] | `line` and `amount` on the same line of `source` |
 | `installer` | null \| {`script`,`function`,`status`} | see below |
-| `verify` | list[path] | existing `scripts/verify/check-*.sh`; claimed by ≤1 unit |
+| `verify` | list[str] | `scripts/verify/check-*.sh` that exists, optionally + argv; claimed by ≤1 unit |
 | `runbook` | null \| `path` \| `path#anchor` | file exists; anchor matches a `##` heading |
 | `secrets` | list[{`key`,`store`,`secret`,`optional`}] | `store`-conditioned; see below |
 | `owns` | list[{`kind`,`target`}] | claimed by exactly one unit repo-wide |
@@ -269,14 +276,18 @@ below, because an assertion that cannot fail is the only kind that is never noti
    hyphens as underscores, plus `script` exists and is executable.
 4. **Footprint** — `owns` non-empty unless `host: checklist`; `repo_file` targets exist;
    every `(kind, target)` pair claimed by **exactly one** unit.
-5. **References** — `verify` entries exist, match `check-*.sh`, and are claimed by at most
-   one unit; **reverse**, every `check-*.sh` outside the `UNCLAIMABLE` set is claimed.
+5. **References** — each `verify` entry STARTS with a `scripts/verify/check-*.sh` that
+   exists (arguments may follow), and each is claimed by at most one unit; **reverse**,
+   every `check-*.sh` outside the `UNCLAIMABLE` set is claimed.
    `runbook` and `manual_steps[].doc` resolve, anchors included.
 6. **Secrets** — the `store`-conditioned rules above, forward and reverse.
 7. **Freshness** — `verified_on` parses, is not in the future, and is not stale.
 
-`UNCLAIMABLE` is `{check-coverage.sh, check-goose-template.sh}`: both are repo/CI gates
-rather than unit checks, so demanding an owner for them would mint a fake unit.
+`UNCLAIMABLE` is `{check-coverage.sh, check-goose-template.sh, check-units.sh}`: all three
+are repo/CI gates rather than unit checks, so demanding an owner for them would mint a fake
+unit. `pai verify` lists them under "claimed by no unit" rather than running them —
+`check-coverage.sh` in particular exits 2 with no `coverage.json`, which inside a sweep
+would render as a permanent SKIP indistinguishable from a real missing precondition.
 
 ## Adding a unit
 
