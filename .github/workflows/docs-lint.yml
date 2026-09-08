@@ -1,8 +1,22 @@
-# 90 tracked .md files -- the biggest file type in the repo, because this repo
-# is substantially documentation.
+# Markdown is the biggest file type in the repo, because this repo is
+# substantially documentation. The count that used to stand here said 90 against
+# 91 tracked -- which is the same class of drift the `generated` job below
+# exists to end, so it is a count no longer, and `git ls-files` is the roster.
 #
-# Both jobs are OFFLINE and deterministic. Nothing here reaches the network, so
-# the gate cannot flake on someone else's rate limit.
+# All three jobs are OFFLINE and deterministic. Nothing here reaches the
+# network, so the gate cannot flake on someone else's rate limit.
+#
+# The `generated` job is the one that is not a linter. README.md carries two
+# GENERATED regions -- the repo map and the add-on menu -- and a generated block
+# with no checker rots FASTER than a hand-written one, because it reads as
+# authoritative. That is not hypothetical: the map said "11 skills" against 12
+# directories in config/skills/ and "the six automations" against 7 files in
+# recipes/, and neither number had anywhere to be checked. scripts/verify/
+# check-docs.sh re-renders both regions and compares them to the committed
+# bytes; test-docs-lint.sh feeds one broken input to every assertion in
+# docs_lint.py and greps the MESSAGE, because check-docs.sh exits non-zero for a
+# missing PyYAML, a stale region, a dangling annotation AND a traceback -- an
+# exit-code-only control would go green with the comparison deleted.
 name: docs-lint
 
 on:
@@ -60,3 +74,41 @@ jobs:
         with:
           args: --offline --config lychee.toml --no-progress $(git ls-files '*.md')
           fail: true
+
+  # The generated-region gate. One job, one PyYAML install, one gate: a second
+  # job for a second region would mean a second engine, and issue #44 adds
+  # regions to docs_lint.py's REGIONS tuple and probes to test-docs-lint.sh
+  # rather than to a new workflow.
+  generated:
+    name: generated regions (check-docs.sh)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Nothing in this repo pushes from CI, so the token has no business
+          # surviving in .git/config where an artifact upload or a later step
+          # could pick it up (zizmor: artipacked).
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # PINNED, and kept in lockstep with the other jobs that need it.
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml==6.0.2
+
+      # The gate itself: every region must equal what docs_lint.py renders for
+      # it, byte for byte, and every structural assertion must hold.
+      - name: check-docs.sh
+        run: scripts/verify/check-docs.sh
+
+      # And the proof that the gate can fail. 21 probes, each one mutation of a
+      # copied tree, each grepping the message it expects. The harness asserts
+      # its own probe count, because a harness that skips its own probes and
+      # exits 0 has shipped from this repo before.
+      #
+      # It copies the WORKING TREE rather than `git archive HEAD`, so a probe
+      # runs against the code in the PR rather than against the last commit.
+      - name: test-docs-lint.sh (the negative harness)
+        run: scripts/verify/test-docs-lint.sh

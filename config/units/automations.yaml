@@ -19,10 +19,12 @@ tier: opt_in
 # and ntfy-alerts is what turns a silently failed fallback run into a message.
 requires: [brain, google-workspace, ntfy-alerts]
 
-# Nothing on README.md's budget table is this unit's. The tokens these recipes
-# burn are billed on the two inference rows base-goose claims (README.md:158
-# names the per-recipe models), and inventing a per-recipe figure here is
-# exactly what the verbatim cross-check exists to prevent.
+# Nothing on the "Budget" table in README.md is this unit's. The tokens these
+# recipes burn are billed on the two inference rows base-goose claims (the
+# routing paragraph under that table names the per-recipe models), and inventing
+# a per-recipe figure here is exactly what the verbatim cross-check exists to
+# prevent. The section is cited, never a line number: README.md carries two
+# generated regions and a change to either shifts every line below them.
 cost: []
 
 installer:

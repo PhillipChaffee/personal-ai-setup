@@ -12,6 +12,42 @@ runbook), [model-routing.md](model-routing.md) and [privacy.md](privacy.md)
 posture all of this lives under). Product definition + acceptance criteria:
 repo issue #17; the app workstream: goose-phone-app#2.
 
+## Why code-agent chats are not in the shared history
+
+The README's first principle is *one brain, one history*: the hub agent runs only
+on the VPS, its `sessions.db` is the single chat history, and every device is a
+client to the same brain. This add-on is the one deliberate carve-out from that,
+and the carve-out belongs here rather than in the README because the base install
+does not contain it — a reader who never installs code agents should not have to
+learn an exception to a rule they will never hit.
+
+**A code chat's transcript lives in its own per-chat volume, never in
+`sessions.db`.** Each chat gets `/data/code-agents/chats/<id>/home/`, which holds
+that chat's own OpenCode config, auth and transcript database. Nothing about a
+code chat is written into the hub agent's history, and nothing in the hub agent's
+history is visible to a code chat.
+
+Three reasons, in the order they actually decided it:
+
+1. **Isolation is the point of the container.** A chat is handed one repo clone
+   and its own volume precisely so that a compromised or confused agent cannot
+   reach anything else. A shared history file that every chat could read and
+   write would be a hole straight through that boundary — and it would be the
+   one file in the system holding your life-admin conversations.
+2. **They are different agents.** The hub is `goose`; a code chat is `opencode`
+   in a container. They have different transcript formats, different tool
+   surfaces and different lifecycles (a code chat spins down when idle and wakes
+   with its state intact). Merging the two stores would mean inventing a
+   translation layer that no feature asks for.
+3. **Coding volume would drown the history.** An autonomous coding session emits
+   orders of magnitude more turns than a conversation. The value of `sessions.db`
+   is that "continue what I was saying" works from any device; a shared store
+   would bury that under diff chatter.
+
+What *is* unified is the client: the phone app's Code tab and your chat live in
+the same application, and the manager's index is what makes the list of chats the
+same on every device. The unification is in the UI, on purpose — not in the store.
+
 ## The pieces
 
 | Piece | Role |

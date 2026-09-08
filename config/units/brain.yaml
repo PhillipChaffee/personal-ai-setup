@@ -31,10 +31,15 @@ tier: opt_in
 # units_lint.py's P5 now refuses bare continuations of an installer reference.
 requires: [tailnet, base-secrets]
 
-# Copied VERBATIM from README.md's budget table (:148). The inference lines on
+# Copied VERBATIM from the "Budget" table in README.md. The inference lines on
 # that table are base-goose's; this unit is the hardware they run on. The
 # validator re-reads README.md and requires `line` and `amount` to appear on
 # the same row, so no figure originates here.
+#
+# The section, never a line number: README.md carries two GENERATED regions
+# (scripts/verify/docs_lint.py) and any change to either shifts every line
+# below it. Three citations in this directory were already wrong before those
+# regions existed.
 cost:
   - line: Hetzner cpx21-class VPS + encrypted volume
     amount: ~€6–9/mo
