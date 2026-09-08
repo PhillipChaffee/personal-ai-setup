@@ -39,12 +39,19 @@ jobs:
           # business surviving in .git/config where an artifact upload
           # or a later step could pick it up (zizmor: artipacked).
           persist-credentials: false
-          # LOAD BEARING. Assertion A14b runs the PRE-CARVE bootstrap-mac.sh,
-          # which it reads out of git history by pinned sha, and diffs the $HOME
-          # it installs against the one this checkout installs. On a shallow
-          # clone that blob is absent and A14b degrades to a counted SKIP -- so
-          # "the carve changed no behaviour" would be asserted on a laptop and
-          # nowhere else.
+          # LOAD BEARING, AND ASSERTED (#111). Assertion A14b runs the PRE-CARVE
+          # bootstrap-mac.sh, which it reads out of git history by pinned sha,
+          # and diffs the $HOME it installs against the one this checkout
+          # installs. actions/checkout defaults to depth 1; on a shallow clone
+          # that blob is absent, A14b0 takes its one permitted SKIP arm and "the
+          # carve changed no behaviour" would be asserted on a laptop and nowhere
+          # else, with nothing going red.
+          #
+          # Deleting this line used to be exactly that silent degradation. It is
+          # now assertion A17 in test-base-install.sh, which parses THIS FILE and
+          # requires every actions/checkout step in it to set fetch-depth: 0 --
+          # so the deletion fails the job it degrades. The negative test below
+          # ("full history must be asserted, not just commented") is the proof.
           fetch-depth: 0
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
@@ -97,9 +104,18 @@ jobs:
           set -euo pipefail
           work="$RUNNER_TEMP/neg-routing"
           rm -rf "$work"; mkdir -p "$work"
-          git archive HEAD | tar -x -C "$work"
+          # `cp -a` and not `git archive`, alone among this job's three (#111).
+          # `--only routing` runs A14b, which reads the pre-carve blob out of
+          # .git by pinned sha, and an archive export has no .git at all. That
+          # used to be a counted SKIP; A14b0 now fails on it, correctly -- which
+          # would make this step go red on an UNMODIFIED tree and report the
+          # deny-PATH as inert when the only inert thing is the sed. The other
+          # two steps run --only brew / --only opencode, which never enter the
+          # structural leg, so they are unaffected. test-deploy-vps.sh's reorder
+          # control below records the same lesson.
+          cp -a "$GITHUB_WORKSPACE/." "$work/"
           test -x "$work/scripts/verify/test-base-install.sh" \
-            || { echo "::error::harness is not executable in the archive"; exit 1; }
+            || { echo "::error::harness is not executable in the copy"; exit 1; }
           # Take one call back OUT of the seam. The deny-PATH must catch it even
           # though this particular shape swallows its own exit status, which is
           # precisely what no grep over the source could reliably find.
@@ -111,11 +127,23 @@ jobs:
           # The capture group keeps whatever indentation the carve gave it.
           sed -i 's|^\( *\)if pai_exec brew list --pinned|\1if brew list --pinned|' \
             "$work/scripts/mac/bootstrap-mac.sh"
-          if "$work/scripts/verify/test-base-install.sh" --only routing; then
+          grep -q '^ *if brew list --pinned' "$work/scripts/mac/bootstrap-mac.sh" \
+            || { echo "::error::the sed matched nothing — unit_base_goose() no longer probes" \
+                      "the pin on that line, so this control is inert and would have passed" \
+                      "on an unmodified tree"; exit 1; }
+          # AND IT GREPS THE MESSAGE (#111). `--only routing` now has more ways
+          # to exit 1 than it did -- A14b0 and A17 are both in this leg -- and
+          # only "FAIL  A5:" means the deny-PATH caught the call that left the
+          # seam. The opencode step below has greped its id since #38.
+          out="$RUNNER_TEMP/neg-routing.log"
+          if "$work/scripts/verify/test-base-install.sh" --only routing >"$out" 2>&1; then
             echo "::error::an unrouted brew call went unnoticed — the deny-PATH" \
                  "invariant is inert"
             exit 1
           fi
+          grep -q '^FAIL  A5:' "$out" \
+            || { echo "::error::--only routing failed, but not at A5 — the negative test" \
+                      "is going red for some other reason:"; sed 's/^/  /' "$out"; exit 1; }
           echo "The deny-PATH correctly caught a call that left the seam."
 
       # THE THIRD NEGATIVE TEST (#38). Take the unattended auth back out of
@@ -163,6 +191,164 @@ jobs:
                       "is going red for some other reason:"; sed 's/^/  /' "$out"; exit 1; }
           echo "Phase I correctly caught an OpenCode install with no credential."
 
+      # ------------------------------------------------------------------ #111
+      # FOUR CONTROLS ON THE DIFFERENTIAL'S OWN PRECONDITIONS. Everything above
+      # proves the harness catches a bad INSTALLER. These prove it catches a bad
+      # HARNESS -- specifically the four ways A14b used to stop asserting
+      # anything while the badge stayed green. Each names the id it must break
+      # and greps for it, because `--only routing` exits 1 for a dozen reasons
+      # and "it went red" is not evidence that the control under test fired.
+      #
+      # All four use `cp -a`, never `git archive`: three of them are ABOUT git
+      # history, and the fourth needs a .git to make a shallow clone from.
+      - name: Negative test — an unreachable pin must FAIL, not skip
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/neg-pin-gone"
+          rm -rf "$work"; mkdir -p "$work"
+          cp -a "$GITHUB_WORKSPACE/." "$work/"
+          test -x "$work/scripts/verify/test-base-install.sh" \
+            || { echo "::error::harness is not executable in the copy"; exit 1; }
+          # Stands in for the squash that orphans the pinned commit, without
+          # needing to rewrite history: a well-formed sha that names no object
+          # is indistinguishable to `cat-file -e` from one that has been gc'd.
+          # The clone is FULL, so the shallow arm must not be taken.
+          sed -i 's|^\( *\)PRE_CARVE_SHA=.*|\1PRE_CARVE_SHA="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"|' \
+            "$work/scripts/verify/test-base-install.sh"
+          grep -q '^ *PRE_CARVE_SHA="deadbeef' "$work/scripts/verify/test-base-install.sh" \
+            || { echo "::error::the sed matched nothing — this control is inert"; exit 1; }
+          [ "$(git -C "$work" rev-parse --is-shallow-repository)" = "false" ] \
+            || { echo "::error::the copy is shallow, so this tests the SKIP arm, not the FAIL arm"; exit 1; }
+          out="$RUNNER_TEMP/neg-pin-gone.log"
+          if "$work/scripts/verify/test-base-install.sh" --only routing >"$out" 2>&1; then
+            echo "::error::the pre-carve blob was unreachable in a FULL clone and the harness" \
+                 "still exited 0 — A14b asserted nothing and nothing went red"
+            exit 1
+          fi
+          grep -q '^FAIL  A14b0: deadbeefd:scripts/mac/bootstrap-mac.sh is UNREACHABLE' "$out" \
+            || { echo "::error::--only routing failed, but not at A14b0's unreachable arm:"; \
+                 sed 's/^/  /' "$out"; exit 1; }
+          if grep -q '^SKIP' "$out"; then
+            echo "::error::an unreachable pin was reported as a SKIP — the arms are still collapsed"
+            exit 1
+          fi
+          echo "A14b0 correctly failed on a pin that names no object."
+
+      - name: Negative test — a pin moved onto a post-carve commit must fail
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/neg-pin-moved"
+          rm -rf "$work"; mkdir -p "$work"
+          cp -a "$GITHUB_WORKSPACE/." "$work/"
+          test -x "$work/scripts/verify/test-base-install.sh" \
+            || { echo "::error::harness is not executable in the copy"; exit 1; }
+          # THE SUBTLE ONE. This is what an author does to make a dangling pin
+          # go green: re-point it at the branch head. The blob is then reachable,
+          # every "is it there" check passes, and A14b diffs the working tree
+          # against itself -- a differential that can never fail again. Only the
+          # SHAPE check (no unit_*() definitions) can tell the difference.
+          head_sha="$(git -C "$work" rev-parse HEAD)"
+          sed -i "s|^\( *\)PRE_CARVE_SHA=.*|\1PRE_CARVE_SHA=\"$head_sha\"|" \
+            "$work/scripts/verify/test-base-install.sh"
+          grep -q "^ *PRE_CARVE_SHA=\"$head_sha\"" "$work/scripts/verify/test-base-install.sh" \
+            || { echo "::error::the sed matched nothing — this control is inert"; exit 1; }
+          git -C "$work" cat-file -e "$head_sha:scripts/mac/bootstrap-mac.sh" \
+            || { echo "::error::the re-pinned sha is not reachable, so this tests the" \
+                      "unreachable arm and not the post-carve one"; exit 1; }
+          out="$RUNNER_TEMP/neg-pin-moved.log"
+          if "$work/scripts/verify/test-base-install.sh" --only routing >"$out" 2>&1; then
+            echo "::error::the baseline was re-pinned onto a POST-carve commit and the harness" \
+                 "exited 0 — A14b is now comparing the working tree with itself"
+            exit 1
+          fi
+          grep -q '^FAIL  A14b0: .* is reachable but is NOT a pre-carve revision' "$out" \
+            || { echo "::error::--only routing failed, but not at A14b0's shape check:"; \
+                 sed 's/^/  /' "$out"; exit 1; }
+          echo "A14b0 correctly refused a baseline that has the carve already in it."
+
+      - name: Negative test — full history must be asserted, not just commented
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/neg-fetch-depth"
+          rm -rf "$work"; mkdir -p "$work"
+          cp -a "$GITHUB_WORKSPACE/." "$work/"
+          test -x "$work/scripts/verify/test-base-install.sh" \
+            || { echo "::error::harness is not executable in the copy"; exit 1; }
+          # ONE LINE, the way it would actually be lost: someone tidies the
+          # checkout block of THIS job and takes `fetch-depth: 0` with it. Before
+          # #111 the only symptom was A14b quietly skipping on every run.
+          wf="$work/.github/workflows/install-test.yml"
+          before="$(grep -c '^          fetch-depth: 0$' "$wf")"
+          [ "$before" -eq 2 ] \
+            || { echo "::error::expected exactly 2 'fetch-depth: 0' lines, found $before —" \
+                      "this control is inert"; exit 1; }
+          # The FIRST one: this job's own, the one A14b depends on.
+          sed -i '0,/^          fetch-depth: 0$/{/^          fetch-depth: 0$/d}' "$wf"
+          [ "$(grep -c '^          fetch-depth: 0$' "$wf")" -eq 1 ] \
+            || { echo "::error::the delete removed the wrong number of lines — this control is inert"; exit 1; }
+          out="$RUNNER_TEMP/neg-fetch-depth.log"
+          if "$work/scripts/verify/test-base-install.sh" --only routing >"$out" 2>&1; then
+            echo "::error::a checkout step lost fetch-depth: 0 and nothing noticed — A14b would" \
+                 "skip on every CI run from here on, with the badge still green"
+            exit 1
+          fi
+          grep -q '^FAIL  A17:' "$out" \
+            || { echo "::error::--only routing failed, but not at A17:"; sed 's/^/  /' "$out"; exit 1; }
+          echo "A17 correctly caught a checkout that stopped fetching history."
+
+      - name: Negative test — a shallow clone may skip, and only because it is listed
+        run: |
+          set -euo pipefail
+          src="$RUNNER_TEMP/shallow-src"; work="$RUNNER_TEMP/neg-shallow"
+          rm -rf "$src" "$work"; mkdir -p "$src"
+          cp -a "$GITHUB_WORKSPACE/." "$src/"
+          # A branch, because a depth-1 clone needs a ref to clone: the workspace
+          # is on a detached HEAD for pull_request events. --no-local forces the
+          # real transport (git silently ignores --depth on a local path copy),
+          # and --no-tags keeps refs/tags/mac-pre-carve from dragging the pinned
+          # object back in -- which is the whole point of the tag, and exactly
+          # what must NOT happen in the case under test here.
+          git -C "$src" branch -f pai-shallow-src HEAD
+          git clone --quiet --depth 1 --no-local --no-tags \
+            --branch pai-shallow-src "file://$src" "$work"
+          [ "$(git -C "$work" rev-parse --is-shallow-repository)" = "true" ] \
+            || { echo "::error::the clone is not shallow — this control is inert"; exit 1; }
+          # THE .git COMES FROM THE CLONE; THE FILES COME FROM THE WORKSPACE.
+          # A clone checks out the COMMIT, so without this the step would run
+          # whatever harness is committed rather than the one under test -- and
+          # a run of this control against the pre-#111 harness stayed green for
+          # exactly that reason. Same rule as A14b's "the new side is $REPO_ROOT,
+          # never `git archive HEAD`", for the same reason.
+          tar -C "$GITHUB_WORKSPACE" --exclude=./.git -cf - . | tar -C "$work" -xf -
+          cmp -s "$GITHUB_WORKSPACE/scripts/verify/test-base-install.sh" \
+                 "$work/scripts/verify/test-base-install.sh" \
+            || { echo "::error::the shallow clone is not running the harness under test —" \
+                      "this control is inert"; exit 1; }
+          # PART 1: a listed skip is a skip. Exit 0, and it says so out loud.
+          out="$RUNNER_TEMP/neg-shallow.log"
+          "$work/scripts/verify/test-base-install.sh" --only routing >"$out" 2>&1 \
+            || { echo "::error::a genuinely shallow clone must SKIP A14b and exit 0, not fail:"; \
+                 sed 's/^/  /' "$out"; exit 1; }
+          grep -q '^SKIP  A14b0: A14b did not run: this is a SHALLOW clone' "$out" \
+            || { echo "::error::the shallow clone exited 0 without taking the skip arm — A14b" \
+                      "may have run against a blob it should not have had:"; sed 's/^/  /' "$out"; exit 1; }
+          # PART 2: and it is a skip ONLY because A14b0 is on the allowlist.
+          # Take it off and the identical run must fail, which is what makes the
+          # list a decision rather than a comment.
+          sed -i 's|^SKIPPABLE=.*|SKIPPABLE=""|' "$work/scripts/verify/test-base-install.sh"
+          grep -q '^SKIPPABLE=""$' "$work/scripts/verify/test-base-install.sh" \
+            || { echo "::error::the sed matched nothing — this control is inert"; exit 1; }
+          out2="$RUNNER_TEMP/neg-shallow-unlisted.log"
+          if "$work/scripts/verify/test-base-install.sh" --only routing >"$out2" 2>&1; then
+            echo "::error::an unlisted assertion skipped and the harness still exited 0 —" \
+                 "the skip allowlist is inert"
+            exit 1
+          fi
+          grep -q '^FAIL  A14b0: .*IS NOT ON THIS HARNESS' "$out2" \
+            || { echo "::error::the unlisted skip did not fail as an unlisted skip:"; \
+                 sed 's/^/  /' "$out2"; exit 1; }
+          echo "A shallow clone skips because A14b0 is listed, and fails when it is not."
+
   # The brain's deploy, on the same terms: a program whose entire job is side
   # effects, executed against fakes. It gets its own job rather than another
   # step because it shares nothing with the Mac install -- different seam
@@ -196,6 +382,13 @@ jobs:
           # asserted nowhere and the job would still be green. (An unreachable
           # sha, e.g. after a squash merge, is a FAILURE rather than a skip;
           # fetch-depth cannot help with that one and does not pretend to.)
+          #
+          # ALSO COVERED BY A17 (#111), which lives in the OTHER job's harness on
+          # purpose: A17 parses this whole file and requires fetch-depth: 0 on
+          # every actions/checkout step in it, including this one. A job cannot
+          # assert its own shallowness away -- from inside a depth-1 checkout
+          # "CI stopped fetching history" and "someone ran this on a shallow
+          # laptop clone" are the same observation.
           fetch-depth: 0
 
       - name: Brain deploy against the fakes

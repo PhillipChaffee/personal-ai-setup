@@ -366,13 +366,19 @@ if leg differential; then
   # guards, not one.) The tag's job is REACHABILITY; the sha's job is IDENTITY.
   #
   # AND NO OLDER SHA CAN REPLACE IT. The obvious hardening — pin something that
-  # is already an ancestor of main, the way test-base-install.sh:1369 pins the
+  # is already an ancestor of main, the way test-base-install.sh's A14b pins the
   # merge commit 5f016b3 — is not available here: the seam is introduced by
   # this branch's own first commit, and every earlier revision of
   # deploy-vps.sh writes to the literal /data and /etc/systemd/system, so it
   # cannot be run against a fake host at all. Failing the tag, GitHub keeps
   # refs/pull/110/head forever, so the blob is still recoverable — see the
   # failure text below, which says how.
+  #
+  # THAT HARDENING TURNED OUT NOT TO BE ONE (#111). 5f016b3 is an ancestor of
+  # main only because it happens to be a MERGE commit and the squashes landed
+  # around it; nothing enforced that, and the Mac differential was one merge
+  # strategy away from the failure this tag prevents. It now carries a tag of
+  # its own, refs/tags/mac-pre-carve, for the same reason this one does.
   #
   # RE-PIN THIS IF THE BRANCH IS EVER REBASED. A rebase rewrites every commit on
   # the branch, so the seam gets a new sha and V0 goes red on "UNREACHABLE in a
