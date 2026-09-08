@@ -115,11 +115,24 @@ verify:
 runbook: docs/setup/20-mac-setup.md         # or `path#anchor`, or null
 
 # ---- credentials, BY NAME ONLY --------------------------------------------
+# One row per (key, store). The SAME key in two stores is two rows, on purpose:
+# a value can live on the brain and on the Mac and be checked against each
+# store's own source of truth.
 secrets:
   - key: TOGETHER_API_KEY         # [A-Z][A-Z0-9_]*
     store: mac_keychain           # vps | mac_keychain | goose_secret_store | none
     secret: true                  # false => a value, not a credential (e.g. an email)
     optional: false
+    # What keychain-secrets.sh SHOWS at the hidden prompt. Non-empty, single
+    # line, no tab (the roster is TAB-separated). There is no second hint
+    # table anywhere: this is the text.
+    prompt: >-
+      Together AI key (docs/setup/10-accounts.md §2) — goose's together provider
+      and opencode.json both read it by name
+    # null, or exactly `openssl rand -hex N` — and then the prompt must contain
+    # that command verbatim. A property of the ROW, not the key: a secret is
+    # minted on one host and TRANSCRIBED on the other.
+    generate: null
 
 # ---- footprint ------------------------------------------------------------
 # Every (kind, target) pair is claimed by EXACTLY ONE unit, repo-wide.
@@ -165,7 +178,7 @@ notes: null                       # free text; nothing reads it
 | `installer` | null \| {`script`,`function`,`status`} | see below |
 | `verify` | list[str] | `scripts/verify/check-*.sh` that exists, optionally + argv; claimed by ≤1 unit |
 | `runbook` | null \| `path` \| `path#anchor` | file exists; anchor matches a `##` heading |
-| `secrets` | list[{`key`,`store`,`secret`,`optional`}] | `store`-conditioned; see below |
+| `secrets` | list[{`key`,`store`,`secret`,`optional`,`prompt`,`generate`}] | `store`-conditioned; see below |
 | `owns` | list[{`kind`,`target`}] | claimed by exactly one unit repo-wide |
 | `manual_steps` | list[{`id`,`summary`,`doc`,`blocking`}] | `doc` resolves like `runbook` |
 | `blockers` | list[{`id`,`severity`,`detail`}] | mappings only; bare strings are invalid |
@@ -224,9 +237,28 @@ entry, because there are three stores and they disagree on purpose:
 | `store` | Source of truth | Check |
 |---|---|---|
 | `vps` | [`config/env/secrets.env.example`](../env/secrets.env.example) (14 names) | key must appear there |
-| `mac_keychain` | `scripts/mac/keychain-secrets.sh:12`'s `VARS` (10 names) | key must appear there |
+| `mac_keychain` | **these manifests** — `pai secrets --host mac` projects them | the Mac Keychain column of [`10-accounts.md`](../../docs/setup/10-accounts.md#credential-checklist) must agree, both ways |
 | `goose_secret_store` | goose's own `secrets.yaml`, per-extension via `envKeys` | key must appear in **neither** |
 | `none` | — | skipped |
+
+The `mac_keychain` row changed with #39 and the reason is worth keeping. It used to say
+"the key must appear in `keychain-secrets.sh`'s `VARS`" — but that script now *takes* its
+roster from this field, so such a rule would compare the generator with itself and could
+never fail. What is left that a human still writes by hand is the credential checklist in
+the docs, so that is what the closure runs against: a `mac_keychain` row the table does
+not mark `yes` fails, and a `yes` no manifest claims fails too. It caught two real bugs on
+the day it landed (the table sent readers to put `TODOIST_API_KEY` in the Keychain, which
+`store: goose_secret_store` forbids, and it never mentioned `TELEGRAM_BOT_TOKEN` at all).
+
+Two more rules that only exist because the roster is now generated from here:
+
+- **`prompt` is non-empty, single-line and tab-free.** It is the sentence a human reads at
+  a hidden prompt. The nine-name `VARS` string had a `case` of hints beside it whose
+  default arm was `echo ""`, so two of the ten names prompted with a naked `( )`.
+- **Two rows for one `(key, store)` must carry the same `prompt` and `generate`.**
+  Duplicate rows are legal and deliberate (`base-secrets` and `brain` both claim
+  `GOOSE_SERVER__SECRET_KEY`), but the projection de-duplicates by key — so two rows that
+  disagree would make the text depend on which manifest sorts first.
 
 `config/connectors/todoist.yaml` routes `TODOIST_API_KEY` through goose's per-extension
 secret store precisely so connector #1 cannot read connector #2's credentials
@@ -321,7 +353,8 @@ below, because an assertion that cannot fail is the only kind that is never noti
    exists (arguments may follow), and each is claimed by at most one unit; **reverse**,
    every `check-*.sh` outside the `UNCLAIMABLE` set is claimed.
    `runbook` and `manual_steps[].doc` resolve, anchors included.
-6. **Secrets** — the `store`-conditioned rules above, forward and reverse.
+6. **Secrets** — the `store`-conditioned rules above, forward and reverse, plus the
+   `prompt`/`generate` rules and the Mac Keychain column of `10-accounts.md`.
 7. **Freshness** — `verified_on` parses, is not in the future, and is not stale.
 8. **Installer table** — `bootstrap-mac.sh`'s copy of this catalog (§5 above) matches it:
    (a) `UNIT_IDS` is exactly the units whose installer is that script with

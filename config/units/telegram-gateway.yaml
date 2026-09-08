@@ -43,6 +43,23 @@ secrets:
     store: vps
     secret: true
     optional: true
+    prompt: >-
+      bot token from @BotFather (docs/setup/40-phone-setup.md §1a) — the
+      gateway reads it from /data/secrets.env
+    generate: null
+  # The Mac half, and the row #39 exists for. keychain-secrets.sh:12 used to
+  # prompt for this name on EVERY run, with an empty parenthetical, for a
+  # gateway that runs on the brain — the exact complaint in the issue. It is
+  # still storable (the Keychain is a fine place to keep it), but only for a
+  # selection that names this opt_in unit; a base-only Mac never sees it.
+  - key: TELEGRAM_BOT_TOKEN
+    store: mac_keychain
+    secret: true
+    optional: true
+    prompt: >-
+      bot token from @BotFather (docs/setup/40-phone-setup.md §1a) —
+      TRANSCRIBE it; the gateway itself runs on the brain
+    generate: null
 
 owns:
   - {kind: repo_file, target: scripts/vps/systemd/goose-telegram-gateway.service}

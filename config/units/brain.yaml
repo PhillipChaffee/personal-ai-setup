@@ -71,6 +71,28 @@ secrets:
     store: vps
     secret: true
     optional: false
+    prompt: >-
+      shared secret every goose serve client presents; mint it HERE with
+      openssl rand -hex 32, then transcribe it into the Mac Keychain and the
+      iOS app
+    generate: openssl rand -hex 32
+  # THE MAC HALF OF THE SAME KEY, and the reason it is filed under a host: vps
+  # unit. `store` names where a value lives, not where the unit runs: Desktop
+  # and the goose CLI on the Mac authenticate to THIS unit's `goose serve`, so
+  # the Mac needs a copy — and only when this unit exists, which is why the row
+  # is here and not in a base unit. A base-only Mac must never be prompted for
+  # a secret whose server does not exist yet.
+  #
+  # generate: null on purpose. The value is minted on the brain and TRANSCRIBED
+  # here; minting a fresh one on the Mac would unpair the client silently.
+  - key: GOOSE_SERVER__SECRET_KEY
+    store: mac_keychain
+    secret: true
+    optional: false
+    prompt: >-
+      the brain's goose serve shared secret — TRANSCRIBE the value already in
+      /data/secrets.env; a fresh one here unpairs Desktop from the brain
+    generate: null
 
 owns:
   # ---- the machine. terraform.tfvars and terraform.tfstate are deliberately

@@ -49,7 +49,15 @@ THE EIGHT PROPERTIES, and what each catches that the others do not:
                          in secrets.env.example" rule would force a false entry
                          for TODOIST_API_KEY, which routes through goose's
                          per-extension secret store precisely so connector #1
-                         cannot read connector #2's credentials.
+                         cannot read connector #2's credentials. Since #39 the
+                         mac_keychain roster IS this field, so its arm cannot be
+                         "the key is in keychain-secrets.sh" -- that would
+                         compare the generator with itself. It closes over
+                         docs/setup/10-accounts.md's Mac Keychain column
+                         instead, and over the (key, store) rows themselves:
+                         two rows for one pair must agree on `prompt` and
+                         `generate`, or the roster's own text depends on which
+                         manifest is read first.
   P7 freshness           `verified_on` parses, is never in the future, and is
                          not stale.
   P8 installer table     bootstrap-mac.sh resolves --with/--without/--only
@@ -106,12 +114,21 @@ REPO_ROOT: Final = Path(__file__).resolve().parents[2]
 UNITS_DIR: Final = REPO_ROOT / "config" / "units"
 VERIFY_DIR: Final = REPO_ROOT / "scripts" / "verify"
 SECRETS_EXAMPLE: Final = REPO_ROOT / "config" / "env" / "secrets.env.example"
-KEYCHAIN_SCRIPT: Final = REPO_ROOT / "scripts" / "mac" / "keychain-secrets.sh"
 SKILLS_DIR: Final = REPO_ROOT / "config" / "skills"
 BOOTSTRAP_MAC: Final = REPO_ROOT / "scripts" / "mac" / "bootstrap-mac.sh"
+# The credential checklist whose "Mac Keychain" column P6 closes over. It is a
+# DOC, deliberately: after #39 the Keychain roster is the manifests, so the only
+# remaining cross-file statement about it that a human wrote by hand is this
+# table -- and the table sent the reader to store TODOIST_API_KEY in a place the
+# validator forbids.
+ACCOUNTS_DOC: Final = REPO_ROOT / "docs" / "setup" / "10-accounts.md"
+ACCOUNTS_DOC_REL: Final = "docs/setup/10-accounts.md"
+MAC_COLUMN: Final = "Mac Keychain"
+VAR_COLUMN: Final = "Variable / form"
 
 MANIFEST_VERSION: Final = 1
 SUMMARY_MAX: Final = 120
+PROMPT_MAX: Final = 200
 STALE_DAYS: Final = 180
 # `config/skills/<name>` -- exactly three parts. A deeper path is a file INSIDE
 # a skill, which is that skill's business rather than a claim on the directory.
@@ -210,7 +227,10 @@ UNCLAIMABLE: Final[dict[str, str]] = {
 # The record shapes. Each entry must be a mapping whose keys are EXACTLY these.
 RECORD_FIELDS: Final[dict[str, frozenset[str]]] = {
     "cost": frozenset({"line", "amount", "source"}),
-    "secrets": frozenset({"key", "store", "secret", "optional"}),
+    # `prompt` and `generate` arrived with #39. They are what `pai secrets`
+    # projects and what keychain-secrets.sh renders, so a row without them is a
+    # key nothing can ask a human for.
+    "secrets": frozenset({"key", "store", "secret", "optional", "prompt", "generate"}),
     "owns": frozenset({"kind", "target"}),
     "manual_steps": frozenset({"id", "summary", "doc", "blocking"}),
     "blockers": frozenset({"id", "severity", "detail"}),
@@ -228,7 +248,13 @@ NON_EMPTY_TEXT: Final[dict[str, tuple[str, ...]]] = {
 SECRET_KEY_RE: Final = re.compile(r"^[A-Z][A-Z0-9_]*$")
 KEBAB_RE: Final = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 ENV_KEY_RE: Final = re.compile(r"^([A-Z][A-Z0-9_]*)=", re.MULTILINE)
-KEYCHAIN_VARS_RE: Final = re.compile(r'^VARS="([^"]*)"', re.MULTILINE)
+# `generate` is EXECUTED by keychain-secrets.sh, so the schema is a whitelist of
+# one shape rather than a free command string: the script reads the byte count
+# out of it and runs openssl itself, and never evaluates the manifest's text.
+GENERATE_RE: Final = re.compile(r"^openssl rand -hex ([1-9][0-9]{0,2})$")
+# A variable name inside backticks, which is how the credential checklist writes
+# every one of them.
+DOC_KEY_RE: Final = re.compile(r"`([A-Z][A-Z0-9_]{2,})`")
 
 
 # ------------------------------------------------------------------ output --
@@ -533,8 +559,49 @@ def check_enums(unit: Manifest) -> list[str]:
     return out
 
 
+def check_secret_prompt(stem: str, key_name: str, entry: dict[str, object]) -> list[str]:
+    """Check the two fields the prompt is rendered from.
+
+    `prompt` is THE hint a human sees at keychain-secrets.sh's hidden prompt.
+    Before #39 the hints lived in a `case` in that script with a `*) echo ""`
+    arm, so TELEGRAM_BOT_TOKEN and NTFY_EMAIL prompted with an empty
+    parenthetical -- a naked variable name for a feature nobody had been told to
+    create. Emptiness is therefore a FAIL, and so is a single space: `( )`
+    renders identically to a reader and slips past any "is it empty" grep.
+
+    The tab rule is not cosmetic either: `pai secrets` emits one TAB-separated
+    row per key, so a tab inside a prompt silently shifts every later column.
+    """
+    out: list[str] = []
+    prompt = entry.get("prompt")
+    where = f"{stem}.secrets['{key_name}']"
+    if not isinstance(prompt, str) or not prompt.strip():
+        out.append(f"{where}.prompt must be a non-empty string — it is what "
+                   f"keychain-secrets.sh shows at the hidden prompt, and an empty one is "
+                   f"the naked '( )' this field exists to make impossible")
+        prompt = ""
+    elif "\n" in prompt or "\t" in prompt or len(prompt) > PROMPT_MAX:
+        out.append(f"{where}.prompt must be a single line of at most {PROMPT_MAX} chars "
+                   f"with no tab (the roster is TAB-separated)")
+    generate = entry.get("generate")
+    if generate is None:
+        return out
+    if not isinstance(generate, str) or not GENERATE_RE.match(generate):
+        out.append(f"{where}.generate must be null or an `openssl rand -hex N` command — "
+                   f"keychain-secrets.sh reads N out of it and runs openssl itself, so no "
+                   f"other shape is executable")
+    elif generate not in prompt:
+        # B5's rule, and the reason it is not "generate ⇒ no prompt": the same
+        # key is generated on one host and TRANSCRIBED on the other, so the
+        # prompt has to stay and has to say which of the two this row is.
+        out.append(f"{where}.generate is '{generate}' but the prompt does not offer it "
+                   f"verbatim — a mintable secret whose prompt does not say so is prompted "
+                   f"for by hand forever")
+    return out
+
+
 def check_secret_fields(unit: Manifest) -> list[str]:
-    """Check each secret's key spelling, store enum and two boolean flags."""
+    """Check each secret's key spelling, store enum, flags, prompt and generate."""
     out: list[str] = []
     for entry in unit.list_of("secrets"):
         key_name = text_field(entry, "key")
@@ -547,6 +614,7 @@ def check_secret_fields(unit: Manifest) -> list[str]:
             for flag in ("secret", "optional")
             if not isinstance(entry.get(flag), bool)
         )
+        out.extend(check_secret_prompt(unit.stem, key_name, entry))
     return out
 
 
@@ -899,46 +967,156 @@ def env_example_keys() -> set[str]:
     return set(ENV_KEY_RE.findall(SECRETS_EXAMPLE.read_text(encoding="utf-8")))
 
 
-def keychain_vars() -> set[str]:
-    if not KEYCHAIN_SCRIPT.is_file():
-        return set()
-    match = KEYCHAIN_VARS_RE.search(KEYCHAIN_SCRIPT.read_text(encoding="utf-8"))
-    return set(match.group(1).split()) if match else set()
+def table_cells(line: str) -> list[str]:
+    """Split one markdown table row into trimmed cells, or [] if it is not one."""
+    stripped = line.strip()
+    if not stripped.startswith("|") or not stripped.endswith("|"):
+        return []
+    return [cell.strip() for cell in stripped[1:-1].split("|")]
 
 
-def check_secret(stem: str, key: str, store: str, env: set[str], keychain: set[str]) -> str:
+def credential_table(lines: Sequence[str]) -> tuple[list[str], int]:
+    """Find the credential checklist: its header cells, and the row after it."""
+    for index, line in enumerate(lines):
+        cells = table_cells(line)
+        if MAC_COLUMN in cells and VAR_COLUMN in cells:
+            return (cells, index + 1)
+    return ([], 0)
+
+
+def read_mac_cell(cells: list[str], var_at: int, mac_at: int) -> tuple[dict[str, bool], str]:
+    """Read one credential row: the keys it names, and whether they are Keychain'd."""
+    if len(cells) <= max(var_at, mac_at):
+        return ({}, f"{ACCOUNTS_DOC_REL}: credential row '{cells[0]}' has only "
+                    f"{len(cells)} cells")
+    verdict = cells[mac_at].lower()
+    # "yes (transcribe)" and "yes (Desktop connects with it)" both exist and both
+    # mean yes; the cell is prose with a verdict at the front.
+    if not verdict.startswith(("yes", "no")):
+        return ({}, f"{ACCOUNTS_DOC_REL}: the '{MAC_COLUMN}' cell for '{cells[0]}' reads "
+                    f"'{cells[mac_at]}' — it must start with yes or no")
+    stored = verdict.startswith("yes")
+    return (dict.fromkeys(DOC_KEY_RE.findall(cells[var_at]), stored), "")
+
+
+def doc_mac_column() -> tuple[dict[str, bool], list[str]]:
+    """Read the Mac Keychain verdict per variable out of the credential checklist.
+
+    Returns ({KEY: stored_in_the_keychain}, complaints). An EMPTY mapping with no
+    complaint is impossible by construction: a table that cannot be found, or is
+    found and yields no rows, is itself a complaint. That guard is the whole
+    difference between a closure and a pair of empty sets agreeing with each
+    other.
+    """
+    if not ACCOUNTS_DOC.is_file():
+        return ({}, [f"{ACCOUNTS_DOC_REL} does not exist, so the Mac Keychain column "
+                     f"cannot be checked against the manifests"])
+    lines = ACCOUNTS_DOC.read_text(encoding="utf-8").splitlines()
+    header, start = credential_table(lines)
+    if not header:
+        return ({}, [f"{ACCOUNTS_DOC_REL} has no table with both a '{VAR_COLUMN}' and a "
+                     f"'{MAC_COLUMN}' column — P6's doc closure is inert without it"])
+    var_at, mac_at = header.index(VAR_COLUMN), header.index(MAC_COLUMN)
+    marks: dict[str, bool] = {}
+    problems: list[str] = []
+    for line in lines[start:]:
+        cells = table_cells(line)
+        if not cells:
+            break  # The table ended; everything after it is prose.
+        if set("".join(cells)) <= set("-: "):
+            continue  # The |---|---| separator row.
+        row, complaint = read_mac_cell(cells, var_at, mac_at)
+        if complaint:
+            problems.append(complaint)
+            continue
+        for key, stored in row.items():
+            marks[key] = marks.get(key, False) or stored
+    if not marks:
+        problems.append(f"{ACCOUNTS_DOC_REL}: found the credential table but no `VARIABLE` "
+                        f"rows in it — P6's doc closure would pass against anything")
+    return (marks, problems)
+
+
+def check_secret(stem: str, key: str, store: str, env: set[str], mac: set[str]) -> str:
     """Check one secret against the source of truth its `store` names."""
     if store == "vps" and key not in env:
         return (f"{stem}.secrets: {key} has store: vps but is absent from "
                 f"config/env/secrets.env.example")
-    if store == "mac_keychain" and key not in keychain:
-        return (f"{stem}.secrets: {key} has store: mac_keychain but is absent from "
-                f"keychain-secrets.sh's VARS")
-    if store == "goose_secret_store" and (key in env or key in keychain):
+    if store == "goose_secret_store" and (key in env or key in mac):
         return (f"{stem}.secrets: {key} has store: goose_secret_store but appears in the global "
                 f"roster — per-extension storage is what stops connector #1 reading connector #2")
     return ""
 
 
+def check_row_agreement(units: Sequence[Manifest]) -> list[str]:
+    """One (key, store) pair, one prompt and one `generate`, however many rows.
+
+    Duplicate rows are deliberate and load-bearing -- base-secrets and brain both
+    claim GOOSE_SERVER__SECRET_KEY, ntfy-alerts and base-secrets both claim
+    NTFY_TOPIC -- but `pai secrets` de-duplicates by key, so two rows that
+    disagree make the roster's text depend on which manifest sorts first.
+    """
+    seen: dict[tuple[str, str], tuple[str, str, object]] = {}
+    out: list[str] = []
+    for unit in units:
+        for entry in unit.list_of("secrets"):
+            pair = (text_field(entry, "key"), text_field(entry, "store"))
+            here = (text_field(entry, "prompt"), entry.get("generate"))
+            first = seen.get(pair)
+            if first is None:
+                seen[pair] = (unit.stem, *here)
+                continue
+            owner, prompt, generate = first
+            if (prompt, generate) != here:
+                out.append(f"{unit.stem}.secrets: {pair[0]} (store: {pair[1]}) has a different "
+                           f"prompt/generate than {owner}'s row for the same pair — one key in "
+                           f"one store is asked for with one sentence")
+    return out
+
+
 def prop_secrets(units: Sequence[Manifest], *, strict: bool) -> Findings:
     result = Findings()
     env = env_example_keys()
-    keychain = keychain_vars()
     if not env:
         result.hard.append("config/env/secrets.env.example is missing or names no keys")
-    if not keychain:
-        result.hard.append("scripts/mac/keychain-secrets.sh is missing or has no VARS= roster")
-    if result.hard:
         return result
     claimed: set[str] = set()
+    mac = {
+        text_field(entry, "key")
+        for unit in units
+        for entry in unit.list_of("secrets")
+        if text_field(entry, "store") == "mac_keychain"
+    }
     for unit in units:
         for entry in unit.list_of("secrets"):
             key = text_field(entry, "key")
-            store = text_field(entry, "store")
             claimed.add(key)
-            complaint = check_secret(unit.stem, key, store, env, keychain)
+            complaint = check_secret(unit.stem, key, text_field(entry, "store"), env, mac)
             if complaint:
                 result.hard.append(complaint)
+    result.hard.extend(check_row_agreement(units))
+    # THE MAC ARM, and it deliberately does not look at keychain-secrets.sh.
+    # That script's roster IS this field now (`pai secrets --host mac`), so any
+    # manifest-versus-generator rule would be true by construction. What is left
+    # that a human wrote by hand is the credential checklist's column, and it was
+    # wrong in exactly the way this closes: it told the reader to put
+    # TODOIST_API_KEY in the Keychain, which `store: goose_secret_store` forbids.
+    marks, problems = doc_mac_column()
+    result.hard.extend(problems)
+    if marks:
+        doc_yes = {key for key, stored in marks.items() if stored}
+        result.hard.extend(
+            f"{key} has store: mac_keychain in the manifests but {ACCOUNTS_DOC_REL}'s "
+            f"credential checklist does not say yes for it — the roster a human reads and the "
+            f"roster keychain-secrets.sh prompts from must be the same roster"
+            for key in sorted(mac - doc_yes)
+        )
+        result.hard.extend(
+            f"{ACCOUNTS_DOC_REL}'s credential checklist says {key} lives in the Mac Keychain, "
+            f"but no unit declares store: mac_keychain for it — keychain-secrets.sh will never "
+            f"prompt for it"
+            for key in sorted(doc_yes - mac)
+        )
     for key in sorted(env - claimed):
         result.soft.append(f"{key} is in secrets.env.example but no unit claims it"
                            f"{'' if strict else ' (catalog is incomplete; --strict fails)'}")
@@ -1286,7 +1464,7 @@ PROPERTY_LABELS: Final[tuple[str, ...]] = (
     "P3 installer: every installer.status matches the installers as they are",
     "P4 footprint: every (kind, target) is claimed by exactly one unit",
     "P5 references: verify scripts, runbooks and installer line refs resolve",
-    "P6 secrets: every key matches the roster its `store` names",
+    "P6 secrets: every key matches the roster its `store` names, and the Mac column agrees",
     "P7 freshness: every verified_on parses and is not in the future",
     "P8 installer table: bootstrap-mac.sh's unit table matches the manifests",
 )

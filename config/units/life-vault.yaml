@@ -98,8 +98,9 @@ blockers:
     detail: The vault credential is an ed25519 deploy key at
       ~/.ssh/life-vault-deploy plus a Host alias in ~/.ssh/config
       (docs/setup/60-vault-setup.md:94-104). It is in neither
-      config/env/secrets.env.example nor keychain-secrets.sh's VARS, so no
-      rotation procedure and no roster covers it.
+      config/env/secrets.env.example nor any unit's `secrets` roster (the Mac
+      one is now the manifests themselves), so no rotation procedure and no
+      roster covers it.
   - id: backup-is-the-git-remote-only
     severity: note
     detail: docs/setup/60-vault-setup.md:132-152 makes the git remote the

@@ -2009,4 +2009,511 @@ else
   fail "$LEFTOVER crash marker(s) survived — a server may still be running"
 fi
 
+# ---- 10. `pai secrets` and keychain-secrets.sh --------------------------------
+# The roster and the ~/.zshrc block, which is the one place this repo writes to a
+# file the USER owns. Two halves:
+#
+#   10a  the projection, driven through doctor.py under $PAI_PY (coverage).
+#   10b  scripts/mac/keychain-secrets.sh run for real, under a FAKE $HOME and a
+#        PATH whose `security` and `uname` are stand-ins. Nothing here touches
+#        the real Keychain or the real ~/.zshrc, and the harness never learns a
+#        value: the fake logs a length (fake-security.sh, following the rule
+#        fake-brew.sh:18-22 wrote for it).
+#
+# THE NAME GOLDENS BELOW ARE HAND-TYPED. Deriving them from the manifests would
+# compare the projection with itself: deleting a `store: mac_keychain` row would
+# change both sides and the assertion would stay green, which is the exact
+# failure mode this file exists to avoid. The PROMPT assertions do read the
+# manifest -- there is no way to hand-type a sentence that must not rot -- so
+# each is guarded by a minimum length, because `grep -qF ""` matches anything.
+
+# The two names a base install needs, and nothing else. This IS the ticket's
+# first acceptance criterion.
+WANT_MAC_BASE="OPENCODE_ZEN_API_KEY TOGETHER_API_KEY"
+# Every name the catalog can put in the Keychain. Same ten the deleted
+# keychain-secrets.sh:12 VARS string listed, now reachable one add-on at a time.
+WANT_MAC_ALL="GOOGLE_OAUTH_CLIENT_ID GOOGLE_OAUTH_CLIENT_SECRET GOOSE_SERVER__SECRET_KEY \
+NTFY_AGENT_TOPIC NTFY_EMAIL NTFY_TOPIC OPENCODE_ZEN_API_KEY TAVILY_API_KEY TELEGRAM_BOT_TOKEN \
+TOGETHER_API_KEY"
+# The four deploy-vps.sh:344 hard-requires.
+WANT_VPS_BASE="GOOSE_SERVER__SECRET_KEY NTFY_TOPIC OPENCODE_ZEN_API_KEY TOGETHER_API_KEY"
+
+secret_names() { # secret_names <flags...> -- the key column, space-separated
+  pai secrets "$CLEAN" "$@" | cut -f1 | tr '\n' ' ' | sed 's/ $//'
+}
+
+names_are() { # names_are <label> <wanted> <flags...>
+  local label="$1" wanted="$2"; shift 2
+  local got
+  got="$(secret_names "$@")"
+  if [ "$got" = "$wanted" ]; then
+    pass "$label"
+  else
+    fail "$label"$'\n'"  wanted: $wanted"$'\n'"  got:    $got"
+  fi
+}
+
+names_are "secrets --host mac is exactly the two names a base install needs" \
+  "$WANT_MAC_BASE" --host mac
+names_are "secrets --host mac --all is the whole catalog's ten" \
+  "$WANT_MAC_ALL" --host mac --all
+names_are "secrets --host vps is deploy-vps.sh's four" \
+  "$WANT_VPS_BASE" --host vps
+names_are "an add-on selection is that unit's names only, not the base ones" \
+  "GOOGLE_OAUTH_CLIENT_ID GOOGLE_OAUTH_CLIENT_SECRET" --host mac --units google-workspace
+names_are "a unit with no secrets in that store projects to nothing" \
+  "" --host mac --units base-skills
+
+# `--host` names the STORE, not the unit's host: `brain` is host: vps and still
+# owns the Mac's copy of the shared secret. Without this arm the projection
+# could filter on unit.host and every add-on row above would still pass.
+names_are "a vps-hosted unit still contributes its Mac Keychain row" \
+  "GOOSE_SERVER__SECRET_KEY" --host mac --units brain
+
+# The de-duplication rule, in both argument orders. USER_GOOGLE_EMAIL is
+# optional: true in automations and optional: false in google-workspace, so a
+# "first row wins" implementation reports it differently depending on the order
+# and this is the arm that says no.
+for ORDER in "automations,google-workspace" "google-workspace,automations"; do
+  NEED="$(pai secrets "$CLEAN" --host vps --units "$ORDER" \
+    | awk -F'\t' '$1 == "USER_GOOGLE_EMAIL" { print $2 }')"
+  if [ "$NEED" = "required" ]; then
+    pass "USER_GOOGLE_EMAIL is required in $ORDER (a unit that needs it wins)"
+  else
+    fail "USER_GOOGLE_EMAIL read as '$NEED' in $ORDER, wanted required"
+  fi
+done
+
+# Four usage errors, each exit 2. A roster command that answered 0 with an empty
+# list for a typo'd unit would read as "this add-on needs nothing".
+secrets_rc() { # secrets_rc <label> <wanted-rc> <grep-string> <flags...>
+  local label="$1" want="$2" needle="$3"; shift 3
+  local out rc=0
+  out="$(pai secrets "$CLEAN" "$@" 2>&1)" || rc=$?
+  if [ "$rc" != "$want" ]; then
+    fail "$label (exit $rc, wanted $want)"$'\n'"$out"
+  elif [ -n "$needle" ] && ! printf '%s\n' "$out" | grep -qF -- "$needle"; then
+    fail "$label — the message did not name it: $out"
+  else
+    pass "$label"
+  fi
+}
+
+secrets_rc "secrets with no --host is a usage error" 2 "needs --host" --units base-goose
+secrets_rc "secrets --host nonsense is a usage error" 2 "nonsense" --host nonsense
+secrets_rc "an unknown unit id is a usage error naming it" 2 "zz-not-a-unit" \
+  --host mac --units zz-not-a-unit
+secrets_rc "--all and --units together are refused" 2 "contradict" \
+  --host mac --all --units base-goose
+secrets_rc "an unknown flag is a usage error" 2 "bad option" --host mac --wat
+
+# The two arms the CLI cannot reach: a checkout with no config/units/ at all,
+# and the mint command's shape as the projection emits it.
+cat > "$WORK/probe-secrets.py" <<'PY'
+import contextlib
+import importlib.util
+import io
+import sys
+from pathlib import Path
+
+doctor_path, work, repo_root = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("doctor_secrets", doctor_path)
+assert spec and spec.loader
+mod = importlib.util.module_from_spec(spec)
+sys.modules["doctor_secrets"] = mod
+spec.loader.exec_module(mod)
+
+# A checkout with no manifests at all: an empty roster, exit 0, no traceback.
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc = mod.secrets(Path(work) / "norepo", ["--host", "mac"])
+assert (rc, buf.getvalue()) == (0, ""), (rc, buf.getvalue())
+
+# The generate column is the command keychain-secrets.sh parses N out of. Read
+# from the real tree, and asserted against a HAND-TYPED string: the script does
+# `bytes="${gen##* }"` and runs `openssl rand -hex "$bytes"`, so a manifest that
+# said `openssl rand 12` (no -hex) would mint raw bytes into a shell variable.
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc = mod.secrets(Path(repo_root), ["--host", "mac", "--units", "ntfy-alerts"])
+rows = dict(line.split("\t", 1) for line in buf.getvalue().splitlines())
+assert rc == 0, rc
+assert rows["NTFY_TOPIC"].split("\t")[1] == "openssl rand -hex 12", rows["NTFY_TOPIC"]
+assert rows["NTFY_EMAIL"].split("\t")[1] == "-", rows["NTFY_EMAIL"]
+PY
+if OUT="$("${PAI_PY[@]}" "$WORK/probe-secrets.py" "$DOCTOR" "$WORK" "$REPO_ROOT" 2>&1)"; then
+  pass "secrets probe: an empty catalog, and the generate column's exact shape"
+else
+  fail "secrets probe failed:"$'\n'"$OUT"
+fi
+
+# ---- 10b. keychain-secrets.sh against a fake Keychain and a fake HOME ---------
+KC="$REPO_ROOT/scripts/mac/keychain-secrets.sh"
+KC_WORK="$WORK/keychain"
+KC_BIN="$KC_WORK/bin"
+KC_HOME="$KC_WORK/home"
+mkdir -p "$KC_BIN" "$KC_HOME" "$KC_WORK/state"
+
+# EXPLICITLY /bin/bash where there is one. macOS ships bash 3.2.57 and that is
+# what a reader's `./scripts/mac/keychain-secrets.sh` gets; `command -v bash` on
+# a developer Mac is Homebrew's 5.x, so running only that would let a 4.x-ism
+# (declare -A, mapfile, ${x^^}) ship untested.
+KC_BASH="bash"
+[ -x /bin/bash ] && KC_BASH="/bin/bash"
+
+# uname is a three-line stub and is GENERATED, not committed: it exists only so
+# the macOS guard passes on ubuntu-latest, and it models nothing. fake-security
+# is the opposite -- it has a redaction contract to keep -- so it is a tracked
+# file this symlinks to.
+cat > "$KC_BIN/uname" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = "-s" ]; then echo Darwin; exit 0; fi
+exec /usr/bin/uname "$@"
+EOF
+chmod +x "$KC_BIN/uname"
+ln -sf "$REPO_ROOT/scripts/verify/fake-security.sh" "$KC_BIN/security"
+
+# The pty driver. keychain-secrets.sh refuses to prompt without a terminal --
+# a secret arriving on a pipe came from a file or a history -- so the harness
+# gives it a real one instead of deleting the refusal to make testing easy.
+cat > "$KC_WORK/pty-run.py" <<'PY'
+"""Run a command on a controlling terminal, feeding it canned answers.
+
+ECHO IS TURNED OFF ON THE SLAVE BEFORE THE FORK, and that is the whole reason
+this is not `pty.spawn`. `read -s` disables echo around its own read and then
+restores what it found, so answers written to the master before the child gets
+there are echoed back by the line discipline -- putting the bytes under test
+into the captured output, in a file whose job is to prove they never appear.
+"""
+import fcntl
+import os
+import select
+import sys
+import termios
+import time
+
+TIMEOUT_S = 60.0
+
+
+def main(argv):
+    with open(argv[1], "rb") as handle:
+        answers = handle.read()
+    cmd = argv[2:]
+    master, slave = os.openpty()
+    attrs = termios.tcgetattr(slave)
+    attrs[3] &= ~termios.ECHO
+    termios.tcsetattr(slave, termios.TCSANOW, attrs)
+    pid = os.fork()
+    if pid == 0:
+        os.setsid()
+        fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+        for fd in (0, 1, 2):
+            os.dup2(slave, fd)
+        if slave > 2:
+            os.close(slave)
+        os.close(master)
+        os.execvp(cmd[0], cmd)
+        raise SystemExit(127)
+    os.close(slave)
+    os.write(master, answers)
+    out = bytearray()
+    deadline = time.monotonic() + TIMEOUT_S
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([master], [], [], 0.5)
+        if not ready:
+            continue
+        try:
+            chunk = os.read(master, 4096)
+        except OSError:
+            break                      # Linux raises EIO on the child's exit.
+        if not chunk:
+            break                      # macOS returns EOF instead.
+        out.extend(chunk)
+    else:
+        os.kill(pid, 9)
+        out.extend(b"\npty-run: TIMED OUT waiting for the child\n")
+    os.close(master)
+    _, status = os.waitpid(pid, 0)
+    sys.stdout.buffer.write(bytes(out))
+    sys.stdout.flush()
+    return os.waitstatus_to_exitcode(status)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))
+PY
+
+KC_LOG="$KC_WORK/security.log"
+: >"$KC_LOG"
+
+kc_env() { # kc_env <cmd...> -- run cmd with the fake home, PATH and keystore
+  env HOME="$KC_HOME" PATH="$KC_BIN:$PATH" \
+    FAKE_SECURITY_LOG="$KC_LOG" FAKE_SECURITY_STATE="$KC_WORK/state" "$@"
+}
+
+kc_run() { # kc_run <flags...> -- headless, no prompts. Sets KC_RC and KC_OUT.
+  KC_RC=0
+  KC_OUT="$(kc_env "$KC_BASH" "$KC" --rewrite-only "$@" 2>&1)" || KC_RC=$?
+  return 0
+}
+
+kc_prompted() { # kc_prompted <answers-file> <flags...> -- with a pty
+  local answers="$1"; shift
+  KC_RC=0
+  KC_OUT="$(kc_env python3 "$KC_WORK/pty-run.py" "$answers" "$KC_BASH" "$KC" "$@" 2>&1)" \
+    || KC_RC=$?
+  return 0
+}
+
+# The manifest's own prompt for one (key, store), read the way test-pai.sh:471
+# reads a summary. Guarded below by a length floor, because grep -qF "" is true
+# of every possible output.
+kc_prompt_of() { # kc_prompt_of <manifest> <key> <store>
+  "${FIX_PY[@]}" - "$REPO_ROOT/config/units/$1" "$2" "$3" <<'PY'
+import pathlib, sys
+import yaml
+rows = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text())["secrets"]
+for row in rows:
+    if row["key"] == sys.argv[2] and row["store"] == sys.argv[3]:
+        print(row["prompt"])
+        break
+PY
+}
+
+kc_mode() { # kc_mode <path> -- the two-arm portable stat, GNU then BSD
+  stat -c %a "$1" 2>/dev/null || stat -f %A "$1" 2>/dev/null
+}
+
+# ---- the prompting pass ----
+# Two answers: a value for the first key, Enter for the second. The value is
+# minted HERE, at run time, and it is the sentinel every leak assertion below
+# looks for. Nothing in this repo ever writes a secret-shaped constant down.
+KC_SENTINEL="$(openssl rand -hex 32)"
+printf '%s\n\n' "$KC_SENTINEL" >"$KC_WORK/answers-base"
+kc_prompted "$KC_WORK/answers-base"
+if [ "$KC_RC" -eq 0 ]; then
+  pass "keychain-secrets.sh completes a default run on a fake Mac"
+else
+  fail "keychain-secrets.sh exited $KC_RC:"$'\n'"$KC_OUT"
+fi
+
+# It prompts for the base roster and NOTHING else. The old script asked for all
+# ten names on every run, including a Telegram token for a brain-side gateway.
+PROMPTED="$(printf '%s\n' "$KC_OUT" | sed -n 's/^  \([A-Z][A-Z0-9_]*\)  .*/\1/p' \
+  | tr '\n' ' ' | sed 's/ $//')"
+if [ "$PROMPTED" = "$WANT_MAC_BASE" ]; then
+  pass "it prompts for exactly the base roster, in the roster's order"
+else
+  fail "prompted for '$PROMPTED', wanted '$WANT_MAC_BASE'"
+fi
+case "$KC_OUT" in
+  *TELEGRAM_BOT_TOKEN*|*GOOGLE_OAUTH*|*NTFY_*)
+    fail "a base run prompted for an add-on's secret:"$'\n'"$KC_OUT" ;;
+  *) pass "no add-on name appears in a base run" ;;
+esac
+
+# Every prompt carries its manifest's sentence VERBATIM. This is what makes the
+# empty parenthetical impossible: with the hint table deleted there is nowhere
+# else for the text to come from.
+for KEY in OPENCODE_ZEN_API_KEY TOGETHER_API_KEY; do
+  TEXT="$(kc_prompt_of base-goose.yaml "$KEY" mac_keychain)"
+  if [ "${#TEXT}" -lt 20 ]; then
+    fail "$KEY's manifest prompt is ${#TEXT} chars — too short for a grep to mean anything"
+  elif printf '%s\n' "$KC_OUT" | grep -qF -- "$TEXT"; then
+    pass "$KEY's prompt line carries the manifest's sentence verbatim"
+  else
+    fail "$KEY's prompt line does not contain its manifest prompt:"$'\n'"$TEXT"$'\n'"$KC_OUT"
+  fi
+done
+
+# The value went to the keystore as a LENGTH and nowhere else.
+if grep -qF "add s=personal-ai a=OPENCODE_ZEN_API_KEY len=64" "$KC_LOG"; then
+  # shellcheck disable=SC2016  # backticks in prose, not a command substitution
+  pass 'the typed value reached `security add -w` as a length of 64, never as a value'
+else
+  fail "the fake keychain never saw the add:"$'\n'"$(cat "$KC_LOG")"
+fi
+if grep -q "^add s=personal-ai a=TOGETHER_API_KEY" "$KC_LOG"; then
+  fail "an Enter-skipped key was stored anyway:"$'\n'"$(cat "$KC_LOG")"
+else
+  pass "pressing Enter stores nothing"
+fi
+LEAKED="$(grep -rl -- "$KC_SENTINEL" "$KC_HOME" "$KC_LOG" "$KC_WORK/state" 2>/dev/null || true)"
+if [ -z "$LEAKED" ]; then
+  pass "the typed value is in no file under the fake HOME, the log or the keystore"
+else
+  fail "the value leaked into: $LEAKED"
+fi
+if printf '%s\n' "$KC_OUT" | grep -qF -- "$KC_SENTINEL"; then
+  fail "the value was echoed to the terminal"
+else
+  pass "the value never appears in the script's own output"
+fi
+
+# ---- the ~/.zshrc block ----
+ZSHRC="$KC_HOME/.zshrc"
+# shellcheck disable=SC2016  # the UNEXPANDED $( ) is exactly what must be there
+if grep -qF 'export TOGETHER_API_KEY="$(security find-generic-password -w -s personal-ai -a TOGETHER_API_KEY 2>/dev/null || true)"' "$ZSHRC"; then
+  pass "the block writes the \$( ) LITERALLY — the value is fetched at shell init, not baked in"
+else
+  fail "the export line is not the literal command substitution:"$'\n'"$(cat "$ZSHRC")"
+fi
+BLOCK_KEYS="$(sed -n 's/^export \([A-Z][A-Z0-9_]*\)=.*/\1/p' "$ZSHRC" | tr '\n' ' ' | sed 's/ $//')"
+if [ "$BLOCK_KEYS" = "$WANT_MAC_ALL" ]; then
+  pass "the block exports the WHOLE catalog, so a later add-on is already wired"
+else
+  fail "the block exports '$BLOCK_KEYS'"$'\n'"wanted '$WANT_MAC_ALL'"
+fi
+
+# A hand-written file, with sentinels above and below, is what the rest of these
+# assertions protect.
+# shellcheck disable=SC2016  # a user's own line, which must survive VERBATIM
+printf '# my own zshrc\nexport PATH="$HOME/bin:$PATH"\n' >"$ZSHRC"
+printf 'alias ll="ls -la"\n' >>"$ZSHRC"
+chmod 644 "$ZSHRC"
+kc_run
+if [ "$KC_RC" -eq 0 ]; then
+  pass "--rewrite-only needs no terminal and no prompts"
+else
+  fail "--rewrite-only exited $KC_RC:"$'\n'"$KC_OUT"
+fi
+printf 'export AFTER_THE_BLOCK=1\n' >>"$ZSHRC"
+cp "$ZSHRC" "$KC_WORK/baseline"
+
+kc_run --units ntfy-alerts
+if cmp -s "$KC_WORK/baseline" "$ZSHRC"; then
+  pass "regenerating with a different selection is byte-identical (the block is the catalog)"
+else
+  fail "a different --units rewrote the file:"$'\n'"$(diff "$KC_WORK/baseline" "$ZSHRC" || true)"
+fi
+kc_run
+if cmp -s "$KC_WORK/baseline" "$ZSHRC"; then
+  pass "regeneration is idempotent: run it twice, the file is byte-identical"
+else
+  fail "the second run changed the file:"$'\n'"$(diff "$KC_WORK/baseline" "$ZSHRC" || true)"
+fi
+if [ "$(kc_mode "$ZSHRC")" = "644" ]; then
+  pass "the file's mode survives regeneration (644 in, 644 out)"
+else
+  fail "mode became $(kc_mode "$ZSHRC"), wanted 644"
+fi
+
+# A hand edit INSIDE the markers is the block's content, so it is overwritten.
+awk '/^# >>> personal-ai/{print; print "export HAND_EDIT_INSIDE=1"; next} {print}' \
+  "$KC_WORK/baseline" >"$ZSHRC"
+kc_run
+if grep -q HAND_EDIT_INSIDE "$ZSHRC"; then
+  fail "an edit inside the markers survived — the block is not regenerated"
+elif cmp -s "$KC_WORK/baseline" "$ZSHRC"; then
+  pass "an edit INSIDE the markers is overwritten, and only the block is touched"
+else
+  fail "the file differs from the baseline after overwriting an inside edit:"$'\n'"$(diff "$KC_WORK/baseline" "$ZSHRC" || true)"
+fi
+
+# A hand edit OUTSIDE them is the user's file, so it is not.
+printf 'export HAND_EDIT_OUTSIDE=1\n' >>"$ZSHRC"
+cp "$ZSHRC" "$KC_WORK/with-outside-edit"
+kc_run --units google-workspace
+if cmp -s "$KC_WORK/with-outside-edit" "$ZSHRC"; then
+  pass "an edit OUTSIDE the markers survives byte-for-byte"
+else
+  fail "the user's own lines changed:"$'\n'"$(diff "$KC_WORK/with-outside-edit" "$ZSHRC" || true)"
+fi
+
+# The three malformations. Each must refuse, name what is wrong, and leave the
+# file exactly as it found it -- this is the branch that stands between a bug
+# here and a broken login shell.
+kc_mangled() { # kc_mangled <label> <needle> <file-builder-command...>
+  local label="$1" needle="$2"; shift 2
+  "$@"
+  local before after
+  before="$(shasum "$ZSHRC" | cut -d' ' -f1)"
+  kc_run
+  after="$(shasum "$ZSHRC" | cut -d' ' -f1)"
+  if [ "$KC_RC" != "2" ]; then
+    fail "$label did not exit 2 (exit $KC_RC)"$'\n'"$KC_OUT"
+  elif [ "$before" != "$after" ]; then
+    fail "$label exited 2 but the file changed anyway"
+  elif ! printf '%s\n' "$KC_OUT" | grep -qF -- "$needle"; then
+    fail "$label refused without naming the malformation ('$needle'):"$'\n'"$KC_OUT"
+  else
+    pass "$label: exit 2, file byte-identical, message names it"
+  fi
+}
+
+two_begins() {
+  cp "$KC_WORK/baseline" "$ZSHRC"
+  printf '%s\n' '# >>> personal-ai keychain exports (keychain-secrets.sh) >>>' >>"$ZSHRC"
+}
+no_end() {
+  grep -v '^# <<< personal-ai' "$KC_WORK/baseline" >"$ZSHRC"
+}
+end_first() {
+  {
+    printf '%s\n' '# <<< personal-ai keychain exports <<<'
+    grep -v '^# <<< personal-ai' "$KC_WORK/baseline"
+  } >"$ZSHRC"
+}
+kc_mangled "two BEGIN markers" "2 begin markers" two_begins
+kc_mangled "a BEGIN with no END" "0 end markers" no_end
+kc_mangled "an END above the BEGIN" "comes before the begin marker" end_first
+
+# A file this script creates is its own, and 600 is right for one naming every
+# credential the machine holds.
+rm -f "$ZSHRC"
+kc_run
+if [ "$KC_RC" -eq 0 ] && [ "$(kc_mode "$ZSHRC")" = "600" ]; then
+  pass "a ~/.zshrc that did not exist is created at mode 600"
+else
+  fail "created ~/.zshrc has mode $(kc_mode "$ZSHRC") (exit $KC_RC)"
+fi
+
+# ---- minting ----
+# NTFY_TOPIC is the one key in the catalog minted ON THE MAC (10-accounts.md §6
+# step 1), so this is a real path, not a fixture-only branch. Roster order is
+# alphabetical: NTFY_EMAIL first (Enter), then NTFY_TOPIC.
+: >"$KC_LOG"
+printf '\ngenerate\n' >"$KC_WORK/answers-mint"
+kc_prompted "$KC_WORK/answers-mint" --units ntfy-alerts
+if grep -qF "add s=personal-ai a=NTFY_TOPIC len=24" "$KC_LOG"; then
+  pass "typing \"generate\" mints hex 12 (24 chars) and stores it without printing it"
+else
+  fail "the mint did not reach the keychain as 24 chars:"$'\n'"$(cat "$KC_LOG")"$'\n'"$KC_OUT"
+fi
+case "$KC_OUT" in
+  *"minted and stored (24 hex chars)"*) pass "the mint reports a LENGTH, never a prefix" ;;
+  *) fail "the mint said something else:"$'\n'"$KC_OUT" ;;
+esac
+
+# The same word at a key the manifest says is TRANSCRIBED must be refused:
+# storing the literal "generate" as the goose serve shared secret would be a
+# silent outage, and minting a fresh one would unpair the client.
+: >"$KC_LOG"
+printf 'generate\n' >"$KC_WORK/answers-refuse"
+kc_prompted "$KC_WORK/answers-refuse" --units brain
+if grep -q "^add " "$KC_LOG"; then
+  fail "the mint word stored something at a transcribe-only key:"$'\n'"$(cat "$KC_LOG")"
+else
+  pass "\"generate\" at a transcribe-only key stores nothing"
+fi
+case "$KC_OUT" in
+  *"is transcribed, not minted here"*) pass "and it says why" ;;
+  *) fail "the refusal was silent:"$'\n'"$KC_OUT" ;;
+esac
+
+# ---- the refusals that have nothing to do with the file ----
+KC_RC=0
+KC_OUT="$(kc_env "$KC_BASH" "$KC" </dev/null 2>&1)" || KC_RC=$?
+if [ "$KC_RC" = "2" ] && printf '%s\n' "$KC_OUT" | grep -qF "interactive terminal"; then
+  pass "prompting without a terminal is refused (a piped secret came from a file)"
+else
+  fail "the no-tty refusal is gone (exit $KC_RC):"$'\n'"$KC_OUT"
+fi
+kc_run --units zz-not-a-unit
+if [ "$KC_RC" = "2" ] && printf '%s\n' "$KC_OUT" | grep -qF "zz-not-a-unit"; then
+  pass "an unknown unit id stops the script instead of prompting for nothing"
+else
+  fail "an unknown --units was accepted (exit $KC_RC):"$'\n'"$KC_OUT"
+fi
+
 finish

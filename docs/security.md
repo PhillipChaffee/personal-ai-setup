@@ -149,8 +149,11 @@ the manifest-side contract is in
 
 - **Mac** — everything in the macOS Keychain via `scripts/mac/keychain-secrets.sh`
   (wraps `security add-generic-password` / `find-generic-password`; the store prompt
-  never puts the secret in shell history). Goose itself keeps provider keys in the
-  Keychain by default — **never set `GOOSE_DISABLE_KEYRING`** on the Mac, which would
+  never puts the secret in shell history). It asks only for the secrets the units you
+  installed actually keep there — `pai secrets --host mac` prints that roster, names and
+  prompts only — and it regenerates the marked export block in `~/.zshrc` in place,
+  leaving every line outside the markers untouched. Goose itself keeps provider keys in
+  the Keychain by default — **never set `GOOSE_DISABLE_KEYRING`** on the Mac, which would
   downgrade to a plaintext `secrets.yaml`.
 - **Brain** — headless Linux has no keyring, so stack-wide secrets live in
   `/data/secrets.env`, `chmod 600`, owned by `agent`, on the encrypted volume, injected
@@ -163,12 +166,20 @@ the manifest-side contract is in
 - **Git** — nothing, ever. Enforced by `.gitignore`, the gitleaks pre-commit hook, and
   CI; audited by the [public-repo.md](public-repo.md) checklist.
 
-The full secret roster: `OPENCODE_ZEN_API_KEY`, `TOGETHER_API_KEY`,
-`GOOSE_SERVER__SECRET_KEY`, `NTFY_TOPIC`, `NTFY_AGENT_TOPIC` (optional), `NTFY_EMAIL`,
-`TAVILY_API_KEY` (optional),
-`GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` — plus, outside env vars: the LUKS
-passphrase (password manager only), the Tailscale auth key (Terraform tfvars, untracked),
-and the Google OAuth token files on `/data`.
+**The roster is not written down here.** It was, and it drifted: this paragraph listed
+nine names against `secrets.env.example`'s fourteen and `keychain-secrets.sh`'s ten. Ask
+the manifests instead — they are what both the prompts and the checked
+[credential checklist](setup/10-accounts.md#credential-checklist) come from:
+
+```bash
+pai secrets --host mac      # what this Mac's units keep in the Keychain
+pai secrets --host vps      # what the brain's /data/secrets.env must hold
+```
+
+Outside env vars entirely, and therefore outside both rosters: the LUKS passphrase
+(password manager only), the Tailscale auth key (typed at the Terraform prompt, never
+written to `terraform.tfvars`), the `life-vault` deploy key, and the Google OAuth token
+files on `/data`.
 
 ## Host hygiene
 

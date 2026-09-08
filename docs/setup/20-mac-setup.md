@@ -141,13 +141,31 @@ tracked separately; nothing is actually wrong with the install.
 ./scripts/mac/keychain-secrets.sh
 ```
 
-It prompts for each secret in the canonical roster (`OPENCODE_ZEN_API_KEY`,
-`TOGETHER_API_KEY`, `NTFY_TOPIC`, `TAVILY_API_KEY` if you have one; the Google
-OAuth pair gets added in Phase 2) and stores them with
-`security add-generic-password` — the prompt reads input without echo, so
-secrets never land in your shell history. It also wires your shell startup to
-export the variables by reading them back from the Keychain at shell init, so
-nothing is ever written to disk in plaintext.
+It prompts for **the secrets your installed units actually need, and nothing
+else** — on a base install that is exactly `OPENCODE_ZEN_API_KEY` and
+`TOGETHER_API_KEY`. The roster comes from the unit manifests, so it is the same
+list `pai secrets --host mac` prints, each name carrying that manifest's own
+one-line description. Values are stored with `security add-generic-password`;
+the prompt reads input without echo, so secrets never land in your shell
+history. It also wires your shell startup to export the variables by reading
+them back from the Keychain at shell init, so nothing is ever written to disk
+in plaintext.
+
+When you add an add-on later, name it and only its secrets are asked for:
+
+```bash
+./scripts/mac/keychain-secrets.sh --units google-workspace   # Phase 2's OAuth pair
+./scripts/mac/keychain-secrets.sh --units ntfy-alerts        # the alert topic
+./scripts/mac/keychain-secrets.sh --rewrite-only             # just refresh ~/.zshrc
+```
+
+Where a value is meant to be generated rather than pasted — the ntfy topics —
+type `generate` at the hidden prompt and openssl mints one straight into the
+Keychain; it is never printed. The `~/.zshrc` block is **rewritten in place**
+between its `# >>> personal-ai keychain exports` markers on every run, so
+re-running is safe and needs no hand-editing. Everything outside those markers
+is left byte-for-byte alone, and if the markers are ever mangled (two of them,
+one missing, out of order) the script refuses and changes nothing.
 
 Two rules that make this safe long-term:
 
@@ -157,10 +175,11 @@ Two rules that make this safe long-term:
   the JSON) — that's why every doc and script in this repo uses the same
   variable names. Don't rename them.
 
-Open a **new terminal** after this step so the exports are live, and check:
+Open a **new terminal** after this step so the exports are live, and check by
+length — never by printing part of a key:
 
 ```bash
-echo "${OPENCODE_ZEN_API_KEY:0:6}..."   # should print the key's first chars
+echo "${#OPENCODE_ZEN_API_KEY} chars"   # non-zero means the export worked
 ```
 
 ## 3. OpenCode → Zen

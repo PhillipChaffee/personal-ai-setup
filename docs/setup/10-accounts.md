@@ -237,6 +237,15 @@ means stored via `scripts/mac/keychain-secrets.sh`; "secrets.env" means
 `/data/secrets.env` on the brain (Phase 3), template at
 `config/env/secrets.env.example`.
 
+**This column is machine-checked.** `check-units.sh` compares the Mac Keychain
+column below against every unit manifest's `secrets:` rows, in both directions:
+a `yes` with no `store: mac_keychain` row anywhere fails, and so does a
+`mac_keychain` row this table does not mark `yes`. That is what makes the table
+the same roster `keychain-secrets.sh` prompts from rather than a fourth one.
+You are only asked for the rows belonging to units you actually install —
+`keychain-secrets.sh` on a base install prompts for the first two and nothing
+else, and `--units <id>` adds one add-on's names at a time.
+
 | Credential | Variable / form | Mac Keychain | Brain secrets.env | Elsewhere | Collected in |
 |---|---|---|---|---|---|
 | OpenCode Zen API key | `OPENCODE_ZEN_API_KEY` | yes | yes | — | §1 (now) |
@@ -250,7 +259,8 @@ means stored via `scripts/mac/keychain-secrets.sh`; "secrets.env" means
 | goose serve shared secret | `GOOSE_SERVER__SECRET_KEY` | yes (Desktop connects with it) | yes | Goose iOS app (pairing) | Phase 3 |
 | Google OAuth client | `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` | yes | yes | — | Phase 2 ([30-google-oauth.md](30-google-oauth.md)) |
 | LUKS passphrase | (passphrase) | no | no | password manager **only** | Phase 3 |
-| Todoist personal API token (optional) | `TODOIST_API_KEY` | yes | yes | — | §4 |
+| Telegram bot token (optional) | `TELEGRAM_BOT_TOKEN` | yes (transcribe) | yes | — | Phase 3 ([40-phone-setup.md](40-phone-setup.md)) |
+| Todoist personal API token (optional) | `TODOIST_API_KEY` | no | no | goose's own per-extension secret store | §4 |
 
 Cross-check before moving on: everything in the "now" rows exists, the two Zen
 cost-control settings are flipped, the Together privacy toggles are verified

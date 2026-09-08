@@ -114,11 +114,18 @@ read contradicts them, the thing you read is wrong.
 | Terraform | nowhere — `hcloud_token` and `tailscale_authkey` are typed at the interactive prompt on each `plan`/`apply` | `infra/terraform/variables.tf` (no defaults, so Terraform asks) |
 | LUKS passphrase | your password manager only | nowhere on any machine |
 
-Canonical secret variable names, used identically on every platform:
-`OPENCODE_ZEN_API_KEY`, `TOGETHER_API_KEY`, `GOOSE_SERVER__SECRET_KEY`,
-`NTFY_TOPIC`, `NTFY_EMAIL`, `NTFY_AGENT_TOPIC` (optional), `TAVILY_API_KEY` (optional), `GOOGLE_OAUTH_CLIENT_ID`,
-`GOOGLE_OAUTH_CLIENT_SECRET`. The full annotated list is
-`config/env/secrets.env.example`.
+The names are identical on every platform, and each unit's manifest declares the ones it
+needs, so the roster is a query rather than a list to keep in sync:
+
+```bash
+pai secrets --host mac      # what a Mac's selected units keep in the Keychain
+pai secrets --host vps      # what /data/secrets.env must hold
+```
+
+A base install is two names (`OPENCODE_ZEN_API_KEY`, `TOGETHER_API_KEY`); each add-on
+brings its own. The full annotated brain-side file is `config/env/secrets.env.example`,
+and the per-credential table is
+[10-accounts.md](10-accounts.md#credential-checklist).
 
 **Provider names.** Goose knows exactly four custom providers, named
 `together` (the default), `zen-openai` (Zen's `/chat/completions` models),

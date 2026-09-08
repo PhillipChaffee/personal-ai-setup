@@ -49,10 +49,18 @@ secrets:
     store: none
     secret: true
     optional: false
+    prompt: >-
+      Together AI key typed into Pal Chat on the phone — no roster on either
+      host reaches it
+    generate: null
   - key: OPENCODE_ZEN_API_KEY
     store: none
     secret: true
     optional: true
+    prompt: >-
+      OpenCode Zen key typed into the phone client — no roster on either host
+      reaches it
+    generate: null
 
 # Nothing. Every artifact of this unit is an app, a profile or a Shortcut on a
 # device the repo cannot see, which is exactly what host: checklist asserts.

@@ -45,10 +45,18 @@ secrets:
     store: vps
     secret: false
     optional: true
+    prompt: >-
+      optional comma-separated roster of every Google account the brain
+      manages, primary FIRST (docs/setup/30-google-oauth.md §8)
+    generate: null
   - key: USER_GOOGLE_EMAIL
     store: vps
     secret: false
     optional: true
+    prompt: >-
+      your PRIMARY Gmail address (not a secret) — workspace-mcp's default
+      account and the only address recipes send from
+    generate: null
 
 owns:
   # The three recipes whose inputs are Gmail and Calendar only. vault-qa.yaml

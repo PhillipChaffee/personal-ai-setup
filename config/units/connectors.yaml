@@ -48,13 +48,29 @@ secrets:
     store: goose_secret_store
     secret: true
     optional: true
+    prompt: >-
+      Todoist personal API token (docs/setup/10-accounts.md §4) — goose stores
+      it per-extension, NOT in the Keychain and NOT in /data/secrets.env
+    generate: null
   - key: TAVILY_API_KEY
-    # In secrets.env.example (store: vps) AND in keychain-secrets.sh's VARS.
-    # The brain's roster is the one asserted here; the Mac's copy arrives via
-    # base-secrets' run-keychain-secrets step.
+    # Two rows, one key: the brain's copy in secrets.env.example and the Mac's
+    # in the Keychain. Before #39 the Mac's copy was invisible to the catalog
+    # (it lived in keychain-secrets.sh's VARS), so nothing could check it.
     store: vps
     secret: true
     optional: true
+    prompt: >-
+      Tavily search key (docs/setup/10-accounts.md §7) — only if the tavily
+      extension is enabled
+    generate: null
+  - key: TAVILY_API_KEY
+    store: mac_keychain
+    secret: true
+    optional: true
+    prompt: >-
+      Tavily search key (docs/setup/10-accounts.md §7) — only if the tavily
+      extension is enabled
+    generate: null
 
 owns:
   # The three fragments. The fourth fragment in that directory,
