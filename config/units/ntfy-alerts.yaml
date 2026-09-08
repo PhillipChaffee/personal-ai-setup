@@ -48,17 +48,50 @@ secrets:
     # base-secrets also claims this key: it is one of the four hard-requires at
     # deploy-vps.sh:344-350, which is a property of the deploy gate rather
     # than of this unit. Same key, two units, one store - the validator checks
-    # each entry against the roster its own `store` names.
+    # each entry against the roster its own `store` names, and requires the two
+    # rows to carry the SAME prompt and the same `generate`.
     store: vps
     secret: true
     optional: false
+    prompt: >-
+      ntfy topic for failure alerts — TRANSCRIBE the value minted on the Mac in
+      Phase 1; the name IS the password
+    generate: null
   - key: NTFY_EMAIL
-    # Not a secret: it is your own address, and secrets.env.example:25 says so
+    # Not a secret: it is your own address, and secrets.env.example:36 says so
     # in as many words. Optional - without it the alert is a plain topic push
     # that nobody is subscribed to.
     store: vps
     secret: false
     optional: true
+    prompt: >-
+      your own address (not a secret) — ntfy forwards each failure alert there
+    generate: null
+  # The Mac half. notify.sh runs from the Mac too (run-recipe.sh reads
+  # /data/secrets.env only when it is there), so both names belong in the
+  # Keychain — but only for a selection that includes this opt_in unit.
+  #
+  # NTFY_TOPIC is minted on the MAC: 10-accounts.md §6 step 1 is
+  # `openssl rand -hex 12`, in Phase 1, before the brain exists. So this row
+  # carries the generate command and the brain's row above only transcribes it.
+  # It is not the only such key -- code-agents.yaml's NTFY_AGENT_TOPIC is minted
+  # the same way at §6a -- so do not read a second mac_keychain row with a
+  # `generate` as a mistake.
+  - key: NTFY_TOPIC
+    store: mac_keychain
+    secret: true
+    optional: false
+    prompt: >-
+      ntfy topic for failure alerts — the name IS the password; mint one with
+      openssl rand -hex 12
+    generate: openssl rand -hex 12
+  - key: NTFY_EMAIL
+    store: mac_keychain
+    secret: false
+    optional: true
+    prompt: >-
+      your own address (not a secret) — ntfy forwards each failure alert there
+    generate: null
 
 owns:
   - {kind: repo_file, target: scripts/common/notify.sh}

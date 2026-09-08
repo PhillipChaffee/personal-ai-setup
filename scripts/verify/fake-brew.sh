@@ -17,7 +17,7 @@
 #
 # SECRETS: recording "$*" verbatim is safe HERE ONLY because no brew argument is
 # ever a credential. Do not carry the pattern into a sibling fake that can see
-# `-w`, `--password` or `Authorization` — keychain-secrets.sh:85 puts a live key
+# `-w`, `--password` or `Authorization` — keychain-secrets.sh:142 puts a live key
 # on `security`'s argv, and a fake standing in for that must redact before it
 # records (log the flag, the service and a length; never the value).
 #

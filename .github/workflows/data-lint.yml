@@ -446,13 +446,83 @@ jobs:
           }
           echo "check-units.sh correctly rejected a bare installer line reference."
 
+      # NEGATIVE TEST 6 — P6's Mac arm, which had to be REPLACED rather than
+      # kept. Before #39 it read "a store: mac_keychain key must appear in
+      # keychain-secrets.sh's VARS"; that script now takes its roster FROM this
+      # field, so the old rule would have compared the generator with itself and
+      # could never fail again. What replaces it is a closure over the one
+      # Mac-Keychain roster a human still writes by hand — the credential
+      # checklist in 10-accounts.md — and this proves it fires.
+      #
+      # The mutation is on the DOC side on purpose: it is the direction that
+      # says "the reader was told to store a key nothing prompts for", which is
+      # the bug the arm was written after (TODOIST_API_KEY, which
+      # store: goose_secret_store forbids from both global rosters).
+      - name: Negative test — the doc's Mac Keychain column must match the manifests
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/units-negative-maccol"; mkdir -p "$work"
+          git archive HEAD | tar -x -C "$work"
+          doc="$work/docs/setup/10-accounts.md"
+          # shellcheck disable=SC2016  # markdown table cells, not a substitution
+          sed -i 's/| `TODOIST_API_KEY` | no | no |/| `TODOIST_API_KEY` | yes | yes |/' "$doc"
+          # A sed that matched nothing makes this whole step a green no-op, and
+          # this table's cells move. Assert the mutation landed before running.
+          # shellcheck disable=SC2016  # same literal, for the same reason
+          grep -qF '| `TODOIST_API_KEY` | yes | yes |' "$doc" || {
+            echo "::error::the TODOIST row moved — this negative test is no longer mutating anything"
+            exit 1
+          }
+          if out="$("$work/scripts/verify/check-units.sh" --offline 2>&1)"; then
+            echo "::error::check-units.sh accepted a doc that stores a key no unit declares"
+            exit 1
+          fi
+          printf '%s\n' "$out" | grep -qF "says TODOIST_API_KEY lives in the Mac Keychain" || {
+            echo "::error::the gate failed, but not on the Mac Keychain column — P6's doc closure is inert"
+            printf '%s\n' "$out"
+            exit 1
+          }
+          echo "check-units.sh correctly rejected a credential table that disagrees with the manifests."
+
+      # NEGATIVE TEST 7 — the empty parenthetical, in the one place it can now
+      # be introduced. keychain-secrets.sh's hint table is gone; a hintless
+      # prompt can only come from a manifest row whose `prompt` says nothing,
+      # and a SINGLE SPACE is the shape that renders as `( )` and slips past any
+      # "is it empty" grep. Python rather than sed because the prompts are
+      # folded YAML blocks, and a sed that mangled the file would fail the gate
+      # for the wrong reason.
+      - name: Negative test — a blank prompt must fail
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/units-negative-prompt"; mkdir -p "$work"
+          git archive HEAD | tar -x -C "$work"
+          python3 - "$work/config/units/base-goose.yaml" <<'PY'
+          import pathlib, sys
+          import yaml
+          path = pathlib.Path(sys.argv[1])
+          data = yaml.safe_load(path.read_text())
+          assert data["secrets"], "base-goose has no secrets rows to blank"
+          data["secrets"][0]["prompt"] = " "
+          path.write_text(yaml.safe_dump(data, sort_keys=False))
+          PY
+          if out="$("$work/scripts/verify/check-units.sh" --offline 2>&1)"; then
+            echo "::error::check-units.sh accepted a whitespace-only prompt — the '( )' bug can come back"
+            exit 1
+          fi
+          printf '%s\n' "$out" | grep -qF ".prompt must be a non-empty string" || {
+            echo "::error::the gate failed, but not on the blank prompt"
+            printf '%s\n' "$out"
+            exit 1
+          }
+          echo "check-units.sh correctly rejected a prompt of one space."
+
       # The monthly run. continue-on-error until the catalog closes: --strict
       # also promotes the two REVERSE-closure checks, and every check-*.sh and
       # every secrets.env.example key is unclaimable until all 18 manifests
       # exist. A scheduled job that is red on arrival trains people to ignore
       # it — the same argument that makes staleness a NOTE in the required job.
       # FLIP THIS TO false IN THE PR THAT ADDS THE REMAINING 15 MANIFESTS; the
-      # five negative tests above are what keep --strict honest until then.
+      # seven negative tests above are what keep --strict honest until then.
       - name: check-units.sh --strict (monthly)
         if: github.event_name == 'schedule'
         continue-on-error: true

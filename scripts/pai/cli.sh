@@ -31,6 +31,7 @@ Usage: pai <command> [options]
   status   what is installed here
   list     what the repo ships
   units    one field of every manifest, one value per line (for scripts)
+  secrets  the credential roster for one host, projected from the manifests
   verify   run the checks the manifests claim, one table, one exit code
 
   verify --require <check>     a check that exits 2 (precondition missing) is a
@@ -44,6 +45,16 @@ Usage: pai <command> [options]
   units --host mac|vps|both|checklist
                                keep only the units that host installs (`both`
                                counts for every host).
+
+  secrets --host mac|vps [--units a,b,c | --all]
+                               one TAB-separated row per key: name, required or
+                               optional, the `openssl rand` command or -, and
+                               the prompt. Names and prompts only; no value is
+                               ever read. Default selection is every base and
+                               default_on unit; --host names the STORE, so a
+                               vps-hosted unit can still contribute a Mac
+                               Keychain row. scripts/mac/keychain-secrets.sh is
+                               the consumer.
 
 Every command writes nothing, except `doctor --fix`:
 
@@ -239,7 +250,7 @@ cmd_verify() {
 
 case "${1:-}" in
   -h|--help|"") usage; exit 0 ;;
-  doctor|status|list|units)
+  doctor|status|list|units|secrets)
     # An assignment, not `read -r -a PY <<<"$(py_runner)"`: verified under bash
     # 3.2.57, a here-string SWALLOWS the subshell's exit, so the version this
     # replaces printed py_runner's remedy and then exec'd doctor.py as if it

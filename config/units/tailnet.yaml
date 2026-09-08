@@ -43,7 +43,7 @@ runbook: docs/setup/10-accounts.md#3-tailscale
 # The one credential here is the Terraform auth key, and it is deliberately
 # NOT a stored secret: variables.tf:19 says it is entered at the interactive
 # prompt and never written to terraform.tfvars, so it appears in neither
-# config/env/secrets.env.example nor keychain-secrets.sh's VARS. Listing a
+# config/env/secrets.env.example nor any unit's `secrets` roster. Listing a
 # TAILSCALE_AUTHKEY here would invent an env var name the tree does not use.
 # It is recorded as a manual step instead.
 secrets: []

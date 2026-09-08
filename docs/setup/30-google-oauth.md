@@ -89,7 +89,8 @@ more MCP tools eating context.)
 3. Store them under the canonical names:
 
    ```bash
-   ./scripts/mac/keychain-secrets.sh   # add GOOGLE_OAUTH_CLIENT_ID + GOOGLE_OAUTH_CLIENT_SECRET
+   # asks for GOOGLE_OAUTH_CLIENT_ID + GOOGLE_OAUTH_CLIENT_SECRET and nothing else
+   ./scripts/mac/keychain-secrets.sh --units google-workspace
    ```
 
    In Phase 3 the same two values also go into `/data/secrets.env` on the

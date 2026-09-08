@@ -48,6 +48,10 @@ secrets:
     store: vps
     secret: true
     optional: false
+    prompt: >-
+      HTTP Basic password for the code-agent gateway and every per-chat server
+      behind it; mint it with openssl rand -hex 32
+    generate: openssl rand -hex 32
   - key: GITHUB_CODE_AGENT_PAT
     # Fine-grained, scoped to the repos in /data/code-agents/repos.json only.
     # It lives INSIDE the chat container as GH_TOKEN, which is why the probe
@@ -55,6 +59,11 @@ secrets:
     store: vps
     secret: true
     optional: false
+    prompt: >-
+      fine-grained GitHub PAT scoped to the repos in
+      /data/code-agents/repos.json ONLY, permissions Contents + Pull requests
+      (read/write)
+    generate: null
   - key: NTFY_AGENT_TOPIC
     # The agent channel, published by code-agent-manager.py directly rather
     # than through notify.sh. A SECOND topic on purpose: this is the one a
@@ -64,6 +73,23 @@ secrets:
     store: vps
     secret: true
     optional: true
+    prompt: >-
+      SECOND ntfy topic for code-agent buzzes — TRANSCRIBE the value minted on
+      the Mac; never the same value as NTFY_TOPIC
+    generate: null
+  # The Mac half. Nothing on the Mac READS this one; the Keychain is where the
+  # human keeps the value they type into the phone's ntfy app, which is what
+  # docs/privacy.md already says. It is minted on the Mac in Phase 1
+  # (10-accounts.md §6a), so this is the row that carries the generate command
+  # and the brain's row above transcribes it.
+  - key: NTFY_AGENT_TOPIC
+    store: mac_keychain
+    secret: true
+    optional: true
+    prompt: >-
+      SECOND ntfy topic, the one the phone subscribes to for code-agent buzzes;
+      mint one with openssl rand -hex 12
+    generate: openssl rand -hex 12
 
 owns:
   - {kind: repo_file, target: config/code-agents/Containerfile}

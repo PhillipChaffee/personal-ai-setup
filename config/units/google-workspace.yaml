@@ -42,25 +42,54 @@ verify:
 runbook: docs/setup/30-google-oauth.md
 
 # All four names live in config/env/secrets.env.example, which is what
-# store: vps asserts. The OAuth pair is ALSO in keychain-secrets.sh's VARS for
-# the Mac half; the schema allows one store per entry, so the roster that is
-# checked here is the brain's, and the Mac's copy of the same two names is
-# base-secrets' `run-keychain-secrets` step.
+# store: vps asserts. The OAuth pair is ALSO in the Mac Keychain — and since
+# #39 that half is a row here rather than a name in keychain-secrets.sh's VARS,
+# so the same manifest now describes both stores and each is checked against
+# its own source of truth. The two email values are brain-only: nothing on the
+# Mac reads them.
 secrets:
   - key: GOOGLE_OAUTH_CLIENT_ID
     store: vps
     secret: true
     optional: false
+    prompt: >-
+      your own GCP OAuth client id (docs/setup/30-google-oauth.md) — created in
+      Phase 2
+    generate: null
   - key: GOOGLE_OAUTH_CLIENT_SECRET
     store: vps
     secret: true
     optional: false
+    prompt: >-
+      the matching GCP OAuth client secret (docs/setup/30-google-oauth.md) —
+      created in Phase 2
+    generate: null
+  - key: GOOGLE_OAUTH_CLIENT_ID
+    store: mac_keychain
+    secret: true
+    optional: false
+    prompt: >-
+      your own GCP OAuth client id (docs/setup/30-google-oauth.md) — created in
+      Phase 2
+    generate: null
+  - key: GOOGLE_OAUTH_CLIENT_SECRET
+    store: mac_keychain
+    secret: true
+    optional: false
+    prompt: >-
+      the matching GCP OAuth client secret (docs/setup/30-google-oauth.md) —
+      created in Phase 2
+    generate: null
   - key: USER_GOOGLE_EMAIL
     # A value, not a credential: workspace-mcp's default account, and the only
     # address the recipes send their delivery email from.
     store: vps
     secret: false
     optional: false
+    prompt: >-
+      your PRIMARY Gmail address (not a secret) — workspace-mcp's default
+      account and the only address recipes send from
+    generate: null
   - key: USER_GOOGLE_EMAILS
     # The optional multi-account roster. Read by this repo's own wiring
     # (register-schedules.sh, run-recipe.sh, check-mcp.sh); workspace-mcp
@@ -68,6 +97,10 @@ secrets:
     store: vps
     secret: false
     optional: true
+    prompt: >-
+      optional comma-separated roster of every Google account the brain
+      manages, primary FIRST (docs/setup/30-google-oauth.md §8)
+    generate: null
 
 owns:
   # The extension fragment. goose_template.py composes it into

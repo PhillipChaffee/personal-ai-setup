@@ -785,6 +785,17 @@ def inventory(repo: Path, home: Path) -> int:
 
 
 @dataclass(frozen=True)
+class Secret:
+    """One `secrets:` row of one manifest, flattened for `pai secrets`."""
+
+    key: str
+    store: str
+    prompt: str
+    generate: str | None
+    optional: bool
+
+
+@dataclass(frozen=True)
 class Unit:
     """One row of `pai list`, flattened from one config/units/<id>.yaml manifest."""
 
@@ -795,6 +806,7 @@ class Unit:
     requires: tuple[str, ...]
     cost: str
     manual_steps: int
+    secrets: tuple[Secret, ...]
     # Not columns -- the two counts in the footer, which are the whole reason
     # config/units/ exists: a majority of units have nothing that installs them
     # or nothing that verifies them, and that was invisible until it was
@@ -866,6 +878,19 @@ def load_units(repo: Path) -> tuple[list[Unit], list[str]]:
                 # not a column. No figure originates here or in the manifest.
                 cost=" + ".join(str(c["amount"]) for c in data.get("cost") or ()) or "-",
                 manual_steps=len(data.get("manual_steps") or ()),
+                secrets=tuple(
+                    Secret(
+                        key=str(row["key"]),
+                        store=str(row["store"]),
+                        prompt=str(row["prompt"]),
+                        # `generate: null` is the common case and stays None;
+                        # anything else is the `openssl rand -hex N` command
+                        # check-units.sh has already constrained to that shape.
+                        generate=None if row["generate"] is None else str(row["generate"]),
+                        optional=bool(row["optional"]),
+                    )
+                    for row in data.get("secrets") or ()
+                ),
                 has_installer=data.get("installer") is not None,
                 # str() per entry, not tuple(...): check-units.sh rejects a
                 # non-string entry, but this renderer runs between two of its
@@ -1021,6 +1046,122 @@ def projection(repo: Path, argv: list[str]) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- pai secrets --
+#
+# THE ROSTER IS THE MANIFESTS. Before #39 the Mac's roster was a nine-name
+# string at keychain-secrets.sh:12 with a `case` of hints beside it whose
+# default arm was `echo ""`, and it prompted for every name on every run --
+# including a Telegram bot token for a gateway that only ever runs on the brain.
+# This projection replaces both: one row per key, carrying the manifest's own
+# `prompt`, restricted to the units a machine actually has.
+#
+# `--host` NAMES THE STORE, NOT THE UNIT'S HOST. A vps-hosted unit can still
+# need a value in the Mac's Keychain -- `brain`'s GOOSE_SERVER__SECRET_KEY is
+# minted on the brain and transcribed into the Mac client -- so filtering by
+# `unit.host` here would drop exactly the rows a laptop needs.
+HOST_STORES = {"mac": "mac_keychain", "vps": "vps"}
+
+# What a machine has when nobody said otherwise: every base unit plus every
+# default_on one. NOT "tier: base" -- bootstrap-mac.sh installs opencode and
+# coding-pack too, so a base-only rule would leave a default install short.
+DEFAULT_TIERS = frozenset({"base", "default_on"})
+
+# key, required-or-optional, the generate command or "-", and the prompt.
+# TAB-separated because the only consumer is a bash `read -r` loop on macOS's
+# bash 3.2, and check-units.sh forbids a tab inside a prompt so the last column
+# cannot be split by accident.
+ROSTER_ROW = "{key}\t{need}\t{generate}\t{prompt}"
+
+
+def select_units(units: list[Unit], names: list[str]) -> tuple[list[Unit], int]:
+    """Return the units to project over: an explicit list, or the default set."""
+    if not names:
+        return ([u for u in units if u.tier in DEFAULT_TIERS], 0)
+    known = {u.id: u for u in units}
+    unknown = [name for name in names if name not in known]
+    if unknown:
+        print(  # noqa: T201
+            f"doctor.py: unknown unit(s): {', '.join(unknown)}", file=sys.stderr,
+        )
+        # Loudly, because the alternative is an empty roster: a typo'd
+        # `--units googl-workspace` that prompted for nothing would read as
+        # "this add-on needs no secrets" and be believed.
+        return ([], 2)
+    return ([known[name] for name in names], 0)
+
+
+def roster(units: list[Unit], store: str) -> list[Secret]:
+    """Every distinct key those units keep in `store`, sorted, one row per key.
+
+    De-duplication is by KEY, and it takes the first row in id order: two rows
+    for one (key, store) pair must already agree on prompt and generate, which
+    check-units.sh asserts. `optional` is the AND of the rows -- a key that any
+    selected unit requires is required.
+    """
+    found: dict[str, Secret] = {}
+    for unit in units:
+        for entry in unit.secrets:
+            if entry.store != store:
+                continue
+            first = found.get(entry.key)
+            if first is None or (first.optional and not entry.optional):
+                found[entry.key] = entry
+    return [found[key] for key in sorted(found)]
+
+
+def secrets(repo: Path, flags: list[str]) -> int:
+    """`pai secrets --host <mac|vps> [--units a,b,c | --all]`.
+
+    Writes nothing and speaks to nothing: it reads config/units/ and prints. The
+    consumer is scripts/mac/keychain-secrets.sh, which calls it twice -- once for
+    the selection it prompts for, once with --all for the ~/.zshrc export block.
+    """
+    host = ""
+    names: list[str] = []
+    take_all = False
+    rest = list(flags)
+    while rest:
+        flag = rest.pop(0)
+        if flag in {"--host", "--units"} and rest:
+            value = rest.pop(0)
+            if flag == "--host":
+                host = value
+            else:
+                names = [name for name in value.replace(",", " ").split() if name]
+        elif flag == "--all":
+            take_all = True
+        else:
+            print(f"doctor.py: bad option {flag!r}", file=sys.stderr)  # noqa: T201
+            return 2
+    if host not in HOST_STORES:
+        print(  # noqa: T201
+            f"doctor.py: secrets needs --host {'|'.join(sorted(HOST_STORES))}"
+            f"{f' (got {host!r})' if host else ''}",
+            file=sys.stderr,
+        )
+        return 2
+    if take_all and names:
+        print(  # noqa: T201
+            "doctor.py: --all and --units contradict each other", file=sys.stderr,
+        )
+        return 2
+    units, _ = load_units(repo)
+    if take_all:
+        chosen, rc = units, 0
+    else:
+        chosen, rc = select_units(units, names)
+    if rc:
+        return rc
+    for entry in roster(chosen, HOST_STORES[host]):
+        _emit(ROSTER_ROW.format(
+            key=entry.key,
+            need="optional" if entry.optional else "required",
+            generate=entry.generate or "-",
+            prompt=entry.prompt,
+        ))
+    return 0
+
+
 # Exactly the flags `doctor` accepts. An unknown one is a usage error rather
 # than a silently ignored word: `pai doctor --fx` must not read as a plain,
 # harmless `pai doctor`, and `pai doctor --fix --dry-run` must not read as a
@@ -1064,6 +1205,8 @@ def main(argv: list[str]) -> int:
         return catalogue(repo)
     if command == "units":
         return projection(repo, argv[2:])
+    if command == "secrets":
+        return secrets(repo, argv[2:])
     print(f"doctor.py: unknown command {command!r}", file=sys.stderr)  # noqa: T201
     return 2
 

@@ -47,19 +47,30 @@ secrets:
     store: mac_keychain
     secret: true
     optional: false
-  # store: none, still, and #39 is what changes it. The Zen key ends up in
-  # OpenCode's OWN credential store (~/.local/share/opencode/auth.json), which
-  # is neither config/env/secrets.env.example nor keychain-secrets.sh's VARS --
-  # a third store this validator cannot read, so claiming `mac_keychain` here
-  # would assert a file location that is not where the key ends up. What #38
-  # changed is HOW it gets there: scripts/mac/opencode-auth.sh reads
-  # $OPENCODE_ZEN_API_KEY out of the environment and writes that file, so the
-  # environment is now the input and the Keychain is one hop further back. See
-  # the env-only-for-now blocker below.
+    prompt: >-
+      Together AI key (docs/setup/10-accounts.md §2) — goose's together provider
+      and opencode.json both read it by name
+    generate: null
+  # store: mac_keychain since #39 -- the flip #38's comment here said this
+  # ticket would make -- and it is a correction rather than a widening.
+  # scripts/mac/opencode-auth.sh still writes the key into OpenCode's OWN
+  # credential store (~/.local/share/opencode/auth.json), which no roster here
+  # can read; that store is still real and the env-only-for-now blocker below
+  # still describes how the value reaches it. What changes is the claim this
+  # row makes: `none` said the key is stored nowhere the catalog knows, while
+  # the Keychain entry is real, base-goose already claims it for goose's three
+  # zen providers, and the environment opencode-auth.sh reads is populated from
+  # that entry by ~/.zshrc. The third store is recorded in `owns` and in the
+  # blocker, which is where a location this validator cannot read belongs.
+
   - key: OPENCODE_ZEN_API_KEY
-    store: none
+    store: mac_keychain
     secret: true
     optional: false
+    prompt: >-
+      OpenCode Zen console key (docs/setup/10-accounts.md §1) — goose's three
+      zen providers read it by name
+    generate: null
 
 owns:
   # From FORMULAE_OPENCODE, which unit_opencode() is the only consumer of.
@@ -103,8 +114,10 @@ blockers:
   - id: zen-key-is-env-only
     severity: note
     detail: "scripts/mac/opencode-auth.sh reads $OPENCODE_ZEN_API_KEY from the
-      ENVIRONMENT only; it does not ask the Keychain. That is #39's job and the
-      reason is mechanical rather than aesthetic: a `security` call from a
+      ENVIRONMENT only; it does not ask the Keychain. #39 flipped this unit's
+      row to store: mac_keychain and left this as it found it, deliberately,
+      and the reason is mechanical rather than aesthetic: a `security` call
+      from a
       bootstrap child lands in $PAI_DENY_LOG, which test-base-install.sh's A5
       and B4 require to be empty, so it would have to be routed through the
       PAI_EXEC seam -- a new fake-exec.sh arm plus a rewrite of fake-brew.sh's
@@ -138,5 +151,8 @@ notes: >-
   The tier split with base-goose is about what BILLS, not about what runs:
   three of goose's four custom providers name OPENCODE_ZEN_API_KEY, so the Zen
   account is load-bearing for base-goose whether or not this CLI is installed.
-  That is why base-goose keeps the mac_keychain claim on that key and this
-  unit records the separate store OpenCode itself keeps the credential in.
+  That is why base-goose keeps a mac_keychain claim on that key even where this
+  CLI is not installed, and why this unit's own row is mac_keychain too since
+  #39: both read the same Keychain entry. The separate store OpenCode itself
+  keeps the credential in is recorded in `owns`
+  (~/.local/share/opencode/auth.json), not as a `secrets` store.

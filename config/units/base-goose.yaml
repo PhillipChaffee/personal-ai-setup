@@ -34,17 +34,30 @@ verify:
   - scripts/verify/check-providers.sh
 runbook: docs/setup/20-mac-setup.md
 
+# The two names a base-only Mac is prompted for, and the only two: this unit
+# and `opencode` are the whole of the default selection that carries a
+# mac_keychain row, which is what makes `pai secrets --host mac` print exactly
+# these two. `prompt` is what keychain-secrets.sh SHOWS at the hidden prompt --
+# there is no second hint table anywhere.
 secrets:
   - key: TOGETHER_API_KEY
     store: mac_keychain
     secret: true
     optional: false
+    prompt: >-
+      Together AI key (docs/setup/10-accounts.md §2) — goose's together provider
+      and opencode.json both read it by name
+    generate: null
   - key: OPENCODE_ZEN_API_KEY
     # Not an OpenCode-CLI artifact: three of goose's four custom providers name
     # it in api_key_env, so it stays here whatever tier the opencode unit gets.
     store: mac_keychain
     secret: true
     optional: false
+    prompt: >-
+      OpenCode Zen console key (docs/setup/10-accounts.md §1) — goose's three
+      zen providers read it by name
+    generate: null
 
 owns:
   - {kind: brew_formula, target: block-goose-cli}

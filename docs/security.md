@@ -149,9 +149,16 @@ the manifest-side contract is in
 
 - **Mac** — everything in the macOS Keychain via `scripts/mac/keychain-secrets.sh`
   (wraps `security add-generic-password` / `find-generic-password`; the store prompt
-  never puts the secret in shell history). Goose itself keeps provider keys in the
-  Keychain by default — **never set `GOOSE_DISABLE_KEYRING`** on the Mac, which would
-  downgrade to a plaintext `secrets.yaml`.
+  never puts the secret in shell history). It asks for the secrets kept there by the
+  units you *name* with `--units`, defaulting to `base` + `default_on`; the same roster,
+  names and prompts only, is what `pai secrets --host mac` prints — read "The bare form
+  is not an audit of your Keychain" below before treating it as one. It then regenerates
+  the marked export block in `~/.zshrc` in place, leaving every line outside the markers
+  untouched. Where `~/.zshrc` is a symlink into a dotfiles repo it writes *through* the
+  link and takes the mode from the file at the end of it, so a file naming every
+  credential on the machine never lands at the symlink's own 0755. Goose itself keeps
+  provider keys in the Keychain by default — **never set `GOOSE_DISABLE_KEYRING`** on the
+  Mac, which would downgrade to a plaintext `secrets.yaml`.
 - **Brain** — headless Linux has no keyring, so stack-wide secrets live in
   `/data/secrets.env`, `chmod 600`, owned by `agent`, on the encrypted volume, injected
   via systemd `EnvironmentFile`. The variable roster (names only) is
@@ -163,12 +170,28 @@ the manifest-side contract is in
 - **Git** — nothing, ever. Enforced by `.gitignore`, the gitleaks pre-commit hook, and
   CI; audited by the [public-repo.md](public-repo.md) checklist.
 
-The full secret roster: `OPENCODE_ZEN_API_KEY`, `TOGETHER_API_KEY`,
-`GOOSE_SERVER__SECRET_KEY`, `NTFY_TOPIC`, `NTFY_AGENT_TOPIC` (optional), `NTFY_EMAIL`,
-`TAVILY_API_KEY` (optional),
-`GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` — plus, outside env vars: the LUKS
-passphrase (password manager only), the Tailscale auth key (Terraform tfvars, untracked),
-and the Google OAuth token files on `/data`.
+**The roster is not written down here.** It was, and it drifted: this paragraph listed
+nine names against `secrets.env.example`'s fourteen and `keychain-secrets.sh`'s ten. Ask
+the manifests instead — they are what both the prompts and the checked
+[credential checklist](setup/10-accounts.md#credential-checklist) come from:
+
+```bash
+pai secrets --host mac                            # the base + default_on roster
+pai secrets --host mac --units google-workspace   # one add-on's Keychain names
+pai secrets --host mac --all                      # every name the catalog can put there
+pai secrets --host vps                            # what /data/secrets.env must hold
+```
+
+**The bare form is not an audit of your Keychain.** It projects the *default* selection
+— every `base` and `default_on` unit — and nothing in it knows which add-ons you actually
+installed, so on a Mac running `google-workspace` and `ntfy-alerts` it still prints two
+names. Name the add-ons with `--units`, or use `--all`, when the question is "does my
+Keychain hold everything it should".
+
+Outside env vars entirely, and therefore outside every roster above: the LUKS passphrase
+(password manager only), the Tailscale auth key (typed at the Terraform prompt, never
+written to `terraform.tfvars`), the `life-vault` deploy key, and the Google OAuth token
+files on `/data`.
 
 ## Host hygiene
 
