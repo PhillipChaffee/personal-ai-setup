@@ -105,7 +105,7 @@ The units and their dependencies:
 |---|---|---|
 | `base-toolchain` | uv, node, jq, the Tailscale cask | — |
 | `base-goose` | goose CLI + Desktop cask, the pin, `~/.config/goose` | `base-toolchain` |
-| `opencode` | the OpenCode CLI, `~/.config/opencode/opencode.json` | `base-goose` |
+| `opencode` | the OpenCode CLI, `~/.config/opencode/opencode.json`, the Zen credential in `~/.local/share/opencode/auth.json` | `base-goose` |
 | `base-skills` | the `connect-service` skill | `base-goose` |
 | `coding-pack` | the eleven ported skills, the agents, `AGENTS.md` | `opencode` |
 
@@ -170,7 +170,9 @@ do here** on a normal install: `bootstrap-mac.sh` writes
 `~/.local/share/opencode/auth.json` (mode `600`) from `$OPENCODE_ZEN_API_KEY`,
 and `config/opencode/opencode.json` — already copied by the bootstrap — pins the
 models and the `together` provider so they survive across machines. There is no
-`/connect` step and no `/models` step any more.
+`/connect` step any more. `/models` survives for exactly one case, the second
+bullet below: those pins are the defaults for a **fresh** profile, and OpenCode
+will keep a model it has already remembered.
 
 Two cases where you do something:
 

@@ -30,15 +30,21 @@
 # different `FAIL  F5:` lines in the same run and share five shell variables
 # (F4_RC, F5_RC, F5_HOME, F6_RC, F6_OUT) across a thousand lines, so the
 # newcomer moved. Every row #38 shipped is here, in order, with an I: I0, I0b,
-# I1 and up. install-test.yml's third negative test greps `^FAIL  I1:`.
+# I1..I12. install-test.yml's third negative test greps `^FAIL  I1:`.
 #
 # Every assertion carries its id from the spec (A1..A16, B1..B4, C1, D1..D6,
-# E1..E2, F1..F6, G1..G5, H1..H4, I0..I8) so a failure names the thing the
-# installer did not do, rather than the line that happened to notice. Four ids
+# E1..E2, F1..F6, G1..G6, H1..H4, I0..I12) so a failure names the thing the
+# installer did not do, rather than the line that happened to notice. Eight ids
 # are this file's own: E1b, because E1 as written cannot fail the way its
 # negative control claims (see phase E); D-deny, which extends the deny-PATH
 # invariant over the check-goose step; A9, the no-flag run's zero-skip guard;
-# and I0b, which asserts check-opencode.sh's exit-2 precondition arm. A14
+# G6, which is the rebase's own row -- #38 added a second OpenCode-specific line
+# to the epilogue #37 had just made selection-aware, and G6 is what keeps both
+# of them inside the gate; I0b, which asserts check-opencode.sh's exit-2
+# precondition arm; I9, which fails when a new env seam is not taken out of the
+# environment here; I10/I11, the fixtures C7's and C8's symlink arms never had;
+# and I12, which stops the installer's epilogue denying a manual step the
+# manifest keeps. A14
 # is now A14a + A14b -- the seam's SHAPE and the installer's OUTPUT are two
 # claims, and #37 makes only the first of them expressible as a diff of source.
 #
@@ -215,9 +221,29 @@ mkdir -p "$FAKE_HOME" "$STATE" "$PREFIX" "$WORK/out"
 # https://opencode.ai / https://api.together.xyz base_urls -- and this
 # "no network, no keys" harness makes authenticated-looking requests to two
 # production endpoints with the developer's own key.
-unset GOOSE_BIN PAI_MODE BRAIN_HOST OPENCODE_ZEN_API_KEY TOGETHER_API_KEY \
-  GOOSE_SERVER__SECRET_KEY ZEN_BASE TOGETHER_BASE PAI_EXEC FAKE_PROVIDER_MODE \
-  FAKE_PROVIDER_ZEN_KEY FAKE_PROVIDER_TOGETHER_KEY 2>/dev/null || true
+#
+# THE SAME HAZARD, VERBATIM, FOR OPENCODE_BIN. #38 shipped it as a documented
+# env seam (check-opencode.sh's "Env seams (testing only)" block) and did not
+# add it here, so a developer with `export OPENCODE_BIN=/opt/homebrew/bin/opencode`
+# in their shell had this harness run the REAL opencode three times against
+# $HOME=$FAKE_HOME, whose auth.json holds the fixture key -- an
+# authenticated-looking request to opencode.ai. OPENCODE_BREW_PREFIX,
+# FAKE_OPENCODE_VERSION and FAKE_PROVIDER_URL are the same class of seam; phase
+# I happens to set all three at every call site today, so they are defence in
+# depth rather than a live hole, and I9 is what keeps the NEXT one from being.
+#
+# A LIST IN A VARIABLE, not a bare `unset` argv, because I9 asserts against it.
+# A lint that re-parsed this source text for a name list would be one more thing
+# to get wrong; reading the same string the `unset` consumes cannot drift.
+HARNESS_UNSET_NAMES="GOOSE_BIN PAI_MODE BRAIN_HOST OPENCODE_ZEN_API_KEY
+  TOGETHER_API_KEY GOOSE_SERVER__SECRET_KEY ZEN_BASE TOGETHER_BASE PAI_EXEC
+  FAKE_PROVIDER_MODE FAKE_PROVIDER_ZEN_KEY FAKE_PROVIDER_TOGETHER_KEY
+  OPENCODE_BIN OPENCODE_BREW_PREFIX FAKE_OPENCODE_VERSION FAKE_PROVIDER_URL"
+# shellcheck disable=SC2086
+# ^ DELIBERATE word splitting: the variable holds NAMES, one per word, and
+# `unset "$HARNESS_UNSET_NAMES"` would try to unset one variable whose name is
+# the whole sentence -- a silent no-op that reopens exactly the hole above.
+unset $HARNESS_UNSET_NAMES 2>/dev/null || true
 
 # The fixture keys, in the spelling already committed at
 # test-code-agent-manager.sh:217/219 (low entropy, established gitleaks
@@ -791,6 +817,27 @@ EOF
     bad "G4: the --without opencode brew log is not the 14-line golden"
     evidence "$WORK/golden-g.diff"
   fi
+
+  # G6 — THE EPILOGUE IS SELECTION-AWARE, BOTH OF ITS OPENCODE LINES. #37 split
+  # the next-steps screen into heredocs so the /connect step could be omitted;
+  # #38 replaced that step with the credential paragraph and added a third
+  # verify line, `check-opencode.sh`. Both are OpenCode-specific, so both are
+  # inside `if in_set opencode "$SELECTED"` now, and this is the row that says
+  # so. It is asserted as a PAIR and against the reference run: "the noc log
+  # does not mention opencode-auth.sh" passes just as well on a truncated log,
+  # or on a run that printed no epilogue at all, which is why the same two
+  # strings must be PRESENT in $G_FULL_HOME's transcript.
+  G6_NOC=0
+  G6_FULL=0
+  grep -qF "opencode-auth.sh" "$WORK/out/g-noc.log" ||
+    grep -qF "check-opencode.sh" "$WORK/out/g-noc.log" || G6_NOC=1
+  grep -qF "opencode-auth.sh" "$WORK/out/g-full.log" &&
+    grep -qF "check-opencode.sh" "$WORK/out/g-full.log" && G6_FULL=1
+  [ "$G6_NOC" -eq 1 ] && [ "$G6_FULL" -eq 1 ] &&
+    ok "G6: the next-steps screen offers opencode-auth.sh and check-opencode.sh only when opencode was installed" || {
+    bad "G6: the epilogue is not selection-aware (noc clean=$G6_NOC, reference mentions both=$G6_FULL)"
+    evidence "$WORK/out/g-noc.log"
+  }
 fi
 
 # ---- 8. phase H — --dry-run -------------------------------------------------
@@ -1468,6 +1515,42 @@ if leg opencode; then
   echo
   echo "== phase I: the OpenCode credential, and check-opencode.sh =="
 
+  # -- I9: THE SEAM LINT, and it exists because #38 got this wrong ------------
+  # check-opencode.sh documented OPENCODE_BIN as an env seam and nothing added
+  # it to $HARNESS_UNSET_NAMES, so the harness inherited it and ran a foreign
+  # binary against the fake $HOME that carries the fixture key. Adding the four
+  # names fixes today. This row is what makes the NEXT seam loud: it asserts
+  # that every OPENCODE_*/FAKE_* name appearing anywhere in the three files
+  # phase I drives is one this harness has taken out of the environment.
+  #
+  # LEXICAL AND OVER-BROAD ON PURPOSE, comments and note strings included. A
+  # name that only ever appears in prose costs one word in the unset list; a
+  # name that is a real seam and is missing costs a credential. The lookbehind
+  # is the one narrowing: without it `PAI_OPENCODE_AUTH_FILE`
+  # (opencode-auth.sh:99, a name that script exports for its own heredoc) is
+  # reported as a missing seam, and a lint whose first output is a false
+  # positive is a lint somebody deletes. It runs FIRST in the phase, before any
+  # fixture is planted, because it is a property of the source and there is
+  # nothing for it to wait for.
+  I9_MISSING="$(PAI_I9_NAMES="$HARNESS_UNSET_NAMES" "$WORK/pathmin/python3" -c '
+import os, re, sys
+unset = set(os.environ["PAI_I9_NAMES"].split())
+seen = set()
+for path in sys.argv[1:]:
+    with open(path, encoding="utf-8") as fh:
+        seen |= set(re.findall(r"(?<![A-Za-z0-9_])(?:OPENCODE|FAKE)_[A-Z0-9_]+", fh.read()))
+print(" ".join(sorted(seen - unset)))
+' "$HERE/check-opencode.sh" "$HERE/fake-opencode.sh" \
+  "$REPO_ROOT/scripts/mac/opencode-auth.sh")"
+  # The MESSAGE carries variable NAMES, never a value -- that is the whole point
+  # of the row, and E2's rule still applies to it.
+  [ -z "$I9_MISSING" ] &&
+    ok "I9: every OPENCODE_*/FAKE_* seam the OpenCode scripts name is unset by this harness" || {
+    bad "I9: an env seam the OpenCode scripts read is NOT in \$HARNESS_UNSET_NAMES: $I9_MISSING"
+    echo "      | add it there, or this harness runs whatever the developer's shell chose"
+    echo "      | against \$HOME=$FAKE_HOME, whose auth.json holds a credential"
+  }
+
   OC_PORT="${OC_PORT:-4395}"
   OC_URL="http://127.0.0.1:$OC_PORT"
   OC_RECORD="$WORK/opencode-provider.jsonl"
@@ -1696,6 +1779,112 @@ sys.exit(0 if ok else 1)
     evidence "$I6_OUT"
   }
 
+  # -- I10/I11: the two rows that make C7's and C8's SYMLINK arms real ---------
+  # Neither of these was constrained by a fixture before. plant_opencode writes
+  # a regular file at exactly $OPENCODE_BREW_PREFIX/bin/opencode, so in I0 the
+  # PATH winner and the declared path are byte-identical strings: reverting C8
+  # to `[ "$PATH_WINNER" = "$DECLARED" ]` and deleting C7's `|| is_vendor
+  # "$WINNER_REAL"` arm left this leg at 20 passed, 0 failed. The PR body spends
+  # a section on the lexical-vs-resolved distinction; these two rows are what
+  # holds it -- and I11 promptly found that C7's resolved arm compared against
+  # an UNRESOLVED vendor root and so could not fire on this platform at all.
+  #
+  # I10 is the machine that is CORRECT and a lexical check would slander: the
+  # measured /opt/homebrew/bin/opencode (a symlink) vs /opt/homebrew/opt/opencode
+  # (brew's declared prefix), same file underneath. Only the link dir goes on
+  # PATH -- putting both there would resolve `opencode` twice and redden C9 for
+  # an unrelated reason, which is not what this row is asking.
+  OC_LINK_DIR="$WORK/opencode-link/bin"
+  mkdir -p "$OC_LINK_DIR"
+  ln -sf "$OC_BREW_PREFIX/bin/opencode" "$OC_LINK_DIR/opencode"
+  I10_OUT="$WORK/out/i10.log"; I10_RC=0
+  PATH="$OC_LINK_DIR:$WORK/deny-net:$WORK/pathmin" \
+  PAI_DENY_LOG="$OC_DENY" \
+  OPENCODE_BREW_PREFIX="$OC_BREW_PREFIX" \
+  FAKE_PROVIDER_URL="$OC_URL" \
+    "$HERE/check-opencode.sh" >"$I10_OUT" 2>&1 || I10_RC=$?
+  # C8's OWN row, not the summary: a summary assertion here reddens whenever any
+  # of the other eight rows does (the CI negative that deletes the credential
+  # makes C2 fail), and "C8 compared strings?" would then be a lie about a run
+  # that never reached C8.
+  #
+  # I10_DISTINCT is the guard that keeps this row from going inert the way the
+  # thing it replaces did: the fixture is only interesting while the two paths
+  # DIFFER as strings, and an edit that pointed the link dir at the brew prefix
+  # would leave a lexical C8 passing too.
+  I10_DISTINCT=0
+  if [ "$OC_LINK_DIR/opencode" != "$OC_BREW_PREFIX/bin/opencode" ]; then
+    I10_DISTINCT=1
+  fi
+  I10_C8=0
+  if grep -qF "PASS  C8: the PATH winner is the declared brew install" "$I10_OUT"; then
+    I10_C8=1
+  fi
+  [ "$I10_DISTINCT" -eq 1 ] && [ "$I10_C8" -eq 1 ] &&
+    ok "I10: a PATH winner that is a SYMLINK to the declared install passes C8 — no cry-wolf" || {
+    bad "I10: check-opencode.sh called a correct machine shadowed (rc=$I10_RC, distinct=$I10_DISTINCT, C8 green=$I10_C8)"
+    evidence "$I10_OUT"
+  }
+
+  # I11 is the mirror: a brew-SHAPED path (nothing under ~/.opencode about it)
+  # that resolves into the vendor tree. The lexical arm alone reads this as
+  # clean, which is the case C7's second arm exists for and the case no row
+  # asked about. $OC_VENDOR_BIN itself stays off PATH so the finding cannot come
+  # from cardinality.
+  OC_TRAP_DIR="$WORK/opencode-trap/bin"
+  mkdir -p "$OC_TRAP_DIR"
+  ln -sf "$OC_VENDOR_BIN/opencode" "$OC_TRAP_DIR/opencode"
+  I11_OUT="$WORK/out/i11.log"; I11_RC=0
+  PATH="$OC_TRAP_DIR:$WORK/deny-net:$WORK/pathmin" \
+  PAI_DENY_LOG="$OC_DENY" \
+  OPENCODE_BREW_PREFIX="$OC_BREW_PREFIX" \
+  FAKE_PROVIDER_URL="$OC_URL" \
+    "$HERE/check-opencode.sh" >"$I11_OUT" 2>&1 || I11_RC=$?
+  I11_NAMED=0
+  grep -qF 'FAIL  C7:' "$I11_OUT" &&
+    grep -qF 'is the self-updating vendor build' "$I11_OUT" &&
+    grep -qF "$OC_TRAP_DIR/opencode (1.18.26)" "$I11_OUT" && I11_NAMED=1
+  # I10_DISTINCT's counterpart, and the reason this row tests the RESOLVED arm
+  # rather than the lexical one: the path PATH hands over must not itself be
+  # under the vendor root, or C7's first arm answers and the second stays
+  # unconstrained -- which is precisely the state this row was added to end.
+  I11_LEXICAL_CLEAN=0
+  case "$OC_TRAP_DIR/opencode" in
+    "$FAKE_HOME/.opencode"/*) ;;
+    *) I11_LEXICAL_CLEAN=1 ;;
+  esac
+  [ "$I11_RC" -ne 0 ] && [ "$I11_NAMED" -eq 1 ] && [ "$I11_LEXICAL_CLEAN" -eq 1 ] &&
+    ok "I11: a brew-shaped symlink INTO the vendor tree still FAILs C7, naming the path PATH gave" || {
+    bad "I11: the resolved-path arm of C7 did not fire (rc=$I11_RC, named=$I11_NAMED, lexically-clean fixture=$I11_LEXICAL_CLEAN)"
+    evidence "$I11_OUT"
+  }
+
+  # -- I12: the epilogue may not deny a manual step the manifest still keeps ---
+  # #38 shipped a next-steps screen reading "There is no /connect step and no
+  # /models step" in the same commit that DELIBERATELY kept set-default-model in
+  # config/units/opencode.yaml, under a comment explaining that /models is the
+  # repair for a profile that is not fresh. A user whose OpenCode had remembered
+  # another model was told by the installer that the step did not exist.
+  #
+  # The pairing is the assertion: prose in a `cat <<EOF` has no other reader, and
+  # a manifest that declares a manual step is the one place this repo says a step
+  # exists. Nested `if`s rather than the file's `&&` idiom because the inner grep
+  # FAILING is the good case, and `grep ... && X=1` as the last command of a body
+  # would take errexit down with it.
+  I12_STEP=0
+  I12_DENIED=0
+  if grep -qE '^  - id: set-default-model$' "$REPO_ROOT/config/units/opencode.yaml"; then
+    I12_STEP=1
+  fi
+  if grep -qF "no /models step" "$A_OUT"; then
+    I12_DENIED=1
+  fi
+  [ "$I12_STEP" -eq 0 ] || [ "$I12_DENIED" -eq 0 ] &&
+    ok "I12: the installer's next-steps screen does not deny a manual step opencode.yaml keeps" || {
+    bad "I12: bootstrap-mac.sh's epilogue says there is no /models step, but opencode.yaml still declares set-default-model"
+    echo "      | fix the PROSE or drop the manual step — one of the two is wrong"
+  }
+
   # -- I7: the invariant, over this phase --------------------------------------
   [ -s "$OC_DENY" ] && {
     bad "I7: something in phase I reached a denied binary — a bare \`brew\` in check-opencode.sh?"
@@ -1708,7 +1897,8 @@ sys.exit(0 if ok else 1)
   # phase A transcript is on the list because that is where opencode-auth.sh's
   # own output lands on a real install.
   I8_HITS=0
-  for oc_log in "$OC_RECORD" "$OC_DENY" "$OC_OUT" "$I6_OUT" "$A_OUT" "$I0B_ERR" \
+  for oc_log in "$OC_RECORD" "$OC_DENY" "$OC_OUT" "$I6_OUT" "$I10_OUT" "$I11_OUT" \
+                "$A_OUT" "$I0B_ERR" \
                 "$WORK/out/i4.log" "$WORK/out/i5.log" "$WORK/out/opencode-provider.log"; do
     I8_HITS=$((I8_HITS + $(count_in "$oc_log" "$ZEN_FIXTURE_KEY|$I4_SENTINEL")))
   done

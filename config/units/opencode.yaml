@@ -86,6 +86,12 @@ manual_steps:
   # already persisted in its own state from an earlier session. opencode.json
   # pins the defaults for a fresh profile; /models is the repair for a profile
   # that is not fresh.
+  #
+  # AND THIS ENTRY IS LOAD BEARING ON PROSE ELSEWHERE. I12 in
+  # scripts/verify/test-base-install.sh fails while this id exists AND
+  # bootstrap-mac.sh's next-steps screen claims there is no /models step -- the
+  # exact pair #38 shipped. Delete this step and that claim becomes true again;
+  # keep it and the installer has to say so.
   - id: set-default-model
     summary: Type /models and set the daily driver to kimi-k2.6 per
       docs/model-routing.md. opencode.json already pins it, so this is only

@@ -777,13 +777,15 @@ unit_base_skills
 unit_coding_pack
 
 # -------------------------------------------------------------- Next steps --
-# Split into three heredocs so the OpenCode step can be omitted when opencode
-# was not installed -- telling someone how the credential for a CLI this very
-# run deliberately did not install got written is how a selective install
-# teaches people to distrust the output. The step NUMBER follows, which is why
-# the tail is a separate heredoc rather than a conditional line inside one. With
-# opencode selected (every no-flag run) the three concatenate to exactly the
-# text a no-flag run has always printed.
+# Split into FOUR heredocs so both OpenCode-specific lines can be omitted when
+# opencode was not installed -- telling someone how the credential for a CLI
+# this very run deliberately did not install got written, or pointing them at a
+# check for it, is how a selective install teaches people to distrust the
+# output. The step NUMBER follows step 2, which is why the tail is a separate
+# heredoc rather than a conditional line inside one; the check-opencode.sh line
+# is a separate heredoc for the same reason, one step lower down. With opencode
+# selected (every no-flag run) the four concatenate to exactly the text a
+# no-flag run has always printed, and G6 is what says so about the other case.
 cat <<EOF
 
 ==> Bootstrap done. Next steps (docs/setup/20-mac-setup.md):
@@ -800,8 +802,10 @@ if in_set opencode "$SELECTED"; then
   2. OpenCode's Zen credential is written by the bootstrap itself, from
      \$OPENCODE_ZEN_API_KEY. If step 1 was the first time you set that key,
      re-run this script (or just $SCRIPT_DIR/opencode-auth.sh) in the new
-     terminal. There is no /connect step and no /models step: the models are
-     pinned in config/opencode/opencode.json.
+     terminal. There is no /connect step any more. /models is still there for
+     one case: config/opencode/opencode.json pins the models for a FRESH
+     OpenCode profile, so if yours has already remembered a different choice,
+     type /models and set it per docs/model-routing.md.
 EOF
   NEXT_STEP=3
 fi
@@ -811,5 +815,10 @@ cat <<EOF
   $NEXT_STEP. Verify before going further:
          $REPO_ROOT/scripts/verify/check-providers.sh   # raw HTTPS per endpoint
          $REPO_ROOT/scripts/verify/check-goose.sh       # goose through all 3 providers
+EOF
+
+if in_set opencode "$SELECTED"; then
+  cat <<EOF
          $REPO_ROOT/scripts/verify/check-opencode.sh    # opencode, credential and PATH
 EOF
+fi

@@ -62,7 +62,10 @@ Verifies the OpenCode unit on a Mac: the config template, the credential
 scripts/mac/opencode-auth.sh writes, the ported agents, one real `opencode run`,
 and which `opencode` the PATH actually resolves to.
 
-Env seams (testing only):
+Env seams (testing only). ADDING ONE MEANS ADDING IT TO
+$HARNESS_UNSET_NAMES in scripts/verify/test-base-install.sh, or that harness
+inherits the developer's value and runs a foreign binary against a $HOME that
+holds a credential. I9 there fails if you forget.
   OPENCODE_BIN           the binary to run, instead of the PATH winner
   OPENCODE_BREW_PREFIX   the brew prefix to compare against, instead of asking
                          brew (which C8 otherwise shells out to)
@@ -265,17 +268,30 @@ WINNER_VERSION="$(version_of "$PATH_WINNER")"
 DECLARED_VERSION="$(version_of "$DECLARED")"
 WINNER_REAL="$(real_path "$PATH_WINNER")"
 DECLARED_REAL="$(real_path "$DECLARED")"
+# THE VENDOR ROOT HAS TO BE RESOLVED TOO, and it was not: the second arm below
+# compares a RESOLVED winner against an UNRESOLVED $HOME/.opencode prefix, and
+# on macOS $HOME under /var or /tmp resolves through /private, so the resolved
+# path never has the unresolved prefix and the arm could not fire at all. Caught
+# by I11 in test-base-install.sh, which is the first fixture that ever pointed a
+# brew-shaped symlink into the vendor tree.
+VENDOR_REAL="$(real_path "$VENDOR_DIR")"
 
 # BOTH the path as PATH gave it and the path it resolves to. The lexical test
 # is the one the ticket names; the resolved test also catches a brew-shaped
 # symlink that points into the vendor tree, which the lexical test alone reads
 # as clean.
 is_vendor() {
-  case "${1:-}" in "$VENDOR_DIR"/*) return 0 ;; esac
+  # is_vendor <path> <vendor-root>. BOTH must be non-empty: an empty root would
+  # leave the glob as `/*`, which matches every absolute path on the machine and
+  # would report every install as the vendor build.
+  local path="${1:-}" root="${2:-}"
+  [ -n "$path" ] || return 1
+  [ -n "$root" ] || return 1
+  case "$path" in "$root"/*) return 0 ;; esac
   return 1
 }
 
-if is_vendor "$PATH_WINNER" || is_vendor "$WINNER_REAL"; then
+if is_vendor "$PATH_WINNER" "$VENDOR_DIR" || is_vendor "$WINNER_REAL" "$VENDOR_REAL"; then
   fail "C7: the \`opencode\` on PATH is the self-updating vendor build"
   note "on PATH:  $PATH_WINNER ($WINNER_VERSION)"
   note "declared: ${DECLARED:-<brew could not say>} ($DECLARED_VERSION)"

@@ -31,6 +31,15 @@
 # (errors carry a status code and a URL), never placed on any argv, and no
 # response body is reprinted — only the single `content` field is, which is what
 # a real `opencode run` puts on stdout and what check-opencode.sh greps.
+#
+# "NEVER PLACED ON ANY ARGV" IS A MECHANISM HERE, NOT A PROMISE. The first cut
+# of this file said that sentence and then ran
+# `curl -H "Authorization: Bearer $key"`, which is the credential on curl's argv
+# where every process on the box can read it out of `ps` while the request is in
+# flight — in the very PR that made "the credential never appears in argv" a
+# standing rule for this repo. What it does now: python3 prints a curl CONFIG
+# FILE on stdout and curl reads it from stdin with `-K -`, so the key is never a
+# shell variable either and `ps` sees `curl ... -K -`. See step 4 and step 6.
 set -euo pipefail
 
 die() { echo "fake-opencode: $*" >&2; exit 1; }
@@ -93,16 +102,20 @@ esac
 #    that file. No environment fallback: reading $OPENCODE_ZEN_API_KEY here would
 #    make the run pass on a Mac where auth.json was never written, which is
 #    exactly the state check-opencode.sh exists to catch.
+#    A BOOLEAN, and the key does not come out of python3 here. This step only
+#    answers "is there a usable one", so that the failure a missing credential
+#    produces is this named die rather than the `HTTP 000` a broken pipe in
+#    step 6 would degrade into. The value itself is read once, in step 6, by a
+#    program whose stdout goes straight into curl.
 auth_json="$HOME/.local/share/opencode/auth.json"
 [ -f "$auth_json" ] || die "no credential at $auth_json (run scripts/mac/opencode-auth.sh)"
-key="$(python3 -c '
+python3 -c '
 import json, sys
 entry = json.load(open(sys.argv[1])).get("opencode") or {}
 key = entry.get("key")
-if not isinstance(key, str) or not key:
-    sys.exit("no usable opencode api key in the auth file")
-print(key)
-' "$auth_json")" || die "could not read the opencode credential out of $auth_json"
+sys.exit(0 if isinstance(key, str) and key else 1)
+' "$auth_json" >/dev/null 2>&1 ||
+  die "no usable opencode api key in $auth_json (run scripts/mac/opencode-auth.sh)"
 
 # 5. Never a real provider. Same rule as fake-goose.sh:129-142 — there is no
 #    default, so a harness that forgot to set this dies here rather than sending
@@ -118,16 +131,34 @@ print(json.dumps({"model": sys.argv[1], "max_tokens": 16,
                   "messages": [{"role": "user", "content": sys.argv[2]}]}))' \
   "$wire_model" "$prompt")"
 
+# 7. THE CREDENTIAL GOES IN THROUGH STDIN, NOT THROUGH ARGV. curl's `-K -` reads
+#    an option file from standard input, so the only thing `ps` can see is
+#    `curl ... -K -`; the key is never a shell variable in this process either,
+#    because python3's stdout is curl's stdin and nothing in between holds it.
+#
+#    The two escapes are curl's, not JSON's: inside a double-quoted config value
+#    curl honours `\\` and `\"`, so those are the two characters that have to be
+#    doubled or an odd key would be silently mangled rather than rejected. A key
+#    carrying anything outside printable ASCII is refused instead — an HTTP
+#    header cannot carry it, and a CR or LF there is header injection. The
+#    refusal names the fault and never the value.
 body="$(mktemp)"
 trap 'rm -f "$body"' EXIT
-status="$(curl -sS --max-time 30 -o "$body" -w '%{http_code}' \
-  -X POST -H "Authorization: Bearer $key" -H "Content-Type: application/json" \
+status="$(python3 -c '
+import json, sys
+key = (json.load(open(sys.argv[1])).get("opencode") or {}).get("key") or ""
+if not key or any(c < " " or c > "~" for c in key):
+    sys.exit("fake-opencode: the opencode key is empty, or carries a byte an HTTP header cannot")
+print("header = \"Authorization: Bearer %s\""
+      % key.replace("\\", "\\\\").replace("\"", "\\\""))
+' "$auth_json" | curl -sS --max-time 30 -K - -o "$body" -w '%{http_code}' \
+  -X POST -H "Content-Type: application/json" \
   -d "$payload" "$target")" || status="000"
 
 # Status and URL only — no header, no body, no key.
 [ "$status" = "200" ] || die "HTTP $status for $target"
 
-# 7. ONE FIELD, not the body. A real `opencode run` prints the model's answer;
+# 8. ONE FIELD, not the body. A real `opencode run` prints the model's answer;
 #    reprinting the whole response would put whatever a provider chose to echo
 #    (see fake-provider.py's no-echo rule) onto a log this harness greps.
 python3 -c '
