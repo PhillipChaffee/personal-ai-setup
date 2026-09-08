@@ -773,9 +773,13 @@ if leg select; then
 
   # V11 — check-code-agents.sh must SKIP (exit 2), not FAIL, on a brain that
   # deliberately has no code-agents plane. Without this, AC1 ships a
-  # permanently-red check: cli.sh:197-213 maps exit 2 to SKIP and everything
-  # else to FAIL. (Re-anchored past #108, which rewrote cli.sh and gave that
-  # arm a `--require` escalation; the mapping this depends on is unchanged.)
+  # permanently-red check: cli.sh:201-217 — cmd_verify's `case "$rc" in`, the
+  # `2)` arm through the `*) fail` arm — maps exit 2 to SKIP and everything else
+  # to FAIL. (Re-anchored past #108, which rewrote cli.sh and gave that arm a
+  # `--require` escalation, and past #43, which added four lines to cli.sh's
+  # usage block and shifted this range by +4 from the 197-213 written here
+  # first. The mapping itself is unchanged. Nothing in CI resolves a citation
+  # from one script to another — see the note on this in #43.)
   V11_RC=0
   PAI_MODE=local \
   PAI_DATA_ROOT="$WORK/sb-nocode/data" \

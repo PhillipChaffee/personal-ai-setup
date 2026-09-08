@@ -2050,6 +2050,666 @@ else
   fail "bin/pai docs --check --no-such-flag gave exit $DOCS2_RC:"$'\n'"$DOCS2_OUT"
 fi
 
+# ---- remove: the reader that refuses -----------------------------------------
+# SECTIONS HERE ARE NAMED, NOT NUMBERED, from this one on. Three PRs against
+# this file each planned "new section 10" and the numbers are claimed in landing
+# order; a name has no landing order.
+#
+# scripts/pai/uninstall.py is `pai remove`, and it is a READER: it prints the
+# manifest's own `uninstall.reason`, names every target it would keep, and exits
+# 2 having written nothing. The removing half is deliberately not shipped (see
+# that file's docstring), so what is under test here is a refusal and an
+# inventory — which is exactly where this feature could do damage if it were
+# wrong, because the inventory is what a future remover would drive off.
+UNINSTALL="$REPO_ROOT/scripts/pai/uninstall.py"
+
+# Mirrors pai() at the top of this file, and it exists for the same reason: the
+# thing under measurement has to run under $PAI_PY. bin/pai runs uninstall.py
+# under py_runner's plain python3 and contributes ZERO coverage, so exactly one
+# assertion below goes through bin/pai — the one whose subject is the routing.
+pai_remove() { # pai_remove <home> [args...]
+  local home="$1"
+  shift
+  PAI_HOME="$home" "${PAI_PY[@]}" "$UNINSTALL" remove "$@"
+}
+
+# NAMES AND CONTENT BOTH. Section 5's proof hashes `-type f` only, so an
+# `rmdir` of a directory this command had just emptied would not move it. Here
+# the first hash is every entry's PATH and the second is every file's bytes.
+rm_fingerprint() {
+  find "$1" | sort | shasum
+  find "$1" -type f -exec shasum {} \; | sort | shasum
+}
+
+# The refusal re-wraps the manifest's reason to 76 columns, so a phrase quoted
+# from a manifest may straddle a line break. Flatten before grepping for one, or
+# the assertion's verdict depends on where the wrap happened to land.
+rm_flat() { printf '%s' "$1" | tr '\n' ' ' | tr -s ' '; }
+
+# The fixture is what `pai remove coding-pack` would be pointed at on a real
+# Mac: the eleven ported skills, the OpenCode agents directory and AGENTS.md,
+# all present and all identical to the repo's copies — plus ONE FILE THE USER
+# WROTE that no manifest claims. That last file is the whole safety argument in
+# one line: the install side is no-clobber (copy_no_clobber and install_skill
+# both "keep existing"), so nothing on disk records who wrote what, and a
+# remover driven by a directory rather than by `owns` takes it with everything
+# else.
+#
+# `cd "$WORK" && pwd` rather than "$WORK/remove-home": $TMPDIR ends in a slash
+# on macOS, so mktemp -d yields `.../T//pai-test.XXXX` and the assertion below
+# would compare that literal against a path pathlib had already collapsed. A
+# subshell, so this script's own cwd is untouched.
+RM_HOME="$(cd "$WORK" && pwd)/remove-home"
+mkdir -p "$RM_HOME/.agents/skills" "$RM_HOME/.config/opencode/agents"
+for skill_src in "$REPO_ROOT"/config/skills/*/; do
+  [ -d "$skill_src" ] || continue
+  cp -R "$skill_src" "$RM_HOME/.agents/skills/$(basename "$skill_src")"
+done
+cp "$REPO_ROOT"/config/opencode/agents/*.md "$RM_HOME/.config/opencode/agents/"
+cp "$REPO_ROOT/config/opencode/AGENTS.md" "$RM_HOME/.config/opencode/AGENTS.md"
+printf 'a skill I wrote myself, claimed by no manifest\n' \
+  > "$RM_HOME/.agents/skills/my-own-notes.md"
+
+RM_BEFORE="$(rm_fingerprint "$RM_HOME")"
+RM_RC=0
+RM_OUT="$(pai_remove "$RM_HOME" coding-pack 2>&1)" || RM_RC=$?
+RM_AFTER="$(rm_fingerprint "$RM_HOME")"
+if [ "$RM_RC" -eq 2 ]; then
+  pass "remove coding-pack refuses (exit 2) on a fully-populated home"
+else
+  fail "remove coding-pack exited $RM_RC, not 2:"$'\n'"$RM_OUT"
+fi
+if [ "$RM_BEFORE" = "$RM_AFTER" ]; then
+  pass "...and deleted nothing: every path and every byte hashes identically"
+else
+  fail "pai remove MODIFIED the home it was refusing to touch"
+fi
+# The refusal is not silence, and it is not a plan half-executed: the eleven
+# skills coding-pack owns are named as retained, by the manifest's own spelling.
+if printf '%s\n' "$RM_OUT" | grep -qxF "    RETAIN  ~/.agents/skills/ship" \
+  && printf '%s\n' "$RM_OUT" | grep -qxF "    RETAIN  ~/.config/opencode/agents"; then
+  pass "...and names the skill and agents targets it kept, verbatim from owns:"
+else
+  fail "remove coding-pack did not name its home_path targets:"$'\n'"$RM_OUT"
+fi
+
+# THE MANIFEST'S OWN WORDS, not a generic string. Hardcode "uninstall is not
+# supported" in uninstall.py and all eighteen written reasons become decoration
+# while every exit code above stays 2. `subuid range` is code-agents.yaml's
+# phrase and appears nowhere in scripts/pai/.
+RM_RC=0
+RM_OUT="$(pai_remove "$RM_HOME" code-agents 2>&1)" || RM_RC=$?
+if [ "$RM_RC" -eq 2 ] && rm_flat "$RM_OUT" | grep -qF "subuid range"; then
+  pass "the refusal prints code-agents.yaml's own reason, not a generic one"
+else
+  fail "remove code-agents (exit $RM_RC) did not print the manifest reason:"$'\n'"$RM_OUT"
+fi
+
+# AC #4, on the real manifests — no fixture, because four real units own
+# data_paths. The assertion is the OUTPUT, because "retained" that is not
+# printed is a promise nobody can read.
+#
+# grep -x, WHOLE LINE. Measured: with `grep -F` the pattern `RETAIN  /data` is
+# satisfied by the line for `/data/goose`, so a retained() rewritten as a
+# blocklist of the four paths AC#4 names — which is precisely the design this
+# guards against — kept this assertion green while dropping /data itself.
+RM_RC=0
+RM_OUT="$(pai_remove "$RM_HOME" brain 2>&1)" || RM_RC=$?
+RM_MISSING=""
+for want in "    RETAIN  /data" "    RETAIN  /data/goose" "    RETAIN  /data/tls"; do
+  printf '%s\n' "$RM_OUT" | grep -qxF "$want" || RM_MISSING="$RM_MISSING [$want]"
+done
+printf '%s\n' "$RM_OUT" | grep -qF "data_path — user data. Never removed" \
+  || RM_MISSING="$RM_MISSING [the data_path reason]"
+if [ "$RM_RC" -eq 2 ] && [ -z "$RM_MISSING" ]; then
+  pass "AC#4: remove brain names /data, /data/goose and /data/tls as RETAINED"
+else
+  fail "remove brain (exit $RM_RC) did not say what it retains:$RM_MISSING"$'\n'"$RM_OUT"
+fi
+
+# ALL EIGHTEEN, because AC#2 and AC#3 are claims about the catalogue and not
+# about the three units convenient to name. One verdict for the loop.
+RM_BAD=""
+for manifest in "${MANIFESTS[@]}"; do
+  stem="$(basename "$manifest" .yaml)"
+  RM_RC=0
+  RM_OUT="$(pai_remove "$RM_HOME" "$stem" 2>&1)" || RM_RC=$?
+  [ "$RM_RC" -eq 2 ] || RM_BAD="$RM_BAD $stem(exit=$RM_RC)"
+  printf '%s\n' "$RM_OUT" | grep -qF "REFUSED  $stem was not removed" \
+    || RM_BAD="$RM_BAD $stem(no-refusal)"
+done
+if [ -z "$RM_BAD" ]; then
+  pass "all ${#MANIFESTS[@]} units refuse with exit 2 and say so by name"
+else
+  fail "units that did not refuse:$RM_BAD"
+fi
+
+# The two doctor facts belong in --help, because they are the reason the
+# removing half is not written and a reader who types --help is asking exactly
+# that. Not decoration: delete either and this goes red.
+#
+# The second grep is `absent from the live config`, NOT `doctor --fix`. Measured:
+# the string "doctor --fix" occurs twice in that help text, so deleting the
+# whole extension paragraph left the other occurrence and the assertion green.
+RM_RC=0
+RM_OUT="$(pai_remove "$RM_HOME" --help 2>&1)" || RM_RC=$?
+if [ "$RM_RC" -eq 0 ] \
+  && printf '%s\n' "$RM_OUT" | grep -qF "11 of 12 shipped skills are not installed" \
+  && printf '%s\n' "$RM_OUT" | grep -qF "absent from the live config -> add it"; then
+  pass "--help states both reasons the removing half is unwritten (exit 0)"
+else
+  fail "remove --help (exit $RM_RC) did not state the doctor caveats:"$'\n'"$RM_OUT"
+fi
+
+# A unit id is pasted into a path, so it is validated first. Without the regex
+# `pai remove ../../../etc/passwd` opens a file outside config/units/ and
+# reports on whatever it finds. The two arms print DIFFERENT messages on
+# purpose: "not an id" and "no such id" are different mistakes.
+RM_RC=0
+RM_OUT="$(pai_remove "$RM_HOME" ../../../etc/passwd 2>&1)" || RM_RC=$?
+if [ "$RM_RC" -eq 2 ] && printf '%s\n' "$RM_OUT" | grep -qF "is not a unit id"; then
+  pass "a traversal id is refused as a malformed id, not resolved as a path"
+else
+  fail "remove ../../../etc/passwd gave exit $RM_RC:"$'\n'"$RM_OUT"
+fi
+RM_RC=0
+RM_OUT="$(pai_remove "$RM_HOME" zz-no-such-unit 2>&1)" || RM_RC=$?
+if [ "$RM_RC" -eq 2 ] && printf '%s\n' "$RM_OUT" | grep -qF "no readable manifest"; then
+  pass "an unknown but well-formed id is refused with the catalogue listed"
+else
+  fail "remove zz-no-such-unit gave exit $RM_RC:"$'\n'"$RM_OUT"
+fi
+RM_RC=0
+RM_OUT="$(pai_remove "$RM_HOME" 2>&1)" || RM_RC=$?
+if [ "$RM_RC" -eq 2 ] && printf '%s\n' "$RM_OUT" | grep -qF "exactly one unit id"; then
+  pass "remove with no id is a usage error, not a sweep over the catalogue"
+else
+  fail "remove with no id gave exit $RM_RC:"$'\n'"$RM_OUT"
+fi
+
+# The one bin/pai assertion, mirroring the `bin/pai list` one in section 7. Its
+# subject is the ROUTING: a `remove)` arm that forwarded "$1" instead of "$@"
+# would drop the unit id and every assertion above would still pass, because
+# every one of them calls uninstall.py directly.
+RM_RC=0
+RM_OUT="$("$REPO_ROOT/bin/pai" remove base-goose 2>&1)" || RM_RC=$?
+if [ "$RM_RC" -eq 2 ] && rm_flat "$RM_OUT" | grep -qF "brew pin block-goose-cli"; then
+  pass "bin/pai remove <id> routes through the real CLI and forwards the id"
+else
+  fail "bin/pai remove base-goose gave exit $RM_RC:"$'\n'"$RM_OUT"
+fi
+
+# ---- remove: the in-process probe --------------------------------------------
+# Same mechanics as section 6's, and for the same two reasons: `coverage run -`
+# refuses stdin so the probe is a FILE, and it runs under $PAI_PY so it counts.
+#
+# The fixture holds the three manifest shapes the real catalogue cannot contain.
+# zz-removable is the important one: no shipped manifest says
+# `uninstall.supported: true`, so the arm that refuses a unit which DECLARES
+# itself removable is unreachable through config/units/ and would ship untested.
+RM_FIXTURE="$WORK/remove-fixture"
+mkdir -p "$RM_FIXTURE/config/units"
+"${FIX_PY[@]}" - "$REPO_ROOT" "$RM_FIXTURE" <<'PY'
+import pathlib, sys
+import yaml
+repo, fixture = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+units = fixture / "config/units"
+d = yaml.safe_load((repo / "config/units/opencode.yaml").read_text())
+d.update({
+    "id": "zz-removable",
+    "tier": "opt_in",
+    "uninstall": {"supported": True, "reason": "the residue is the brew formula."},
+    "owns": [{"kind": "home_path", "target": "~/.config/zz/removable.json"}],
+})
+(units / "zz-removable.yaml").write_text(yaml.safe_dump(d, sort_keys=False))
+# The manifest that lies in BOTH directions: tier: base AND supported: true.
+# units_lint.py's check_uninstall forbids it, so it can never reach
+# config/units/ — but the refusal has to hold even for a manifest that got past
+# the gate, and the arm that holds it is the tier arm alone.
+d = dict(d, id="zz-base-removable", tier="base")
+(units / "zz-base-removable.yaml").write_text(yaml.safe_dump(d, sort_keys=False))
+(units / "zz-broken.yaml").write_text("this is not yaml: [unclosed\n")
+(units / "zz-blank.yaml").write_text("")
+# THE HALF-WRITTEN MANIFEST, which is the one shape check-units.sh cannot
+# prevent: it runs on every push, not between two saves in an editor. `home-path`
+# for `home_path` is a real typo (units_lint.py rejects it, so it can never
+# reach config/units/ — and can absolutely sit on disk while you are typing).
+# The order matters: the bad entry is FIRST, and two well-formed entries and a
+# removable one follow it, so an inventory truncated at the bad entry is visible
+# as an absence rather than only as a wrong count.
+d = dict(
+    d,
+    id="zz-unknown-kind",
+    tier="opt_in",
+    uninstall={"supported": False, "reason": "half-written on purpose."},
+    owns=[
+        {"kind": "home-path", "target": "~/.config/zz/typo.json"},
+        {"target": "~/.config/zz/no-kind-at-all.json"},
+        {"kind": "data_path", "target": "/data/zz-after-the-typo"},
+        {"kind": "home_path", "target": "~/.config/zz/after-the-typo.json"},
+    ],
+)
+(units / "zz-unknown-kind.yaml").write_text(yaml.safe_dump(d, sort_keys=False))
+PY
+
+cat > "$WORK/remove-probe.py" <<'PY'
+import ast
+import contextlib
+import importlib.util
+import io
+import sys
+from pathlib import Path
+
+import yaml
+
+uninstall_path, units_lint_path, repo_root, fixture, home = sys.argv[1:6]
+
+
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    # Registered BEFORE exec_module, matching section 6's probe: without it
+    # @dataclass cannot resolve its own annotations.
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+mod = load("uninstall_probe", uninstall_path)
+lint = load("units_lint_probe", units_lint_path)
+HOME = Path(home)
+REPO = Path(repo_root)
+
+manifests = {
+    p.stem: yaml.safe_load(p.read_text())
+    for p in sorted((REPO / "config/units").glob("*.yaml"))
+}
+assert len(manifests) >= 18, len(manifests)
+
+# ---- 0. THE PROOF THAT IT CANNOT DELETE, over the SYNTAX and not the text ---
+# The fingerprint assertion above proves one fixture survived a handful of
+# invocations. This proves there is no code in the file that could have taken
+# any other path, for any input — the difference between "did not" and "cannot".
+#
+# ast, not grep: this module's docstring NAMES the calls it does not make
+# ("calls no unlink/rmtree/rmdir"), so a grep over the text matches its own
+# promise and reports the file as guilty. Measured — that is exactly how the
+# first version of this assertion failed.
+BANNED_CALLS = {
+    # delete
+    "unlink", "rmdir", "rmtree", "remove", "removedirs", "removexattr",
+    # write / move / create
+    "write", "writelines", "write_text", "write_bytes", "truncate", "rename",
+    "replace", "mkdir", "makedirs", "touch", "symlink_to", "hardlink_to",
+    "chmod", "copy", "copy2", "copytree", "move",
+    # shell out to something that does the above
+    "system", "run", "Popen", "call", "check_call", "check_output", "execv",
+}
+BANNED_IMPORTS = {"shutil", "subprocess", "tempfile"}
+WRITE_MODES = set("wax+")
+
+tree = ast.parse(Path(uninstall_path).read_text(encoding="utf-8"))
+# The module's OWN top-level functions, excluded from the bare-name check: this
+# file's front door is called `remove`, and os.remove is on the list. Attribute
+# calls (`os.remove(p)`) and imported names (`from os import remove`) are still
+# caught, which is the shape that would actually delete something.
+local_defs = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
+offences = []
+for node in ast.walk(tree):
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        module = getattr(node, "module", None) or ""
+        if module.split(".")[0] in BANNED_IMPORTS:
+            offences.append(module)
+        for alias in node.names:
+            if alias.name.split(".")[0] in BANNED_IMPORTS or alias.name in BANNED_CALLS:
+                offences.append(f"import {alias.name}")
+    if not isinstance(node, ast.Call):
+        continue
+    attribute = isinstance(node.func, ast.Attribute)
+    name = node.func.attr if attribute else getattr(node.func, "id", "")
+    if name in BANNED_CALLS and (attribute or name not in local_defs):
+        offences.append(f"{name}() at line {node.lineno}")
+    # `path.open(encoding=...)` is a read and is how load_manifest works. An
+    # open with a mode containing w, a, x or + is not.
+    if name == "open":
+        modes = [a.value for a in node.args if isinstance(a, ast.Constant)]
+        modes += [k.value.value for k in node.keywords
+                  if k.arg == "mode" and isinstance(k.value, ast.Constant)]
+        if any(set(str(m)) & WRITE_MODES for m in modes):
+            offences.append(f"open(mode={modes!r}) at line {node.lineno}")
+assert not offences, offences
+
+# ---- 1. the kind vocabulary is TOTAL ----------------------------------------
+# THIS is the tripwire for a ninth kind: RETAIN_REASON is compared against
+# units_lint.py's OWN_KINDS, which IS the schema's list, so a kind added to
+# config/units/README.md without a line here fails on push. It used to be
+# enforced a second time at RUNTIME, by indexing RETAIN_REASON directly, and
+# that arm is asserted DEAD below — a push-time gate cannot see a manifest
+# saved thirty seconds ago, and a KeyError is not what that manifest deserves.
+assert mod.REMOVABLE_KINDS == frozenset({"home_path"}), mod.REMOVABLE_KINDS
+assert not (set(mod.RETAIN_REASON) & mod.REMOVABLE_KINDS), sorted(mod.RETAIN_REASON)
+assert set(mod.RETAIN_REASON) | mod.REMOVABLE_KINDS == lint.OWN_KINDS, (
+    sorted(lint.OWN_KINDS - (set(mod.RETAIN_REASON) | mod.REMOVABLE_KINDS)))
+
+# retain_reason() is TOTAL over str, and the two ways a manifest breaks — a
+# typo'd kind and a missing `kind:` key, which load_manifest coerces to "" —
+# both answer rather than raise.
+for known, reason in mod.RETAIN_REASON.items():
+    assert mod.retain_reason(known) == reason, known
+assert mod.retain_reason("home-path") == mod.UNKNOWN_KIND_REASON
+assert mod.retain_reason("") == mod.UNKNOWN_KIND_REASON
+# And the unknown kind is NAMED, not swallowed: "UNKNOWN" has to survive into
+# the string a reader sees, or "retained for a reason nobody can read" is what
+# the inventory says.
+assert "UNKNOWN" in mod.UNKNOWN_KIND_REASON, mod.UNKNOWN_KIND_REASON
+assert mod.kind_label("") == mod.NO_KIND_LABEL
+assert mod.kind_label("data_path") == "data_path"
+
+# ---- 2. parse_home_target: the six prose targets ----------------------------
+# The INPUT list is derived from the manifests, so a target that moves is seen.
+# The EXPECTED set is HAND-TYPED, because deriving it from the same rule the
+# code uses would compare the code to itself and could never fail. If #39
+# rewrites base-secrets' ~/.zshrc entry this list is a one-line edit, and going
+# red is the correct way to be told.
+PROSE = {
+    "~/.zshrc (personal-ai keychain exports block)",
+    "~/.config/goose (symlink into /data/goose/config)",
+    "~/.local/share/goose (symlink into /data/goose/data)",
+    "~/.local/state/goose (symlink into /data/goose/state)",
+    "~/.config/goose/secrets.yaml (per-extension connector entries)",
+    "~/.ssh/life-vault-deploy (git deploy key on the brain)",
+}
+home_targets = [
+    o["target"]
+    for m in manifests.values()
+    for o in (m.get("owns") or [])
+    if o.get("kind") == "home_path"
+]
+# A FLOOR, not an equality: the exact count moves every time a manifest gains a
+# target (#106 took it from 25 to 26 while this branch was open), and a golden
+# that goes red on an unrelated edit gets deleted. What this guards is the
+# derivation itself — an empty or one-element list would make the set
+# comparison below trivially true, which is the failure mode that matters.
+assert len(home_targets) >= 20, len(home_targets)
+unresolved = {t for t in home_targets if mod.parse_home_target(t, HOME) is None}
+assert unresolved == PROSE, sorted(unresolved ^ PROSE)
+# And the other side: everything that DOES resolve lands strictly inside home.
+for target in home_targets:
+    got = mod.parse_home_target(target, HOME)
+    if got is None:
+        continue
+    assert HOME in got.parents, (target, got)
+
+# The `..` guard is separate from the regex because `.` and `..` both match
+# [A-Za-z0-9._-]+ — without it `~/../evil` resolves to a sibling of $HOME.
+assert mod.parse_home_target("~/../evil", HOME) is None
+assert mod.parse_home_target("~/.", HOME) is None
+assert mod.parse_home_target("/etc/passwd", HOME) is None
+assert mod.parse_home_target("~", HOME) is None
+assert mod.parse_home_target("~/.agents/skills/ship", HOME) == HOME / ".agents/skills/ship"
+
+# ---- 3. retained() partitions by KIND, over all eighteen --------------------
+# Not by a list of four data paths: a blocklist is correct for exactly the paths
+# AC#4 names and silently wrong for the nineteenth manifest.
+for stem, data in manifests.items():
+    owns = data.get("owns") or []
+    want = [(o["kind"], o["target"]) for o in owns if o["kind"] != "home_path"]
+    unit = mod.load_manifest(REPO, stem)
+    assert unit is not None, stem
+    got = [(r.kind, r.target) for r in mod.retained(unit)]
+    assert got == want, (stem, got, want)
+    for r in mod.retained(unit):
+        assert r.why == mod.RETAIN_REASON[r.kind], (stem, r)
+
+# AC#4 by name, so the four paths the acceptance criterion lists are asserted
+# as data and not merely as a consequence of the rule above.
+#
+# TWO ASSERTIONS, BECAUSE AC#4'S THIRD PATH IS NOT AN OWNED TARGET. #43 writes
+# `/data/code-agents/chats`; no manifest owns it — code-agents.yaml owns the
+# parent `/data/code-agents`. Substituting the parent and asserting THAT is how
+# an AC gets reported as met while its own text goes untested, so the AC's
+# literal path is checked here by ANCESTOR COVERAGE, and the covering entry is
+# required to be a `data_path`. That second half is what makes it non-trivial:
+# without it, `/data` covers everything under /data and the loop asserts a
+# tautology.
+retained_pairs = [
+    (r.kind, r.target)
+    for stem in manifests
+    for r in mod.retained(mod.load_manifest(REPO, stem))
+]
+all_retained = {t for _, t in retained_pairs}
+for path in ("/data/goose", "/data/code-agents", "/data/life-vault", "/data"):
+    assert path in all_retained, (path, sorted(p for p in all_retained if p.startswith("/data")))
+for ac4 in ("/data", "/data/goose", "/data/code-agents/chats", "/data/life-vault"):
+    covers = [(k, t) for k, t in retained_pairs if ac4 == t or ac4.startswith(t + "/")]
+    assert covers, (ac4, sorted(all_retained))
+    assert all(k == "data_path" for k, _ in covers), (ac4, covers)
+
+# ---- 4. refusal_for is NEVER empty, and every reason is printed VERBATIM ----
+# All eighteen, not the three that were convenient to name. Whitespace is
+# normalised on both sides because the manifest's line breaks are the YAML
+# file's and the output's are the wrapper's; nothing else about the sentence
+# may differ. A truncation, a re-phrasing or a generic fallback all fail here.
+for stem, data in manifests.items():
+    unit = mod.load_manifest(REPO, stem)
+    assert unit is not None, stem
+    lines = mod.refusal_for(unit)
+    assert lines, stem
+    if not data["uninstall"]["supported"]:
+        raw = " ".join(data["uninstall"]["reason"].split())
+        assert raw, stem  # a manifest with nothing to say makes the next line inert
+        assert any(raw in line for line in lines), (stem, lines)
+
+# The three arms, distinguished. base-goose takes the tier arm AND prints its
+# manifest reason; opencode takes the declared arm alone; zz-removable takes the
+# arm no shipped manifest can reach.
+base = mod.refusal_for(mod.load_manifest(REPO, "base-goose"))
+assert len(base) == 2, base
+assert "tier: base" in base[0], base
+assert "brew pin block-goose-cli" in base[1], base
+
+opencode = mod.refusal_for(mod.load_manifest(REPO, "opencode"))
+assert len(opencode) == 1, opencode
+assert opencode[0].startswith("the manifest says so:"), opencode
+
+# THE REASON IS THE MANIFEST'S, WORD FOR WORD. Compared whitespace-normalised,
+# because the manifest's line breaks are the YAML file's and not the sentence's.
+raw = " ".join(manifests["opencode"]["uninstall"]["reason"].split())
+assert raw in opencode[0], (raw, opencode[0])
+
+# THE HELP TEXT'S CLAIM ABOUT ITSELF, asserted against the code. `pai remove
+# --help` used to say coding-pack and opencode "are refused for these reasons"
+# — the two doctor bullets — which was never true of any code path here: both
+# manifests say `supported: false`, so both take the declared arm and print
+# their own sentence. Nothing went red, because the --help assertion greps the
+# help output for strings this file writes. These grep the REFUSAL instead.
+#
+# coding-pack only; opencode's arms are asserted immediately above.
+coding_pack = mod.refusal_for(mod.load_manifest(REPO, "coding-pack"))
+assert len(coding_pack) == 1, coding_pack
+assert coding_pack[0].startswith("the manifest says so:"), coding_pack
+# And no unit's refusal mentions doctor AT ALL. The two doctor facts are facts
+# about this repo and they live in --help; a refusal that repeated one would be
+# the per-unit special-casing the help text now says does not exist.
+for stem in manifests:
+    for line in mod.refusal_for(mod.load_manifest(REPO, stem)):
+        assert "doctor" not in line, (stem, line)
+
+removable = mod.refusal_for(mod.load_manifest(Path(fixture), "zz-removable"))
+assert len(removable) == 1, removable
+assert "removing half of this command is not written" in removable[0], removable
+
+# tier: base AND supported: true — forbidden by units_lint but not by physics.
+# The tier arm alone refuses it, and the `unwritten` arm must NOT also fire:
+# "you declared this removable" is not the reason, the tier is.
+both = mod.refusal_for(mod.load_manifest(Path(fixture), "zz-base-removable"))
+assert len(both) == 1, both
+assert "tier: base" in both[0], both
+
+# ---- 5. the degraded manifests, and the arms main() owns -------------------
+assert mod.load_manifest(Path(fixture), "zz-broken") is None
+assert mod.load_manifest(Path(fixture), "zz-blank") is None
+assert mod.load_manifest(Path(fixture), "zz-absent") is None
+assert mod.known_ids(Path(fixture)) == [
+    "zz-base-removable", "zz-blank", "zz-broken", "zz-removable", "zz-unknown-kind"]
+
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc = mod.remove(Path(fixture), HOME, "zz-removable")
+out = buf.getvalue()
+assert rc == 2, rc
+# Whitespace-normalised: the refusal is re-wrapped to 76 columns, so the
+# sentence is not on one line of the output and a raw `in` would be inert.
+assert "removing half of this command is not written" in " ".join(out.split()), out
+# A `supported: true` unit still names its one home_path as untouched.
+assert "RETAIN  ~/.config/zz/removable.json" in out, out
+
+assert mod.remove(Path(fixture), HOME, "zz-broken") == 2
+
+# THE HALF-WRITTEN MANIFEST. Before UNKNOWN_KIND_REASON existed this raised
+# KeyError out of retained() and exited 1 — with the refusal already printed and
+# the RETAINED inventory, the half a reader uses to decide a removal is safe,
+# missing entirely. `pai remove opencode` reproduced it end to end from a single
+# `home_path` -> `home-path` character in config/units/opencode.yaml.
+#
+# The three things asserted are the three ways this can be got wrong: it must
+# not raise, it must not SKIP the entry it cannot classify (silently dropping a
+# target reads as "this unit does not own that"), and everything AFTER the bad
+# entry must still print.
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc = mod.remove(Path(fixture), HOME, "zz-unknown-kind")
+out = buf.getvalue()
+assert rc == 2, rc
+assert "RETAIN  ~/.config/zz/typo.json" in out, out
+assert "RETAIN  ~/.config/zz/no-kind-at-all.json" in out, out
+assert "UNKNOWN KIND" in out, out
+assert mod.NO_KIND_LABEL in out, out
+# The inventory is not truncated at the bad entry: a well-formed data_path and a
+# removable home_path both follow it in `owns`, and both are still reported.
+assert "RETAIN  /data/zz-after-the-typo" in out, out
+assert "RETAIN  ~/.config/zz/after-the-typo.json" in out, out
+assert "user data. Never removed" in out, out
+unknown = mod.retained(mod.load_manifest(Path(fixture), "zz-unknown-kind"))
+assert [r.kind for r in unknown] == ["home-path", "", "data_path"], unknown
+
+# THE MESSAGE, NOT THE CODE. `assert mod.remove(..., "Not-An-Id") == 2` alone is
+# inert for the guard it looks like it covers: delete UNIT_ID_RE and the id
+# falls through to load_manifest, finds no file, and returns 2 down the OTHER
+# arm. Measured — that mutation left this line green. The two arms print
+# different messages on purpose, so the message is what distinguishes them.
+err = io.StringIO()
+with contextlib.redirect_stderr(err):
+    assert mod.remove(Path(fixture), HOME, "Not-An-Id") == 2
+assert "is not a unit id" in err.getvalue(), err.getvalue()
+err = io.StringIO()
+with contextlib.redirect_stderr(err):
+    assert mod.remove(Path(fixture), HOME, "zz-absent") == 2
+assert "no readable manifest" in err.getvalue(), err.getvalue()
+
+assert mod.main(["uninstall.py", "install", "base-goose"]) == 2
+assert mod.main(["uninstall.py"]) == 2
+assert mod.main(["uninstall.py", "remove", "a", "b"]) == 2
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    assert mod.main(["uninstall.py", "remove", "-h"]) == 0
+assert "PAI_HOME" in buf.getvalue(), buf.getvalue()
+# `--help extra` used to print the help and exit 0, swallowing an argument it
+# did not understand. It is a usage error, and the arity check is what says so.
+err = io.StringIO()
+with contextlib.redirect_stderr(err):
+    assert mod.main(["uninstall.py", "remove", "--help", "extra"]) == 2
+assert "exactly one unit id" in err.getvalue(), err.getvalue()
+
+# ---- 6. PAI_HOME is honoured, and it is the only thing home changes --------
+# The resolved path is printed, so pointing PAI_HOME somewhere else must move
+# it. A resolver that ignored its `home` argument and called Path.home() would
+# pass every assertion above and fail this one.
+elsewhere = Path("/tmp/zz-not-a-real-home")
+assert mod.parse_home_target("~/.agents/skills/ship", elsewhere) == (
+    elsewhere / ".agents/skills/ship")
+
+# ---- 7. the README documents every rule check_uninstall enforces ------------
+# P1's advertised property is "every manifest matches config/units/README.md",
+# and nothing in this repo compares the README to the lint. The three rules
+# `uninstall` gained shipped ENFORCED AND UNDOCUMENTED: the schema table still
+# read "supported: false needs a non-empty reason", so an author reading it
+# would not find the rules that reject their file.
+#
+# TWO-SIDED, which is the only version worth writing. The left half feeds the
+# rejected manifest shape through the REAL check_uninstall, so a rule deleted
+# from the lint goes red here; the right half greps the README, so a rule
+# deleted from the README goes red here. Neither half alone would have caught
+# the state this branch was in.
+readme = (REPO / "config/units/README.md").read_text(encoding="utf-8")
+OK_OWNS = [{"kind": "home_path", "target": "~/.config/zz/x.json"}]
+
+
+def lint_uninstall(**data):
+    return lint.check_uninstall(lint.Manifest(stem="zz", path=REPO, data=dict(data)))
+
+
+# (manifest shape that MUST be rejected, the README sentence that says why)
+UNINSTALL_RULES = [
+    (dict(tier="opt_in", owns=OK_OWNS, uninstall={"supported": False, "reason": "  "}),
+     "`reason` is non-empty in BOTH states"),
+    (dict(tier="opt_in", owns=OK_OWNS, uninstall={"supported": True, "reason": ""}),
+     "`reason` is non-empty in BOTH states"),
+    (dict(tier="base", owns=OK_OWNS, uninstall={"supported": True, "reason": "residue."}),
+     "`supported: true` is refused on `tier: base`"),
+    (dict(tier="opt_in", owns=[], uninstall={"supported": True, "reason": "residue."}),
+     "`supported: true` requires a non-empty `owns`"),
+]
+for shape, documented in UNINSTALL_RULES:
+    assert lint_uninstall(**shape), shape
+    assert documented in readme, documented
+# The control: the shape that satisfies all four is ACCEPTED. Without it every
+# assertion above is satisfied by a check_uninstall that rejects everything.
+assert not lint_uninstall(
+    tier="opt_in", owns=OK_OWNS, uninstall={"supported": True, "reason": "residue."})
+assert not lint_uninstall(
+    tier="base", owns=OK_OWNS, uninstall={"supported": False, "reason": "brew pin."})
+PY
+if OUT="$("${PAI_PY[@]}" "$WORK/remove-probe.py" "$UNINSTALL" \
+    "$REPO_ROOT/scripts/verify/units_lint.py" "$REPO_ROOT" "$RM_FIXTURE" "$RM_HOME" 2>&1)"; then
+  pass "remove probe: kind totality incl. unknown, prose targets, retained(), 3 refusal arms"
+else
+  fail "remove probe failed:"$'\n'"$OUT"
+fi
+
+# THE PAI_HOME SEAM, THROUGH THE CLI. The probe asserts parse_home_target
+# honours its argument; this asserts the CLI actually passes PAI_HOME to it, so
+# the resolved path in the output is the fixture's and never this Mac's.
+RM_OUT="$(pai_remove "$RM_HOME" base-skills 2>&1 || true)"
+if printf '%s\n' "$RM_OUT" | grep -qF "resolves to $RM_HOME/.agents/skills/connect-service"; then
+  pass "PAI_HOME retargets the resolved home_path in the output"
+else
+  fail "remove did not resolve against PAI_HOME:"$'\n'"$RM_OUT"
+fi
+
+# THE OTHER HALF OF THAT LINE, and the one the probe cannot reach: the probe
+# asserts parse_home_target REFUSES the six prose targets, which guards the
+# FUNCTION. Nothing asserted the SENTENCE report() prints for them. Measured:
+# replacing the ternary in report() with an unconditional
+# `detail = f"resolves to {resolved}"` makes every prose target print
+# `resolves to None` — the whole PROSE/resolvable distinction gone from the
+# output — and the harness stayed at 128 passed, 0 failed with coverage still
+# at 100%.
+#
+# base-secrets, because its ONE home_path is prose: `~/.zshrc (personal-ai
+# keychain exports block)`. grep -A1 on the RETAIN line, so the detail asserted
+# is the one attached to THAT target and not any PROSE line elsewhere in the
+# output.
+RM_OUT="$(pai_remove "$RM_HOME" base-secrets 2>&1 || true)"
+RM_DETAIL="$(printf '%s\n' "$RM_OUT" \
+  | grep -A1 -xF "    RETAIN  ~/.zshrc (personal-ai keychain exports block)" | tail -1)"
+case "$RM_DETAIL" in
+  *"PROSE, not a path"*)
+    pass "a prose home_path is reported as PROSE, not resolved to a shorter path" ;;
+  *) fail "the ~/.zshrc detail line was: [$RM_DETAIL]"$'\n'"$RM_OUT" ;;
+esac
+
 # Nothing sections 8 and 9 spawned may survive them. The trap at the top of this
 # file is the backstop; this is the assertion.
 LEFTOVER="$(find "$GC_WORK/tmp/pai-goosecfg" "$FIX_WORK/tmp/pai-goosecfg" \

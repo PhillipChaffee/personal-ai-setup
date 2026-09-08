@@ -535,14 +535,62 @@ def check_string_lists(unit: Manifest) -> list[str]:
 
 
 def check_uninstall(unit: Manifest) -> list[str]:
+    """Shape, plus the three things `supported: true` has to be true ABOUT.
+
+    scripts/pai/uninstall.py (`pai remove`) is the reader for this block, and it
+    has no vocabulary of its own: the sentence it prints is this `reason`,
+    verbatim modulo re-wrapping. So the rules here are the ones that keep that
+    output from becoming decoration.
+
+    reason non-empty IN BOTH STATES. Before this, only `supported: false`
+    needed one, so `{supported: true, reason: ""}` passed — and `pai remove`
+    would have printed a blank explanation for the one state where the reader
+    most needs to know what is left behind.
+
+    `supported: true` requires a non-empty `owns`. This is AC #5 of #43, and
+    it covers EXACTLY ONE manifest: P4 (`prop_footprint`) already fails an
+    empty `owns` unless `host: checklist`, so the only file this arm can catch
+    is phone-kit.yaml, whose four apps and one Shortcut live on a phone.
+    Saying that out loud is the point — a rule whose coverage is one file, and
+    whose overlap with an existing rule is total everywhere else, is worth
+    having only if nobody thinks it is doing more.
+
+    `supported: true` is refused on `tier: base`. A base unit is the install
+    itself; `pai remove` refuses it at the tier arm before it ever looks at
+    this block, so a manifest claiming otherwise would be a claim the tool
+    contradicts. base-skills is the manifest that makes this arm non-trivial:
+    its one `home_path` (~/.agents/skills/connect-service) is as removable as
+    anything in the catalogue, so nothing but the tier stops it.
+    """
     value = unit.data.get("uninstall")
     if not isinstance(value, dict) or set(value) != {"supported", "reason"}:
         return [f"{unit.stem}.uninstall must be a mapping with exactly: supported, reason"]
     if not isinstance(value.get("supported"), bool):
         return [f"{unit.stem}.uninstall.supported must be a boolean"]
-    if not value["supported"] and not text_field(value, "reason").strip():
-        return [f"{unit.stem}.uninstall.supported is false but reason is empty"]
-    return []
+    supported = bool(value["supported"])
+    if not text_field(value, "reason").strip():
+        if not supported:
+            return [f"{unit.stem}.uninstall.supported is false but reason is empty"]
+        return [
+            f"{unit.stem}.uninstall.supported is true but reason is empty — `pai remove` "
+            f"prints this field, and 'removable, with this residue' is the sentence it "
+            f"most needs",
+        ]
+    if not supported:
+        return []
+    out: list[str] = []
+    if unit.data.get("tier") == "base":
+        out.append(
+            f"{unit.stem}.uninstall.supported is true on tier: base — a base unit is the "
+            f"install itself, and `pai remove` refuses it at the tier arm regardless",
+        )
+    if not unit.list_of("owns"):
+        out.append(
+            f"{unit.stem}.uninstall.supported is true but owns is empty — a unit that "
+            f"owns nothing has nothing to remove, so removing it is a no-op that reports "
+            f"success",
+        )
+    return out
 
 
 def check_entry_ids(unit: Manifest) -> list[str]:

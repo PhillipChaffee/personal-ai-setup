@@ -340,3 +340,38 @@ returns 502, or the gateway itself is unreachable.
   (default 15 min); the volume keeps everything. Opening the chat wakes it.
   If wake says the container is `absent` (e.g. after `podman rm` or an image
   upgrade), wake recreates it from the volume — that's the designed path.
+
+## `pai remove <id>` refuses, for every unit
+
+That is what it does. `pai remove` is a **reader**: it prints the manifest's own
+`uninstall.reason`, lists every target it would keep regardless, and exits 2 having
+written nothing. There is no `--force`, and no unit is exempt — all eighteen refuse.
+
+**Why there is no removing half yet.** Two facts in this tree make a removal today
+worse than the absence it produces:
+
+- **`pai doctor` would stay permanently red.** `check_skills` FAILs when any directory
+  under `config/skills/` is missing from `~/.agents/skills`, and `doctor --fix`
+  deliberately does not repair it ("--fix touches goose's extension config and nothing
+  else"). Removing `coding-pack`'s eleven skills would print
+  `FAIL 11 of 12 shipped skills are not installed` forever, with a remedy line telling
+  you to re-run the bootstrap and no `--fix` path. doctor has no way of being told that
+  a unit is *deliberately* absent.
+- **A removed goose extension comes straight back.** `doctor --fix` plans
+  "absent from the live config → add it" for every key the repo's own templates declare.
+  A removal that a routine repair reverses is not a removal.
+
+**And the install side cannot tell its own work from yours.** `copy_no_clobber` and
+`install_skill` in `scripts/mac/bootstrap-mac.sh` both keep a pre-existing destination
+and print `kept existing`. So `~/.agents/skills/ship` may be this repo's copy or the one
+you wrote first, and nothing on disk records which. A remover driven off `owns:` deletes
+both; the only sound predicate is content equality against the repo source.
+
+**What it does tell you.** `pai remove brain` names `/data`, `/data/goose` and
+`/data/tls` as retained; `pai remove code-agents` names `/data/code-agents` and the
+subuid range; `pai remove life-vault` names `/data/life-vault`. Data paths are not a
+removable kind — that is structural, not a list of four paths someone has to remember to
+extend. `pai remove --help` states the two doctor facts above.
+
+**To back a unit out by hand,** the manifest's `reason` is the procedure: it is written
+per unit in `config/units/<id>.yaml`, and `pai remove <id>` prints it.

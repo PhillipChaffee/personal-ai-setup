@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # cli.sh — the `pai` dispatcher. READ-ONLY EXCEPT FOR THE COMMANDS LISTED BELOW.
 #
-# doctor/status/list are doctor.py; verify is a runner over the existing
-# scripts/verify/check-*.sh; docs is check-docs.sh. The split is deliberate:
-# verify and docs are shell because the things they run are shell, and a Python
-# wrapper would only re-implement exit-code plumbing that lib.sh already has.
+# doctor/status/list are doctor.py; remove is uninstall.py; verify is a runner
+# over the existing scripts/verify/check-*.sh; docs is check-docs.sh. The split
+# is deliberate: verify and docs are shell because the things they run are
+# shell, and a Python wrapper would only re-implement exit-code plumbing that
+# lib.sh already has.
 #
 # WRITING COMMANDS — THE WHOLE LIST. Everything not named here writes nothing,
 # and a command that gains a writing verb belongs in this list in the same diff
@@ -43,6 +44,10 @@ Usage: pai <command> [options]
   secrets  the credential roster for one host, projected from the manifests
   verify   run the checks the manifests claim, one table, one exit code
   docs     the generated regions of README.md, checked against the tree
+  remove   why a unit cannot be uninstalled, and what is kept regardless.
+           It REFUSES and deletes nothing, for every unit, with no flag that
+           bypasses it. `pai remove --help` says why the removing half is
+           not written.
 
   verify --require <check>     a check that exits 2 (precondition missing) is a
                                SKIP in a sweep. Name it here and its skip
@@ -272,6 +277,16 @@ case "${1:-}" in
     PY_CMD="$(py_runner)"
     read -r -a PY <<<"$PY_CMD"
     exec "${PY[@]}" "$REPO_ROOT/scripts/pai/doctor.py" "$@"
+    ;;
+  remove)
+    # Same shape as the doctor arm, and for the same three reasons: the
+    # assignment (not a here-string) so errexit sees py_runner's die, the exec
+    # so uninstall.py's exit code IS this script's, and "$@" rather than "$1"
+    # so the verb and the id both reach main() — which consumes the verb the
+    # way doctor.py's does.
+    PY_CMD="$(py_runner)"
+    read -r -a PY <<<"$PY_CMD"
+    exec "${PY[@]}" "$REPO_ROOT/scripts/pai/uninstall.py" "$@"
     ;;
   verify) shift; cmd_verify "$@" ;;
   # exec, not a call: check-docs.sh sources the same lib.sh this file did and

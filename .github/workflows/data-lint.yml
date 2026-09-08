@@ -587,13 +587,81 @@ jobs:
             || { echo "::error::the --dry-run wrote into the RUNNER's \$HOME — P8(f) is not sandboxed"; exit 1; }
           echo "check-units.sh named the write, and it landed in a throwaway \$HOME."
 
+      # NEGATIVE TEST 9 — the three arms #43 added to check_uninstall.
+      #
+      # `uninstall: {supported, reason}` was shape-checked and nothing else: no
+      # manifest says `supported: true`, so every rule ABOUT that state was
+      # unreachable and would have shipped untested. scripts/pai/uninstall.py
+      # (`pai remove`) is now the reader for this block, and it prints the
+      # `reason` verbatim — these are the rules that keep that output honest.
+      #
+      # Three cases in one step because they share the harness. Each gets its
+      # own $RUNNER_TEMP copy, its own anchored mutation, a grep PROVING the
+      # mutation landed (data-lint.yml already records a sed that matched
+      # nothing going green twice), and a grep on the MESSAGE — an exit-code
+      # assertion would go green off any other finding the mutation provoked.
+      - name: Negative test — uninstall.supported must be true ABOUT something
+        run: |
+          set -euo pipefail
+          probe() { # probe <case> <file> <expected message fragment>
+            work="$RUNNER_TEMP/units-negative-uninstall-$1"; mkdir -p "$work"
+            git archive HEAD | tar -x -C "$work"
+            manifest="$work/config/units/$2.yaml"
+            # Anchored on the INDENTED key: `supported:` also appears in the
+            # prose of some reasons, and an unanchored sed would rewrite one.
+            sed -i 's/^  supported: false$/  supported: true/' "$manifest"
+            grep -qx '  supported: true' "$manifest" || {
+              echo "::error::the $1 mutation did not apply — this control is inert"
+              exit 1
+            }
+            if [ "$1" = reason ]; then
+              # The reason is a multi-line block scalar; sed cannot blank it.
+              python3 - "$manifest" <<'PY'
+          import pathlib, re, sys
+          p = pathlib.Path(sys.argv[1])
+          t = p.read_text()
+          new = re.sub(r"^  reason: .*?(?=\n[a-z_]+:)", '  reason: ""', t,
+                       flags=re.S | re.M)
+          if new == t:
+              raise SystemExit("the reason mutation did not apply — this control is inert")
+          p.write_text(new)
+          PY
+            fi
+            if out="$("$work/scripts/verify/check-units.sh" --offline 2>&1)"; then
+              echo "::error::check-units.sh accepted $2 with uninstall.supported: true ($1)"
+              exit 1
+            fi
+            printf '%s\n' "$out" | grep -qF "$3" || {
+              echo "::error::the gate failed, but not on the $1 arm — it is inert"
+              printf '%s\n' "$out"
+              exit 1
+            }
+            echo "check-units.sh correctly rejected $2 ($1)."
+          }
+          # tier: base. base-skills is the manifest that makes this arm
+          # non-trivial: its one home_path (~/.agents/skills/connect-service) is
+          # as removable as anything in the catalogue, so nothing BUT the tier
+          # stops it, and the other two arms below both pass on it.
+          probe tier base-skills \
+            "base-skills.uninstall.supported is true on tier: base"
+          # AC#5 of #43, and it covers EXACTLY ONE manifest: P4 already fails an
+          # empty owns unless host: checklist, and phone-kit is the only
+          # checklist unit.
+          probe owns phone-kit \
+            "phone-kit.uninstall.supported is true but owns is empty"
+          # A reason was only required in the `false` state, so
+          # {supported: true, reason: ""} passed — and `pai remove` would have
+          # printed a blank explanation for the one state that needs one.
+          probe reason coding-pack \
+            "coding-pack.uninstall.supported is true but reason is empty"
+
       # The monthly run. continue-on-error until the catalog closes: --strict
       # also promotes the two REVERSE-closure checks, and every check-*.sh and
       # every secrets.env.example key is unclaimable until all 18 manifests
       # exist. A scheduled job that is red on arrival trains people to ignore
       # it — the same argument that makes staleness a NOTE in the required job.
       # FLIP THIS TO false IN THE PR THAT ADDS THE REMAINING 15 MANIFESTS; the
-      # eight negative tests above are what keep --strict honest until then.
+      # nine negative tests above are what keep --strict honest until then.
       - name: check-units.sh --strict (monthly)
         if: github.event_name == 'schedule'
         continue-on-error: true
