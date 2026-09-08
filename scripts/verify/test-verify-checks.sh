@@ -274,7 +274,12 @@ mkdir -p "$WORK/sec-bad/.config/goose"
 printf 'extensions: [unclosed\n' > "$WORK/sec-bad/.config/goose/config.yaml"
 PAI_MODE=local PAI_HOME="$WORK/sec-bad" HOME="$WORK/sec-bad" \
   run_check "$HERE/check-security.sh" --local
-saw "an unparseable live config is a FAIL, never a skip" "is unreadable or not valid YAML"
+# The VERDICT PREFIX is part of the needle. Without it this matched the same
+# sentence emitted as a SKIP, so demoting the verdict — the exact regression
+# worth catching — left the assertion green.
+saw "an unparseable live config is a FAIL, never a skip" \
+  "FAIL  live goose config.yaml"
+saw "...and says what the parser choked on" "is unreadable or not valid YAML"
 
 # The port roster is closed over the code that binds the ports. It is a literal
 # in check-security.sh and the defaults live in code-agent-manager.py; nothing
