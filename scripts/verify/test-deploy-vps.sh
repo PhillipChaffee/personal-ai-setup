@@ -47,7 +47,7 @@
 # assertion message interpolates a value -- counts, booleans and exit codes
 # only.
 # shellcheck disable=SC2015
-# ^ FILE-LEVEL and load bearing, the same as test-base-install.sh:73-80: every
+# ^ FILE-LEVEL and load bearing, the same as test-base-install.sh:94-101: every
 # assertion is the deliberate `[ cond ] && ok "..." || bad "..."` idiom, and
 # ok() ends in an arithmetic ASSIGNMENT (always exit 0) so the `|| bad` arm can
 # never run after a passing `ok`.
@@ -767,8 +767,9 @@ if leg select; then
 
   # V11 — check-code-agents.sh must SKIP (exit 2), not FAIL, on a brain that
   # deliberately has no code-agents plane. Without this, AC1 ships a
-  # permanently-red check: cli.sh:93-101 maps exit 2 to SKIP and everything
-  # else to FAIL.
+  # permanently-red check: cli.sh:197-213 maps exit 2 to SKIP and everything
+  # else to FAIL. (Re-anchored past #108, which rewrote cli.sh and gave that
+  # arm a `--require` escalation; the mapping this depends on is unchanged.)
   V11_RC=0
   PAI_MODE=local \
   PAI_DATA_ROOT="$WORK/sb-nocode/data" \

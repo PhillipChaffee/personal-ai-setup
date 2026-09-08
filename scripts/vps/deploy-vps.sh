@@ -296,8 +296,8 @@ trap on_unit_err ERR
 # The brain core is ungateable, so a dry-run that only silenced the four unit
 # bodies would still stop both goose units, migrate three directories, install
 # seven unit files and restart goose-serve — writing most of a deploy while
-# printing the word "dry". bootstrap-mac.sh:380-408 exits above its platform
-# guard for the same reason.
+# printing the word "dry". bootstrap-mac.sh:392-424 exits above its platform
+# guard at :426 for the same reason.
 if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "==> deploy-vps.sh --dry-run: nothing below this line ran, and nothing was written."
   echo "    always runs: brain core (path-root migration, goose config, systemd unit"
@@ -562,7 +562,7 @@ fi
 #      was harmless; inside a function it is fatal.
 #   2. EVERY CALL SITE IS A BARE COLUMN-0 LINE — never `if unit_x; then`, never
 #      `unit_x || rc=$?`. A function called from an `if` condition runs its
-#      WHOLE body with errexit disabled. units_lint.py:605 counts `^unit_x$`
+#      WHOLE body with errexit disabled. units_lint.py:659 counts `^unit_x$`
 #      and would happily accept the `if` form.
 #   3. `[ cond ] || continue` inside loops, never `[ cond ] && action` as a
 #      loop's last statement — the loop inherits that status and the body then
