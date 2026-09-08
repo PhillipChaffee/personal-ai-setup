@@ -6,10 +6,11 @@
 #
 # WHAT A GREEN RUN HERE MEANS, exactly, and nothing beyond it:
 #
-#   "deploy-vps.sh issues the same privileged sequence it issued before the
-#    carve -- plus one enumerated extra `systemctl daemon-reload` -- writes the
-#    same file tree, and issues a strictly smaller sequence when a unit is
-#    deselected."
+#   "deploy-vps.sh issues the privileged invocations it issued before the carve,
+#    IN THE SAME ORDER, with two enumerated edits -- one `daemon-reload` moved
+#    below the tls-cert-renew installs and one added inside
+#    unit_telegram_gateway -- writes the same file tree byte for byte, and
+#    issues a strictly smaller sequence when a unit is deselected."
 #
 # WHAT IT CANNOT MEAN. There is no CI on earth that can run this script against
 # a real brain, so the following stay a human's job on a real VPS and are
@@ -34,11 +35,12 @@
 # laptop-friendliness. Develop it in CI or in a container.
 #
 # ASSERTION IDS carry through from the design so a failure names the claim:
-#   V1/V1b  the pre-carve differential          V5/V5b/V5c  selection + dry run
-#   V2a-f   ordering constraints                V7          idempotence
-#   V3/V3b  the -T constraint, both directions  V8          the /status gate
-#   V4a/V4b the EXIT trap                       V9          ERR attribution
-#   V6      the migration runs once             V11         check-code-agents
+#   V0      the pinned baseline is real         V5/V5b/V5c  selection + dry run
+#   V1/V1b  the pre-carve differential          V7          idempotence
+#   V2a-f   ordering constraints                V8          the /status gate
+#   V3/V3b  the -T constraint, both directions  V9          ERR attribution
+#   V4a/V4b the EXIT trap                       V11         check-code-agents
+#   V6      the migration runs once
 #
 # NOTHING HERE MAY CONTAIN A LITERAL SECRET-SHAPED CONSTANT. The fixture
 # secrets.env is generated with `openssl rand -hex 32` at run time, and no
@@ -61,8 +63,9 @@ Usage: test-deploy-vps.sh [--only differential|constraints|select|rerun|status] 
 Runs scripts/vps/deploy-vps.sh against scripts/verify/fake-host.sh inside a
 throwaway directory. Linux only. Exits non-zero if any assertion fails.
 
-  --only differential  V1/V1b: the pre-carve/post-carve invocation and file-tree
-                       differential, with a two-line addition allowlist
+  --only differential  V0/V1/V1b: the pinned baseline, then the
+                       pre-carve/post-carve invocation-SEQUENCE and file-tree
+                       differential, with a two-edit allowlist
   --only constraints   V2a-f, V3, V3b, V4a/V4b, V6: the four documented
                        constraints on this deploy, plus the reload orderings
   --only select        V5/V5b/V5c/V11: --with/--without/--only/--dry-run
@@ -105,6 +108,17 @@ case "$(uname -s)" in
   Linux) ;;
   *) die "Linux only. This harness asserts GNU-specific behaviour (ln -T, stat -c, find -printf) and a partial pass would be worse than none. Run it in CI or a container." ;;
 esac
+
+# NOT ROOT, and refused rather than reported. deploy-vps.sh's own preflight
+# (deploy-vps.sh:315) exits 1 on `id -u` == 0, so under root EVERY run of it
+# dies on its first line and every assertion below fails for that one reason.
+# Measured before this guard existed, in ubuntu:24.04 as root: 1 pass, 13
+# failures saying things like "the brain would be left offline", and then the
+# harness died inside V4b without printing a summary at all. Not one of those
+# failures was about the code under test, and the count is environment-dependent
+# — which is the point: a root run reports the wrong cause 13 different ways.
+# The obvious way to hit it is a bare `docker run ubuntu:24.04`.
+[ "$(id -u)" -ne 0 ] || die "refusing to run as root: deploy-vps.sh's preflight refuses root, so every assertion here would fail for that one reason and name the wrong cause. Run as an unprivileged user (in a container: 'useradd -m tester' then run as tester)."
 
 # THE BRAIN INTERLOCK. register-schedules.sh reads the LITERAL /data/secrets.env
 # and the literal /data/life-vault paths (it has no seam of its own, and giving
@@ -317,7 +331,7 @@ if leg select; then
 fi
 
 # ============================================================================
-# V1/V1b — THE DIFFERENTIAL
+# V0/V1/V1b — THE DIFFERENTIAL
 # ============================================================================
 if leg differential; then
   # PINNED, and it pins the SEAM COMMIT, not some earlier revision: the seam is
@@ -326,53 +340,151 @@ if leg differential; then
   # The seam commit is deliberately zero-behaviour-change, so it is a valid
   # baseline for "the carve moved nothing".
   #
-  # This repo merges with merge commits (`Merge pull request #NN`), so the sha
-  # stays reachable. Under a squash it would dangle and the loud-SKIP arm below
-  # is all that is left — which is why install-test.yml sets fetch-depth: 0.
+  # THE SHA IS NOT GUARANTEED TO STAY REACHABLE, and an earlier version of this
+  # comment claimed it was. This repo's history is MIXED: #101-#104 landed as
+  # `Merge pull request #NN` commits, and #105 — the directly analogous Mac
+  # carve — was SQUASHED, which is why main's tip has a single parent. A squash
+  # of the PR that introduced this file leaves the seam commit unreachable and
+  # `cat-file -e` starts failing. That is not a skip: a differential that
+  # silently stops asserting is the failure this whole file exists to prevent,
+  # so the only arm that may skip is a genuinely SHALLOW clone (which a `git
+  # fetch --unshallow` fixes), and everything else is a FAILURE with a runbook.
+  #
+  # AND NO OLDER SHA CAN REPLACE IT. The obvious hardening — pin something that
+  # is already an ancestor of main, the way test-base-install.sh:856 pins the
+  # merge commit 5f016b3 — is not available here: the seam is introduced by
+  # this branch's own first commit, and every earlier revision of
+  # deploy-vps.sh writes to the literal /data and /etc/systemd/system, so it
+  # cannot be run against a fake host at all. The two durable options are to
+  # land this PR as a merge commit, or to pin the object with a tag:
+  #   git push origin e3e97f45e2100aeaae89d4d25c78649114c9b74f:refs/tags/vps-pre-carve
+  # A tag keeps the object alive whatever the merge strategy, and
+  # actions/checkout with fetch-depth: 0 fetches tags. Failing both, GitHub
+  # keeps refs/pull/110/head forever, so the blob is recoverable — see the
+  # failure text below, which says how.
   PRE_CARVE_SHA="e3e97f45e2100aeaae89d4d25c78649114c9b74f"
 
-  HAVE_BLOB=0
-  if git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1 &&
-     git -C "$REPO_ROOT" cat-file -e "$PRE_CARVE_SHA:scripts/vps/deploy-vps.sh" 2>/dev/null; then
-    HAVE_BLOB=1
+  HAVE_GIT=0; SHALLOW=0; HAVE_BLOB=0
+  if git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    HAVE_GIT=1
+    [ "$(git -C "$REPO_ROOT" rev-parse --is-shallow-repository 2>/dev/null)" != "true" ] || SHALLOW=1
+    git -C "$REPO_ROOT" cat-file -e "$PRE_CARVE_SHA:scripts/vps/deploy-vps.sh" 2>/dev/null && HAVE_BLOB=1 || true
   fi
 
-  if [ "$HAVE_BLOB" -ne 1 ]; then
-    skipped "V1: pre-carve blob ${PRE_CARVE_SHA:0:9} is not in this clone (shallow? needs fetch-depth: 0)"
-    skipped "V1b: same"
-  else
+  # V0 — THE BASELINE ITSELF. Two ways of losing this differential are silent
+  # and neither is hypothetical:
+  #   * the pinned commit goes unreachable (see above), or
+  #   * a future author re-pins to a POST-carve sha to make the red go away,
+  #     which compares the working tree against itself and passes for free.
+  # So the extracted blob is checked for the seam it must have and for the unit
+  # functions it must NOT have, and V1/V1b do not run unless V0 passes.
+  BASELINE=""
+  if [ "$HAVE_BLOB" -eq 1 ]; then
     mkdir -p "$WORK/pre-carve"
     git -C "$REPO_ROOT" show "$PRE_CARVE_SHA:scripts/vps/deploy-vps.sh" >"$WORK/pre-carve/deploy-vps.sh"
     chmod 755 "$WORK/pre-carve/deploy-vps.sh"
+    V0_SEAM="$(count_in "$WORK/pre-carve/deploy-vps.sh" '^PAI_FAKE_ROOT=')"
+    V0_UNITS="$(count_in "$WORK/pre-carve/deploy-vps.sh" '^unit_[a-z_]+\(\) \{')"
+    if [ "$V0_SEAM" -ge 1 ] && [ "$V0_UNITS" -eq 0 ]; then
+      BASELINE="$WORK/pre-carve/deploy-vps.sh"
+      ok "V0: the pinned baseline ${PRE_CARVE_SHA:0:9} is reachable, carries the seam and defines no unit function"
+    else
+      bad "V0: ${PRE_CARVE_SHA:0:9} is reachable but is not a pre-carve seam revision (PAI_FAKE_ROOT=$V0_SEAM want >=1, unit_*() definitions=$V0_UNITS want 0) — V1/V1b did not run. Re-pinning the baseline to a post-carve sha compares the tree with itself."
+    fi
+  elif [ "$HAVE_GIT" -eq 1 ] && [ "$SHALLOW" -eq 1 ]; then
+    # The ONLY skip. Distinguishable by construction, and self-repairing:
+    # `git fetch --unshallow` (or actions/checkout's fetch-depth: 0) restores it.
+    skipped "V0/V1/V1b: this is a SHALLOW clone and the pre-carve blob was never fetched — run 'git fetch --unshallow' (CI uses fetch-depth: 0)"
+  elif [ "$HAVE_GIT" -eq 1 ]; then
+    bad "V0: ${PRE_CARVE_SHA:0:9}:scripts/vps/deploy-vps.sh is UNREACHABLE in a full clone (a squash merge of the PR that introduced it is how that happens), so V1/V1b asserted nothing. Fix it, do not skip it: recover the object with 'git fetch origin refs/pull/110/head' (GitHub keeps that ref forever) and pin it for good with 'git push origin ${PRE_CARVE_SHA}:refs/tags/vps-pre-carve', or retire V1/V1b deliberately and say in this file what replaces them. Do NOT re-pin to a post-carve revision — V0 checks for that and it compares the tree with itself."
+  else
+    bad "V0: $REPO_ROOT is not a git work tree, so the pre-carve baseline cannot be read and V1/V1b asserted nothing. Run this harness from a clone, not from a 'git archive' export."
+  fi
 
+  if [ -n "$BASELINE" ]; then
     mksandbox pre existing
     mksandbox post existing
     arm pre curl-ok
     arm post curl-ok
-    V1_PRE_RC="$(run_deploy pre "$WORK/out/pre.log" "$WORK/pre-carve/deploy-vps.sh")"
+    V1_PRE_RC="$(run_deploy pre "$WORK/out/pre.log" "$BASELINE")"
     V1_POST_RC="$(run_deploy post "$WORK/out/post.log" "$REPO_ROOT/scripts/vps/deploy-vps.sh")"
 
-    sort "$WORK/out/pre.log"  >"$WORK/out/pre.sorted"
-    sort "$WORK/out/post.log" >"$WORK/out/post.sorted"
-    comm -23 "$WORK/out/pre.sorted" "$WORK/out/post.sorted" >"$WORK/out/removed"
-    comm -13 "$WORK/out/pre.sorted" "$WORK/out/post.sorted" >"$WORK/out/added"
+    # V1 — THE PRIVILEGED SEQUENCE, IN ORDER.
+    #
+    # The first version of this sorted both logs and compared MULTISETS, and it
+    # was inert in the one direction that matters. Ordering is this script's
+    # entire risk model — stop-before-move, register-before-restart,
+    # install-reload-enable — and a pure reordering is invisible to a multiset.
+    # Measured: moving the whole `unit_google_workspace` / `completed
+    # google-workspace` call site from above the systemd block to below
+    # `completed code-agents` left the sorted comparison GREEN. V2a-f pin six
+    # specific pairs; the other ~2300 pairs were pinned by nothing.
+    #
+    # So the comparison is SEQUENCE-EXACT, and the allowlist is an EDIT SCRIPT
+    # applied to the pre-carve log rather than a set of permitted lines. Two
+    # edits, and both are defended in deploy-vps.sh:
+    #
+    #   E1  MOVE  the unconditional `daemon-reload` moved from ABOVE the two
+    #             tls-cert-renew installs to BELOW them (deploy-vps.sh:618-633).
+    #   E2  ADD   unit_telegram_gateway got a reload of its own, immediately
+    #             after its install, because that install is GATED and an
+    #             unconditional reload would have to run before it
+    #             (deploy-vps.sh:641-648).
+    #
+    # The counts are asserted too ("1 1 1"): an anchor that stopped matching
+    # would otherwise degrade this into an identity transform and report the
+    # move as a plain difference, blaming the wrong line.
+    #
+    # WHAT IS NOT ORDERED HERE, stated rather than assumed: nothing in this log
+    # is emitted by a loop whose order the source leaves open. The two loops
+    # that reach the log iterate literal word lists (`for t in morning-brief
+    # inbox-triage weekly-review health-followups` and register-schedules.sh's
+    # ORDER=() — its `declare -A` maps are lookups, never iterated). The one
+    # glob, config/goose/custom_providers/*.json, is sorted by bash, and BOTH
+    # SIDES EXPAND THE SAME GLOB from the same repo in the same environment, so
+    # a collation difference moves the two logs together and cancels. Nothing
+    # here runs in parallel. Measured: both logs are byte-identical across
+    # repeated runs, so a total order does not flap.
+    RELOAD='sudo systemctl daemon-reload'
+    awk -v reload="$RELOAD" -v countfile="$WORK/out/edits" '
+      { line[NR] = $0 }
+      END {
+        for (i = 1; i <= NR; i++) {
+          # E1, delete half: the reload immediately above the tls installs.
+          if (line[i] == reload && line[i+1] ~ /^sudo install .*\/tls-cert-renew\.service$/) {
+            e1del++
+            continue
+          }
+          print line[i]
+          # E1, insert half: below the LAST of the two tls installs.
+          if (line[i] ~ /^sudo install .*\/tls-cert-renew\.timer$/) { print reload; e1ins++ }
+          # E2: the reload added inside unit_telegram_gateway.
+          if (line[i] ~ /^sudo install .*\/goose-telegram-gateway\.service$/) { print reload; e2++ }
+        }
+        printf "%d %d %d\n", e1del + 0, e1ins + 0, e2 + 0 > countfile
+      }
+    ' "$WORK/out/pre.log" >"$WORK/out/expected"
+    V1_EDITS="$(tr -d '\n' <"$WORK/out/edits")"
 
-    # THE ADDITION ALLOWLIST, hand-written and exactly one line long. Every
-    # word of it is defended in deploy-vps.sh: the reload that used to sit
-    # above the tls-cert-renew installs moved BELOW them (that is a move, not
-    # an addition, so it does not appear here), and unit_telegram_gateway got
-    # its own reload because its install is gated and an unconditional reload
-    # would have to run before it.
-    printf 'sudo systemctl daemon-reload\n' >"$WORK/out/allowed"
-
-    if [ "$V1_PRE_RC" = "0" ] && [ "$V1_POST_RC" = "0" ] &&
-       [ ! -s "$WORK/out/removed" ] &&
-       diff -u "$WORK/out/allowed" "$WORK/out/added" >"$WORK/out/added.diff" 2>&1; then
-      ok "V1: the carve removes nothing and adds exactly one daemon-reload ($(wc -l <"$WORK/out/pre.log" | tr -d ' ') pre-carve invocations)"
+    if [ "$V1_PRE_RC" = "0" ] && [ "$V1_POST_RC" = "0" ] && [ "$V1_EDITS" = "1 1 1" ] &&
+       diff -u "$WORK/out/expected" "$WORK/out/post.log" >"$WORK/out/seq.diff" 2>&1; then
+      ok "V1: the carve issues the pre-carve sequence IN ORDER, with two enumerated edits ($(wc -l <"$WORK/out/pre.log" | tr -d ' ') pre-carve invocations)"
     else
-      bad "V1: the privileged sequence moved (pre rc=$V1_PRE_RC, post rc=$V1_POST_RC, $(wc -l <"$WORK/out/removed" | tr -d ' ') removed)"
-      evidence "$WORK/out/removed"
-      evidence "$WORK/out/added.diff"
+      # Diagnosis, not assertion: the multiset comparison the sequence one
+      # replaced still answers the first question a failure raises — did a call
+      # appear or vanish, or did the deploy merely REORDER?
+      sort "$WORK/out/pre.log"  >"$WORK/out/pre.sorted"
+      sort "$WORK/out/post.log" >"$WORK/out/post.sorted"
+      comm -23 "$WORK/out/pre.sorted" "$WORK/out/post.sorted" >"$WORK/out/removed"
+      comm -13 "$WORK/out/pre.sorted" "$WORK/out/post.sorted" >"$WORK/out/added"
+      V1_REM="$(wc -l <"$WORK/out/removed" | tr -d ' ')"
+      V1_ADD="$(wc -l <"$WORK/out/added" | tr -d ' ')"
+      # 0 removed / 1 added is the multiset the OLD sorted V1 called a pass:
+      # the one allowlisted reload and nothing else. Saying so names the class.
+      V1_SHAPE="calls appeared or vanished"
+      [ "$V1_REM" -ne 0 ] || [ "$V1_ADD" -ne 1 ] || V1_SHAPE="a PURE REORDER — same calls, different order"
+      bad "V1: the privileged sequence moved (pre rc=$V1_PRE_RC, post rc=$V1_POST_RC, edits='$V1_EDITS' want '1 1 1'; against the pre-carve multiset $V1_REM removed / $V1_ADD added, i.e. $V1_SHAPE)"
+      evidence "$WORK/out/seq.diff"
     fi
 
     # V1b — the FILE TREE, which the invocation log cannot see: install/cp/ln

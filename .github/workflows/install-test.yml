@@ -170,12 +170,16 @@ jobs:
   # because a red deploy differential should not be reported as "base install
   # failed".
   #
-  # WHAT GREEN HERE MEANS: deploy-vps.sh issues the same privileged sequence it
-  # issued before the carve, plus one enumerated daemon-reload, and a strictly
-  # smaller one when a unit is deselected. It says NOTHING about whether
-  # podman, apt, systemd, rootless subuid ranges or loginctl linger behave as
-  # modelled on a real Ubuntu, and nothing at all about a real brain. The
-  # harness's header enumerates that list; read it before trusting this badge.
+  # WHAT GREEN HERE MEANS: deploy-vps.sh issues the privileged invocations it
+  # issued before the carve, IN THE SAME ORDER, with two enumerated edits (one
+  # `daemon-reload` moved below the tls-cert-renew installs, one added inside
+  # unit_telegram_gateway), and a strictly smaller sequence when a unit is
+  # deselected. The comparison is sequence-exact, not set-exact: an earlier
+  # version sorted both logs first, and a whole unit call site could be moved
+  # without reddening it. It says NOTHING about whether podman, apt, systemd,
+  # rootless subuid ranges or loginctl linger behave as modelled on a real
+  # Ubuntu, and nothing at all about a real brain. The harness's header
+  # enumerates that list; read it before trusting this badge.
   deploy-vps:
     name: brain deploy against fakes
     runs-on: ubuntu-latest
@@ -187,15 +191,17 @@ jobs:
           # LOAD BEARING, for the same reason as the job above. Assertion V1
           # runs the PRE-CARVE deploy-vps.sh out of git history by pinned sha
           # and diffs its privileged sequence and its file tree against this
-          # checkout's. On a shallow clone that blob is absent and V1/V1b
-          # degrade to counted SKIPs -- so "the carve changed nothing" would be
-          # asserted nowhere.
+          # checkout's. A SHALLOW clone is the one case the harness is allowed
+          # to SKIP -- so without this, "the carve changed nothing" would be
+          # asserted nowhere and the job would still be green. (An unreachable
+          # sha, e.g. after a squash merge, is a FAILURE rather than a skip;
+          # fetch-depth cannot help with that one and does not pretend to.)
           fetch-depth: 0
 
       - name: Brain deploy against the fakes
         run: scripts/verify/test-deploy-vps.sh
 
-      # Five negative tests, each naming the assertion it must break. All work
+      # Six negative tests, each naming the assertion it must break. All work
       # on a COPY in $RUNNER_TEMP so the checkout is never modified, and all
       # use INDENTATION-TOLERANT anchors: the carve moved most of these lines
       # inside a function body, and a `^sudo` anchor would match nothing, pass
@@ -265,9 +271,16 @@ jobs:
           test -x "$work/scripts/verify/test-deploy-vps.sh" \
             || { echo "::error::harness is not executable in the archive"; exit 1; }
           # Column 0 anchors the UNCONDITIONAL reload specifically: the other
-          # two live inside unit bodies and are indented. Deleting it puts the
-          # tree back where it was before this PR, where `enable --now
-          # tls-cert-renew.timer` ran against a cached unit definition.
+          # two live inside unit bodies and are indented. Deleting it leaves
+          # `enable --now tls-cert-renew.timer` with no reload of its own
+          # anywhere above it.
+          #
+          # NOT the pre-PR tree, and an earlier version of this comment said it
+          # was: before this PR a reload DID exist here, sitting ABOVE the two
+          # tls installs, which is the bug the move fixes. Deletion is used
+          # instead of a move because it is the sed that cannot half-apply; the
+          # true move mutation reddens V2b' identically, so this control is
+          # sensitive to POSITION and not merely to presence.
           before="$(grep -c '^sudo systemctl daemon-reload$' "$work/scripts/vps/deploy-vps.sh")"
           [ "$before" -eq 1 ] \
             || { echo "::error::expected exactly 1 top-level daemon-reload, found $before — this control is inert"; exit 1; }
@@ -298,3 +311,50 @@ jobs:
             exit 1
           fi
           echo "V2b/V2c correctly caught a unit that enabled a cached unit file."
+
+      # THE ORDERING CONTROL, and the reason V1 is allowed to be the only guard
+      # on deploy-vps.sh now that data-lint.yml's text freeze is gone. V2a-f pin
+      # six specific pairs; V1 pins the whole sequence, and this is the mutation
+      # that proves it. It moves a WHOLE UNIT CALL SITE — no line is added,
+      # removed or edited — which the previous, `sort`-then-`comm` version of V1
+      # reported as a pass.
+      #
+      # `cp -a` and not `git archive`, alone among these six: V1 reads the
+      # pre-carve blob out of .git by pinned sha, and an archive export has no
+      # .git at all. (The harness fails loudly rather than skipping in that
+      # case, which is why the other five, which run --only constraints/select,
+      # are unaffected.) The checkout itself is still never modified.
+      - name: Negative test — a reordered unit call site must fail V1
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/neg-reorder"
+          rm -rf "$work"; mkdir -p "$work"
+          cp -a "$GITHUB_WORKSPACE/." "$work/"
+          test -x "$work/scripts/verify/test-deploy-vps.sh" \
+            || { echo "::error::harness is not executable in the copy"; exit 1; }
+          src="$work/scripts/vps/deploy-vps.sh"
+          cp "$src" "$src.orig"
+          awk '
+            /^unit_google_workspace$/       { pending = 1; next }
+            pending && /^completed google-workspace$/ { pending = 0; moved = 1; next }
+            { print }
+            moved && !placed && /^completed code-agents$/ {
+              print "unit_google_workspace"; print "completed google-workspace"
+              placed = 1
+            }
+            END { if (!moved || !placed) exit 3 }
+          ' "$src.orig" > "$src" \
+            || { echo "::error::the reorder did not apply — this control is inert"; exit 1; }
+          chmod 755 "$src"
+          # Same multiset, different order. Asserted against the pre-mutation
+          # COPY rather than against HEAD: if the two ever disagreed, this step
+          # would be testing "the working tree differs from HEAD", which is a
+          # different (and always-true-in-a-dirty-tree) proposition.
+          [ "$(sort "$src" | sha256sum)" = "$(sort "$src.orig" | sha256sum)" ] \
+            || { echo "::error::the mutation changed the script's lines, not just their order — this control tests the wrong thing"; exit 1; }
+          rm -f "$src.orig"
+          if "$work/scripts/verify/test-deploy-vps.sh" --only differential; then
+            echo "::error::a whole unit call site moved across the systemd block and V1 did not notice"
+            exit 1
+          fi
+          echo "V1 correctly caught a pure reordering of the deploy."
