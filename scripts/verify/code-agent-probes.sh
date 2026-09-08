@@ -43,6 +43,19 @@ CA_BASE="${CA_BASE:-}"
 # chats so "A read the wrong one" is a content comparison rather than a guess.
 CA_MARKER=".pai-probe-marker"
 
+# How deep the filesystem scan walks, and it is PRINTED IN THE VERDICT rather
+# than kept here as a detail: a bounded scan that reports itself as "any path
+# under /" is a false sentence on every run, which is what this used to be at
+# an unstated depth of 8.
+#
+# 12 is not a round number. Rootless podman keeps its own container storage at
+#   /home/<user>/.local/share/containers/storage/overlay/<id>/diff/<path>
+# — nine components before the container's own root — so a chat's workspace
+# marker sitting in another chat's overlay is at depth 12, and every bound below
+# that swept it clean while chat A could cat(1) the file. Raise it if a brain
+# nests deeper; the sentence follows the number.
+CA_SCAN_DEPTH="${CA_SCAN_DEPTH:-12}"
+
 # ------------------------------------------------------------- observation --
 
 # ca_exec <container> <sh-script> — run a script inside a chat's container.
@@ -171,8 +184,14 @@ agents = doc if isinstance(doc, list) else doc.get("agents") if isinstance(doc, 
 if not isinstance(agents, list):
     print("unreadable"); raise SystemExit(0)
 seen, leaks = 0, []
-for entry in agents:
+for position, entry in enumerate(agents):
+    # AN ENTRY THAT IS NOT AN OBJECT IS COUNTED, NOT SKIPPED. Skipping it made
+    # deny:1 a true statement about a list of two, so the count read as
+    # complete while one listed agent had never been examined — the same shape
+    # as the vacuous case below, one entry at a time.
     if not isinstance(entry, dict):
+        seen += 1
+        leaks.append("entry %d=not-an-object" % position)
         continue
     if entry.get("mode") == "subagent":
         continue
@@ -205,12 +224,13 @@ else:
 #   1. THE FILESYSTEM. Tried three ways, but they are one vector, not three:
 #      B's volume at its host path (/data/code-agents/chats/<B>/...), the path
 #      issue #17 B1 names outright; relative traversal out of A's own mount
-#      (/chat/../<B>/...); and a bounded find(1) for the marker filename
-#      ANYWHERE in A's filesystem, compared by CONTENT so A finding its own
-#      does not count. The scan subsumes the other two — no working runtime
-#      lets a relative path escape a bind mount, so the traversal try is
-#      expected to be redundant and is kept only because it costs one cat(1)
-#      and names the vector explicitly when it does hit. One verdict.
+#      (/chat/../<B>/...); and a find(1) for the marker filename anywhere in A's
+#      filesystem down to $CA_SCAN_DEPTH, compared by CONTENT so A finding its
+#      own does not count. The scan subsumes the other two ONLY WITHIN ITS
+#      BOUND, which is why the bound is in the verdict sentence and why the two
+#      named paths are still tried by name: they are the ones B1 calls out, they
+#      cost one cat(1) each, and cat is instrumented by the OWN-marker control
+#      whatever find does. One verdict.
 #   2. B'S PUBLISHED PORT. The manager publishes each chat on
 #      127.0.0.1:<port> of the HOST, so this needs the container->host route,
 #      not the mount.
@@ -239,8 +259,17 @@ else:
 # on a brain where that route is dead the old control answered "ok", no NET
 # line was emitted, and the probe printed a green isolation verdict for a
 # vector it had never exercised. The controls now are:
-#   * filesystem: A must read ITS OWN marker and it must hold A's nonce. If it
-#     cannot, the probe says so and fails rather than recording misses.
+#   * filesystem, the cat(1) half: A must read ITS OWN marker and it must hold
+#     A's nonce. If it cannot, the probe says so and fails rather than
+#     recording misses.
+#   * filesystem, the SCAN half: the walk must come back holding A's own marker
+#     — the same file, found the other way. That datum was collected and thrown
+#     away for three rounds: the loop walked past /chat/workspace/<marker> and
+#     `continue`d because it was not B's nonce. Absent it, find(1) is missing,
+#     unable to walk, or reading nothing, and "no other chat's marker anywhere"
+#     is a claim about a scan that did not happen — a SKIP, not a pass. Drop
+#     find from the image's PATH and this arm now degrades the way the two
+#     network arms already did.
 #   * published port: A must reach ITS OWN published port on the host, over
 #     the same three host addresses B is tried on. A miss there means the
 #     route is dead, which is a SKIP. A hit at A's own port plus a miss at B's
@@ -251,13 +280,16 @@ else:
 #     isolation only if the thing refused was a key the plane accepts, so a
 #     refusal is read as isolation only when some server took the same token:
 #     the gateway itself (GWCTL:ok), or A's own published port (ROUTE ok), or
-#     A's own server inside its netns (TOOL:ok). A container whose
-#     OPENCODE_SERVER_PASSWORD is empty or wrong 401s everywhere, and that must
-#     be a SKIP — the probe is broken — rather than a pass earned by having
-#     nothing to be let in with.
+#     A's own server inside its netns (TOOL:ok AND TOOLNEG refused). A container
+#     whose OPENCODE_SERVER_PASSWORD is wrong 401s everywhere; one whose
+#     password is EMPTY runs a server that 200s everything, so `TOOL:ok` on its
+#     own is equally consistent with holding no key at all. Both are a SKIP —
+#     the probe is broken — rather than a pass earned by having nothing to be
+#     let in with.
 # `TOOL:` (A's own server on loopback inside its netns) is kept, demoted from
 # a gate on the port arm to two smaller jobs: the sub-reason a SKIP quotes (it
-# separates "no wget in the image" from "the route is closed"), and the
+# separates "no wget in the image" from "the route is closed"), and — with
+# `TOOLNEG:`, the same dial carrying a token that is deliberately wrong — the
 # credential control the proxy arm consults before reading a 401 as isolation.
 #
 # DOES NOT PROVE: that no vector exists. It proves these three are closed on
@@ -304,10 +336,12 @@ cat \"/chat/workspace/$CA_MARKER\" 2>/dev/null || true"
 # command is data rather than an abort.
 #
 # It prints one tagged line per observation and decides nothing:
-#   OWN:<nonce>          the marker A found in its own workspace (the fs control)
+#   OWN:<nonce>          the marker A found in its own workspace (the cat control)
 #   READ:<path>          B's nonce, read at a path A could NAME
-#   SCAN:<path>          B's nonce, found anywhere under / (the arm that subsumes)
+#   SCANOK:<path>        A's OWN marker, found BY THE SCAN (the scan's control)
+#   SCAN:<path>          B's nonce, found under / within the depth bound
 #   TOOL:<answer>        A's own server on 127.0.0.1:4096, inside A's netns
+#   TOOLNEG:<answer>     the SAME server, asked with a deliberately wrong token
 #   ROUTE:<host>=<answer>  A dialling ITS OWN published port via that host
 #                          address — the container->host route control
 #   NET:<host>=<answer>    A dialling B's published port via that host address
@@ -337,8 +371,13 @@ for p in "$b_dir/workspace/$CA_MARKER" "/chat/../$b_id/workspace/$CA_MARKER"; do
   echo "READ:\$p"
 done
 
-for f in \$(find / -maxdepth 8 -name "$CA_MARKER" -type f 2>/dev/null || true); do
+# The pseudo-filesystems are pruned rather than walked: nothing stages a marker
+# in them, and /proc alone can cost more wall clock than the whole probe.
+for f in \$(find / -maxdepth $CA_SCAN_DEPTH \\( -path /proc -o -path /sys -o -path /dev \\) -prune -o -name "$CA_MARKER" -type f -print 2>/dev/null || true); do
   v=\$(cat "\$f" 2>/dev/null || true)
+  # A's OWN marker, reached the long way round: the scan's positive control,
+  # and the datum that separates "found nothing" from "looked at nothing".
+  if [ -n "\$own" ] && [ "\$v" = "\$own" ]; then echo "SCANOK:\$f"; continue; fi
   [ "\$v" = "$nonce_b" ] || continue
   echo "SCAN:\$f"
 done
@@ -376,6 +415,15 @@ ca_gw() {
 
 if command -v wget >/dev/null 2>&1; then
   echo "TOOL:\$(ca_try "http://127.0.0.1:4096/session")"
+  # THE CONTROL'S OWN CONTROL: the same server, the same route, a token that is
+  # deliberately wrong. \`TOOL:ok\` means "a server took this credential" only if
+  # that server would have turned a bad one away — an opencode serve started
+  # with no password answers 200 to ANY Authorization header, which is a chat
+  # holding no key at all, not a chat holding a working one.
+  real=\$tok
+  tok=\$(printf 'opencode:%s' 'pai-not-the-password' | base64 2>/dev/null | tr -d '\\n')
+  echo "TOOLNEG:\$(ca_try "http://127.0.0.1:4096/session")"
+  tok=\$real
   for h in host.containers.internal 10.0.2.2 10.88.0.1; do
     echo "ROUTE:\$h=\$(ca_try "http://\$h:$a_port/session")"
     echo "NET:\$h=\$(ca_try "http://\$h:$b_port/session")"
@@ -388,6 +436,7 @@ if command -v wget >/dev/null 2>&1; then
   fi
 else
   echo "TOOL:nowget"
+  echo "TOOLNEG:nowget"
   echo "GWCTL:nowget"
 fi
 EOS
@@ -396,7 +445,7 @@ EOS
 # ca_cross_chat_verdict <nonce_a> <probe-output> — four verdicts: the control,
 # then one per vector (filesystem, published port, manager proxy).
 ca_cross_chat_verdict() {
-  local nonce_a="$1" out="$2" own reads tool route nets gwctl gw
+  local nonce_a="$1" out="$2" own reads scanok tool toolneg route nets gwctl gw
 
   own="$(printf '%s\n' "$out" | sed -n 's/^OWN://p' | head -n1)"
   if [ "$own" = "$nonce_a" ]; then
@@ -413,21 +462,54 @@ ca_cross_chat_verdict() {
   fi
 
   reads="$(printf '%s\n' "$out" | sed -n -e 's/^READ:/  /p' -e 's/^SCAN:/  /p')"
-  if [ -z "$reads" ]; then
-    pass "chat A cannot read chat B's volume (host path, traversal, or any path under /)"
-  else
-    fail "chat A READ chat B's volume:"
-    printf '%s\n' "$reads"
-  fi
+  scanok="$(printf '%s\n' "$out" | sed -n 's/^SCANOK://p' | head -n1)"
+  ca_filesystem_verdict "$reads" "$scanok"
 
   tool="$(printf '%s\n' "$out" | sed -n 's/^TOOL://p' | head -n1)"
+  toolneg="$(printf '%s\n' "$out" | sed -n 's/^TOOLNEG://p' | head -n1)"
   route="$(printf '%s\n' "$out" | sed -n 's/^ROUTE://p')"
   nets="$(printf '%s\n' "$out" | sed -n 's/^NET://p')"
   ca_published_port_verdict "$tool" "$route" "$nets"
 
   gwctl="$(printf '%s\n' "$out" | sed -n 's/^GWCTL://p' | head -n1)"
   gw="$(printf '%s\n' "$out" | sed -n 's/^GW://p' | head -n1)"
-  ca_manager_proxy_verdict "$tool" "$gwctl" "$gw"
+  ca_manager_proxy_verdict "$tool" "$toolneg" "$gwctl" "$gw"
+  return 0
+}
+
+# ca_filesystem_verdict <reads> <scanok> — vector 1.
+#
+# A READ IS A READ: a hit needs no control, because it happened. A MISS needs
+# one, and the miss has two instruments behind it — cat(1) for the two paths
+# #17 B1 names, proven by the OWN-marker control above, and find(1) for
+# everything else, proven by <scanok>: the scan handing back chat A's own
+# marker, the same file the control just read, reached the other way.
+#
+# Without that datum the walk may have found nothing or may have looked at
+# nothing, and those are not the same fact. This is the arm's whole history: the
+# sentence said "or any path under /" while the walk stopped at depth 8, and
+# with find(1) missing from the image it printed that sentence over a scan that
+# never ran — a green verdict for a vector nothing green had exercised.
+ca_filesystem_verdict() {
+  local reads="$1" scanok="$2"
+  if [ -n "$reads" ]; then
+    fail "chat A READ chat B's volume:"
+    printf '%s\n' "$reads"
+    return 0
+  fi
+  if [ -z "$scanok" ]; then
+    skip "cross-chat filesystem arm NOT fully exercised (the / scan found nothing at all)"
+    note "find(1) never handed back the marker chat A had just written at"
+    note "/chat/workspace/$CA_MARKER, so 'no other chat's marker anywhere under /'"
+    note "is a claim about a walk that did not happen: no find in the image, or a"
+    note "find that could not read /. The two paths issue #17 B1 names WERE still"
+    note "checked and were clean — that half is cat(1), and the control above"
+    note "proves cat works in here."
+    return 0
+  fi
+  pass "chat A cannot read chat B's volume (host path, traversal, or any path under / to depth $CA_SCAN_DEPTH)"
+  note "The scan is bounded: it walked to depth $CA_SCAN_DEPTH from / (skipping"
+  note "/proc, /sys and /dev) and found its own control at $scanok."
   return 0
 }
 
@@ -543,7 +625,8 @@ ca_published_port_verdict() {
   return 0
 }
 
-# ca_manager_proxy_verdict <tool> <gwctl> <gw> — vector 3, the loudest FAIL here.
+# ca_manager_proxy_verdict <tool> <toolneg> <gwctl> <gw> — vector 3, the
+# loudest FAIL here.
 #
 # The gateway's /chat/<id>/<path> takes any chat id and does no per-chat
 # authorization; the only gate is one global password that every container is
@@ -553,7 +636,7 @@ ca_published_port_verdict() {
 # "could not reach it" must land as a SKIP: rendering that as a pass is the
 # same false negative the published-port arm used to ship.
 ca_manager_proxy_verdict() {
-  local tool="$1" gwctl="$2" gw="$3"
+  local tool="$1" toolneg="$2" gwctl="$3" gw="$4"
   case "$gw" in
     ok)
       fail "chat A DROVE chat B through the manager's proxy (/chat/<B-id>/session)"
@@ -567,25 +650,55 @@ ca_manager_proxy_verdict() {
   esac
   # THE CREDENTIAL CONTROL, and it gates exactly one arm. "The gateway rejected
   # this request" is isolation only if the request carried a credential the
-  # plane accepts; a container with an empty or mismatched
-  # OPENCODE_SERVER_PASSWORD 401s EVERYWHERE, and the sentence below it would
-  # otherwise print is a green verdict produced by holding no key at all.
+  # plane accepts, and there are two ways to hold no key: a MISMATCHED
+  # OPENCODE_SERVER_PASSWORD, which 401s everywhere, and an EMPTY one, where the
+  # container's own `opencode serve` enforces nothing and answers 200 to
+  # anything. Both would otherwise print the isolation sentence below off a
+  # credential nothing ever accepted.
   #
   # `gwctl:ok` needs no control — a 2xx from /api/health IS the credential
   # working, and it is proof from the gateway itself. `gwctl:http:401` is the
-  # ambiguous one, so it consults TOOL: chat A's own opencode server, dialled
-  # inside A's netns with the same token. Already collected; never consulted
-  # until now.
+  # ambiguous one, so it consults chat A's own opencode server, dialled inside
+  # A's netns: TOOL with A's real token, TOOLNEG with a deliberately wrong one.
+  # Only `TOOL:ok` WITH a refusal at TOOLNEG is evidence — that is a server
+  # which checks, and which took this key. `TOOL:ok` alone is the empty-password
+  # shape and proves nothing at all.
+  #
+  # NEITHER SHAPE IS PRODUCIBLE ON A BRAIN TODAY: main() refuses to serve on an
+  # empty PASSWORD and run_container() injects that same value into every
+  # container, so the only place the distinction can be exercised is a fixture
+  # (test-verify-checks.sh drives both). Cited by symbol, not by line — these
+  # lines have moved twice in this PR alone.
   case "$gwctl" in
     http:401|http:403)
       case "$tool" in
-        ok) : ;;
+        ok)
+          case "$toolneg" in
+            http:401|http:403) : ;;
+            ok)
+              skip "cross-chat proxy arm NOT exercised (chat A's own server takes ANY credential)"
+              note "The gateway refused chat A's token, but A's own server on"
+              note "127.0.0.1:4096 answered 2xx to a token that is deliberately WRONG,"
+              note "so its 2xx to the real one says nothing about the real one. That is"
+              note "an opencode serve running with no password — a chat holding no key,"
+              note "which is the state this arm must never read as the plane refusing it."
+              return 0
+              ;;
+            *)
+              skip "cross-chat proxy arm NOT exercised (the credential control is itself unproven)"
+              note "A's own server took chat A's token but answered ${toolneg:-no answer} to a"
+              note "deliberately wrong one, so nothing shows it checks credentials at all."
+              return 0
+              ;;
+          esac
+          ;;
         http:401|http:403)
           skip "cross-chat proxy arm NOT exercised (the probe holds no working credential)"
           note "The gateway refused chat A's token — and so did chat A's OWN server"
           note "on 127.0.0.1:4096, which answered $tool. A 401 from everything is a"
-          note "broken probe, not a sandbox: an empty or mismatched"
-          note "OPENCODE_SERVER_PASSWORD in the container produces exactly this."
+          note "broken probe, not a sandbox: a MISMATCHED OPENCODE_SERVER_PASSWORD in"
+          note "the container produces exactly this. (An EMPTY one does not: that one"
+          note "answers 2xx to everything, and TOOLNEG above is what catches it.)"
           return 0
           ;;
         *)
@@ -604,9 +717,10 @@ ca_manager_proxy_verdict() {
       ;;
     http:401:*|http:403:*)
       pass "the gateway is reachable from chat A but refuses the credential it holds"
-      note "Control: /api/health answered $gwctl to the container's own password,"
-      note "and chat A's own server answered $tool to it — so the token works and"
-      note "the refusal is the gateway's decision, not a missing key."
+      note "Control: /api/health answered $gwctl to the container's own password."
+      note "Chat A's own server answered $tool to that password and $toolneg to a"
+      note "deliberately wrong one — so it does check, and it took this key. The"
+      note "refusal is the gateway's decision, not a missing key."
       ;;
     ok:*)
       skip "cross-chat proxy arm INCONCLUSIVE — gateway up, /chat/<B>/session said ${gw:-nothing}"

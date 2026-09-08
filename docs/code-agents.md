@@ -109,10 +109,13 @@ delivered branch carries no personal name or email (issue #17 C4).
   brain it is run on**: it stands a second chat up and makes chat A go after
   chat B three ways, one verdict each —
   1. **the filesystem**, tried at B's host path, by relative traversal out of
-     A's own mount, and by a bounded `find` over A's whole filesystem compared
-     by content. That is one vector tried three ways, not three vectors: the
-     scan subsumes the other two, and no working runtime lets a relative path
-     leave a bind mount anyway.
+     A's own mount, and by a `find` over A's filesystem to a stated depth
+     (`CA_SCAN_DEPTH`, 12 — deep enough to reach another chat's workspace
+     inside rootless podman's own `…/storage/overlay/<id>/diff/` tree),
+     compared by content. That is one vector tried three ways, not three
+     vectors: the scan subsumes the other two *within its bound*, which is why
+     the verdict prints the bound and why the two named paths are still tried
+     by name.
   2. **chat B's published port on the host**, with the server password every
      container holds.
   3. **the manager's own `/chat/<id>/<path>` proxy** — the shortest path of the
@@ -120,11 +123,15 @@ delivered branch carries no personal name or email (issue #17 C4).
      below).
 
   Every arm's positive control exercises *that arm's own precondition*: A must
-  read its own marker; A must reach **its own** published port over a host
-  address before B's silence at the same address means anything; A must reach
-  the gateway's `/api/health` before "the gateway did not serve B" means
-  anything. A miss whose route was never shown to work is reported as a SKIP,
-  never counted as isolation. CI runs the same probes against fixtures
+  read its own marker, and the **scan** must hand that same marker back before
+  "nothing else anywhere" means anything; A must reach **its own** published
+  port over a host address before B's silence at the same address means
+  anything; A must reach the gateway's `/api/health`, and where the gateway
+  answers 401 the probe first checks that A's own server both *takes* A's token
+  and *refuses* a deliberately wrong one — a server enforcing nothing accepts
+  everything, which is a chat holding no key rather than a plane refusing it. A
+  miss whose instrument was never shown to work is reported as a SKIP, never
+  counted as isolation. CI runs the same probes against fixtures
   (`test-verify-checks.sh`), which proves the probes fire — it proves nothing
   about podman.
 - **The gateway proxy is not per-chat authorized** (issue #115). Every

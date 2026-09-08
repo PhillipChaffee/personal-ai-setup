@@ -499,6 +499,18 @@ run_probe probe_external_directory_denied chat-a
 saw "an empty agent list FAILs rather than passing for free" \
   "FAIL  external_directory: the server listed NO selectable agent to check"
 
+# THE PARTIALLY VACUOUS SHAPE, which is the same bug one entry at a time: an
+# entry that is not an object was skipped WITHOUT being counted, so a list of
+# two reported `deny:1` and passed while one listed agent was never examined.
+# A count that reads as complete has to be complete.
+printf '%s\n' '[{"name":"build","permission":{"external_directory":"deny"}}, "oops"]' \
+  > "$CA_FIXTURE_DIR/agent"
+run_probe probe_external_directory_denied chat-a
+saw "an entry that is not an agent object FAILs and says which one" \
+  "FAIL  external_directory is not denied for: entry 1=not-an-object"
+absent "...and does not report a clean count over a list it only half read" \
+  "PASS  external_directory=deny on all 1 selectable agent(s)"
+
 # --- 5b. the cross-chat half: a container view that leaks, and one that does not
 # The fake engine emulates `podman exec` the way stub-engine.sh emulates a
 # one-shot: it rewrites the container's paths into a fixture tree and runs the
@@ -525,18 +537,24 @@ EOF
 chmod +x "$WORK/fake-engine"
 CA_ENGINE="$WORK/fake-engine"
 
-# A wget whose every answer is the fixture's, keyed on the URL. FIVE separate
+# A wget whose every answer is the fixture's, keyed on the URL. SIX separate
 # dials, and that is the fix rather than a tidy-up: the version this replaces
 # had two (`CA_FAKE_CTL` for chat A's own loopback, `CA_FAKE_NET` for
 # everything else), so "the container->host route is dead" and "chat B's port
 # is protected" were THE SAME FIXTURE VALUE. A probe cannot be shown to tell
 # two states apart by a harness that cannot express them separately.
 #
-#   CA_FAKE_TOOL   A's own server at 127.0.0.1:4096, inside A's netns
-#   CA_FAKE_ROUTE  A's OWN published port on the host — the route control
-#   CA_FAKE_NET    chat B's published port on the host — the vector
-#   CA_FAKE_GWCTL  the manager gateway's /api/health — the proxy control
-#   CA_FAKE_GW     the gateway's /chat/<B>/session — the vector
+#   CA_FAKE_TOOL    A's own server at 127.0.0.1:4096, inside A's netns
+#   CA_FAKE_TOOLNEG the SAME dial carrying a deliberately wrong token
+#   CA_FAKE_ROUTE   A's OWN published port on the host — the route control
+#   CA_FAKE_NET     chat B's published port on the host — the vector
+#   CA_FAKE_GWCTL   the manager gateway's /api/health — the proxy control
+#   CA_FAKE_GW      the gateway's /chat/<B>/session — the vector
+#
+# THE LAST TWO 4096 DIALS SHARE A URL, so this keys them on what actually
+# differs — the credential — by decoding the Authorization header the probe
+# built. A server that answers `ok` to both is a server enforcing nothing,
+# which is the empty-OPENCODE_SERVER_PASSWORD shape.
 #
 # Each is `ok`, an HTTP status, or anything else for "could not connect".
 # Statuses are printed in busybox wget's own wording, because that string is
@@ -544,10 +562,19 @@ CA_ENGINE="$WORK/fake-engine"
 mkdir -p "$WORK/bin"
 cat > "$WORK/bin/wget" <<'EOF'
 #!/usr/bin/env bash
-url=""
-for arg in "$@"; do url="$arg"; done
+url=""; cred=""
+for arg in "$@"; do
+  url="$arg"
+  case "$arg" in --header=Authorization:*) cred="${arg#*Basic }" ;; esac
+done
+sent="$(printf '%s' "$cred" | base64 -d 2>/dev/null || true)"
 case "$url" in
-  *127.0.0.1:4096*)  verdict="${CA_FAKE_TOOL:-ok}" ;;
+  *127.0.0.1:4096*)
+    case "$sent" in
+      *not-the-password) verdict="${CA_FAKE_TOOLNEG:-401}" ;;
+      *)                 verdict="${CA_FAKE_TOOL:-ok}" ;;
+    esac
+    ;;
   *:4310/session)    verdict="${CA_FAKE_ROUTE:-down}" ;;
   *:4311/session)    verdict="${CA_FAKE_NET:-down}" ;;
   *:4300/api/health) verdict="${CA_FAKE_GWCTL:-down}" ;;
@@ -578,7 +605,7 @@ export CA_FAKE_HOST_FROM="$WORK/chats" CA_FAKE_HOST_TO=""
 # chat A. The fixture describes the shape the probe must call a PASS; the
 # shapes the brain can actually produce (a 2xx, and an unreachable gateway) are
 # fed in below and must NOT both look like this one.
-export CA_FAKE_TOOL=ok CA_FAKE_ROUTE=ok CA_FAKE_NET=down
+export CA_FAKE_TOOL=ok CA_FAKE_TOOLNEG=401 CA_FAKE_ROUTE=ok CA_FAKE_NET=down
 export CA_FAKE_GWCTL=ok CA_FAKE_GW=403
 
 # The host side: two chat volumes exactly where the manager puts them. Chat B's
@@ -605,6 +632,13 @@ saw "isolated view: the positive control fires" \
   "PASS  cross-chat control: chat A reads its OWN marker (the probe is live)"
 saw "isolated view: no filesystem path reaches chat B" \
   "PASS  chat A cannot read chat B's volume"
+# The sentence CARRIES THE BOUND. It used to say "or any path under /" over a
+# walk that stopped at depth 8, which is false on every run — and the arm has a
+# control now, so the PASS also names the file the scan found.
+saw "...and the sentence states the depth the scan actually walked to" \
+  "or any path under / to depth 12)"
+saw "...and names its own control: the scan found chat A's OWN marker" \
+  "found its own control at"
 # The PASS sentence NAMES the host address the route control got through on.
 # It cannot be reached without a proven container->host round trip, which is
 # the property the old arm was missing.
@@ -645,6 +679,48 @@ saw "chat B's volume reachable under some OTHER path is still a FAIL" \
   "/fs/var/lib/containers/other/workspace/.pai-probe-marker"
 rm -rf "$WORK/view/code-agent-chat-a/fs/var"
 echo "$WORK/chats/chat-b" > "$WORK/view/code-agent-chat-b/chatpath"
+
+# THE BROKEN INPUT THE OLD BOUND SWEPT CLEAN: the same leak, one directory
+# deeper than the scan used to walk. Rootless podman keeps its containers'
+# storage at /home/<user>/.local/share/containers/storage/overlay/<id>/diff/,
+# so another chat's workspace marker inside chat A's view sits at depth 12 —
+# and at -maxdepth 8 the probe printed "or any path under /" over a file chat A
+# could cat. Nothing about this fixture is exotic: it is the layout a rootless
+# brain already has.
+DEEP="$WORK/view/code-agent-chat-a/fs/home/u/.local/share/containers/storage/overlay/abc123/diff/chat"
+mkdir -p "$DEEP/workspace"
+echo "$DEEP" > "$WORK/view/code-agent-chat-b/chatpath"
+probe_pair "$WORK/chats/chat-b"
+saw "a leak at podman's own storage depth (12) is a FAIL, not a clean sweep" \
+  "/storage/overlay/abc123/diff/chat/workspace/.pai-probe-marker"
+absent "...and the arm claims nothing about paths it did reach" \
+  "PASS  chat A cannot read chat B's volume"
+rm -rf "$WORK/view/code-agent-chat-a/fs/home"
+echo "$WORK/chats/chat-b" > "$WORK/view/code-agent-chat-b/chatpath"
+
+# THE VACUOUS SHAPE THIS ARM HAD NO CONTROL FOR: no find(1) in the image. The
+# loop then emits nothing, which is indistinguishable from a walk that found
+# nothing — and this arm used to render that as isolation while the two network
+# arms, which HAVE controls, degraded to SKIP in the same run. So PATH here
+# carries every tool the emitted script uses EXCEPT find — wget included, on
+# purpose: the ONLY difference from the isolated run above is the instrument
+# under test, and the contrast between the arms is the assertion.
+mkdir -p "$WORK/nofindbin"
+for tool in cat base64 tr sed head cut bash; do  # bash: the fake wget's shebang
+  command -v "$tool" >/dev/null 2>&1 || continue
+  ln -sf "$(command -v "$tool")" "$WORK/nofindbin/$tool"
+done
+CA_FAKE_PATH="$WORK/bin:$WORK/nofindbin"
+probe_pair "$WORK/chats/chat-b"
+saw "an image with no find(1) SKIPs the filesystem arm instead of passing it" \
+  "SKIP  cross-chat filesystem arm NOT fully exercised (the / scan found nothing at all)"
+absent "...and prints no isolation sentence about paths it never walked" \
+  "PASS  chat A cannot read chat B's volume"
+saw "...and says the two paths B1 names were still checked by cat" \
+  "The two paths issue #17 B1 names WERE still"
+saw "...while the arms whose instruments DO work still report" \
+  "PASS  chat A reaches the host (via host.containers.internal) but NOT chat B's published port"
+CA_FAKE_PATH="$WORK/bin:$PATH"
 
 # THE BROKEN INPUT (published port): the filesystem is clean and chat A can
 # still read chat B by talking to its server with the password every container
@@ -787,15 +863,41 @@ CA_FAKE_GWCTL=401 CA_FAKE_GW=401
 probe_pair "$WORK/chats/chat-b"
 saw "a gateway that rejects the container's credential is a PASS of its own" \
   "PASS  the gateway is reachable from chat A but refuses the credential it holds"
+saw "...and the note reports BOTH halves of the credential control" \
+  "answered ok to that password and http:401 to a"
 
-# THE VACUOUS SHAPE THE SENTENCE ABOVE HIDES: a container whose
-# OPENCODE_SERVER_PASSWORD is empty or does not match the manager's 401s
-# EVERYWHERE, including at its own opencode server. The identical gateway
-# answer then means "this probe has no key", not "this plane refuses this
-# chat", and printing an isolation PASS off it is a green verdict produced by
-# the probe being broken. Unreachable in practice — the manager refuses to
-# serve on an empty password and injects it into every container — which is
-# what was said about the loopback control, too.
+# THE VACUOUS SHAPE THE CONTROL ITSELF HID, and the reason TOOLNEG exists. A
+# container started with an EMPTY OPENCODE_SERVER_PASSWORD runs an opencode
+# server that enforces nothing: it answers 2xx to any Authorization header, so
+# `TOOL:ok` is true while chat A holds no key at all — and the gateway's 401 is
+# then about the missing key, not about the plane refusing this chat. Only the
+# NEGATIVE dial tells those apart, and only a fixture can produce the state:
+# main() refuses to serve on an empty PASSWORD and run_container() hands that
+# same value to every container.
+CA_FAKE_TOOLNEG=ok
+probe_pair "$WORK/chats/chat-b"
+saw "a server that also takes a WRONG token proves nothing, and SKIPs" \
+  "SKIP  cross-chat proxy arm NOT exercised (chat A's own server takes ANY credential)"
+absent "...and no isolation is claimed off a credential nothing checked" \
+  "PASS  the gateway is reachable from chat A"
+CA_FAKE_TOOLNEG=401
+
+# ...and the negative dial that settles nothing either: A's own server took the
+# real token but never answered the wrong one, so whether it checks credentials
+# at all is unknown. Unproven is a SKIP with its own sentence.
+CA_FAKE_TOOLNEG=down
+probe_pair "$WORK/chats/chat-b"
+saw "a control whose own control did not answer is its own SKIP" \
+  "SKIP  cross-chat proxy arm NOT exercised (the credential control is itself unproven)"
+absent "...and still claims no isolation" \
+  "PASS  the gateway is reachable from chat A"
+CA_FAKE_TOOLNEG=401
+
+# THE OTHER VACUOUS SHAPE: a container whose OPENCODE_SERVER_PASSWORD does not
+# match the manager's 401s EVERYWHERE, including at its own opencode server.
+# The identical gateway answer then means "this probe has no key", not "this
+# plane refuses this chat", and printing an isolation PASS off it is a green
+# verdict produced by the probe being broken.
 CA_FAKE_TOOL=401
 probe_pair "$WORK/chats/chat-b"
 saw "401 from A's OWN server as well makes it a SKIP, not a refusal" \
