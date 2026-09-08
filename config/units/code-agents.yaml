@@ -19,10 +19,17 @@ host: vps
 tier: opt_in
 requires: [brain]
 
-# Copied VERBATIM from README.md's budget table (:153). The row says this unit
+# Copied VERBATIM from the "Budget" table in README.md. The row says this unit
 # opens no new account and bills through base-goose's two inference rows -
-# which is exactly why no figure is invented here, even though README.md:155
-# names this the one line item that can move the total on its own.
+# which is exactly why no figure is invented here, even though the paragraph
+# under that table names this the one line item that can move the total on its
+# own.
+#
+# The SECTION is cited, never a line number. Both citations that stood here
+# were wrong: the first named Pal Chat's row rather than this one (phone-kit
+# held the mirror-image error), and the second pointed at the BLANK LINE under
+# the table. README.md now also carries two generated regions, so any line
+# number here would be a standing invitation to repeat that.
 cost:
   - line: Code agents on the brain (containers)
     amount: no new account — bills to the Zen/Together lines above, plus disk

@@ -6,7 +6,7 @@
 
 Build your own personal AI — one agent with one memory, available on your phone and laptop, running your automations around the clock — out of open-source parts and pay-as-you-go inference. No hosted-assistant subscriptions, no lock-in, and your sensitive data only ever reaches zero-data-retention endpoints.
 
-This repo is the complete, reproducible blueprint: Terraform for the server, config templates for every component, ready-made automations, verification scripts for each setup phase, and step-by-step runbooks. Follow it end to end and you'll have the whole thing running in a weekend for **~$15–35/month**.
+This repo is the complete, reproducible blueprint: Terraform for the server, config templates for every component, ready-made automations, a verify script for every piece that has one, and step-by-step runbooks. It is an installer with a menu rather than a ceremony — one command gets you a working AI on the Mac, and everything past that is an add-on you pick off the list below. Running cost, all in: **~$15–35/month**.
 
 **What you get:**
 
@@ -16,6 +16,112 @@ This repo is the complete, reproducible blueprint: Terraform for the server, con
 - **A private tier for life admin.** Email, calendar, and todos via MCP; health records and budget Q&A behind hard privacy rules — that data only ever reaches [Together AI](https://docs.together.ai) (zero-data-retention default, SOC 2, HIPAA posture), never free models, never providers that retain.
 - **Cheap, flexible inference.** [OpenCode Zen](https://opencode.ai/docs/zen) (at-cost gateway: Kimi, GLM, MiniMax, DeepSeek, Claude…) plus Together AI (200+ open models). Broad model catalogs ship in the configs; `scripts/sync-models.sh` refreshes them from the live catalogs. Swap any of it — that's the point.
 
+## Install
+
+You need a Mac, an iPhone, a terminal and a handful of pay-as-you-go accounts;
+the full list is in [Before you start](#before-you-start). Then:
+
+```bash
+git clone https://github.com/PhillipChaffee/personal-ai-setup.git
+cd personal-ai-setup
+./scripts/mac/bootstrap-mac.sh
+```
+
+That is the base install, and it **runs start to finish without asking you
+anything**. It puts the goose CLI and Desktop, OpenCode, the toolchain and the
+skills/agents/rules onto the Mac at the versions pinned in `config/pins.yaml`,
+never overwriting a file you already have. Re-running it is safe.
+
+Want a subset? The flags resolve against the same `config/units/*.yaml` catalog
+the menu below is generated from:
+
+```bash
+./scripts/mac/bootstrap-mac.sh --dry-run              # print the plan, touch nothing
+./scripts/mac/bootstrap-mac.sh --only base-goose      # that unit plus what it requires
+./scripts/mac/bootstrap-mac.sh --without coding-pack  # everything except that one
+./scripts/mac/bootstrap-mac.sh --help                 # the units, in dependency order
+```
+
+Excluding a unit that something else still needs is refused with exit 2, rather
+than half-installed.
+
+**Three things after the bootstrap are interactive on purpose.** All three are
+credentials or consent that no script may invent on your behalf:
+
+- **Your API keys** — `scripts/mac/keychain-secrets.sh` prompts for each one
+  silently, never echoes a value, and asks before it appends anything to
+  `~/.zshrc`.
+- **The Tailscale sign-in** — you sign the Mac into your own tailnet, from the
+  app the bootstrap installed.
+- **OpenCode's `/connect`** — run `opencode` in any project, type `/connect`,
+  pick OpenCode Zen and paste the key. The bootstrap only prints the
+  instruction; it never types it for you.
+
+**The brain is different: it cannot be made unattended, by design.** It has five
+interactive points, and every one of them is key material this repo deliberately
+stores nowhere. `terraform apply` prompts for the Hetzner token and the Tailscale
+auth key on *every* run and keeps neither. `luks-setup.sh` makes you type
+`FORMAT` in capitals, then takes the volume passphrase twice. And
+`luks-unlock.sh` asks for that passphrase again after every reboot, because the
+crypttab entry is written `noauto` on purpose — the key to the disk is never on
+the disk. Anything that promised you a one-command brain would be promising to
+store that passphrase somewhere.
+
+Once something is installed, four read-only commands tell you where you stand:
+
+```bash
+bin/pai list      # what the repo ships
+bin/pai status    # what is installed on this machine
+bin/pai doctor    # what drifted between this machine and the repo's templates
+bin/pai verify    # run the checks the manifests claim: one table, one exit code
+```
+
+Everything personal stays out of your clone — see
+[Adapting it to you](#adapting-it-to-you).
+
+## Add-ons
+
+Everything past the base is a unit in `config/units/`, and the table below is
+rendered from those manifests. **Verified by** is deliberately empty wherever
+nothing proves a unit yet: this repo would rather show you the gap than describe
+one that is not there. `bin/pai list` prints the same catalog on your machine.
+
+<!-- GENERATED — do not edit between the markers; `bin/pai docs --write`
+     re-renders this and CI fails when it is stale. The rows, and their order,
+     come entirely from config/units/*.yaml: adding a manifest adds a row here
+     and nothing else has to be touched. -->
+<!-- pai-docs:begin units-menu -->
+
+| Add-on | Tier | Host | What it is | Installed by | Verified by |
+|---|---|---|---|---|---|
+| [base-goose](docs/setup/20-mac-setup.md) | base | mac | Pinned goose CLI and Desktop cask, four custom providers, config template. | `bootstrap-mac.sh` | `check-goose.sh`, `check-providers.sh` |
+| [base-secrets](docs/setup/20-mac-setup.md) | base | both | Keychain roster on the Mac, /data/secrets.env on the brain, and the deploy gate. | by hand | — |
+| [base-skills](docs/setup/20-mac-setup.md) | base | mac | The connect-service skill, copied into ~/.agents/skills where goose and OpenCode both read it. | `bootstrap-mac.sh` | — |
+| [base-toolchain](docs/setup/20-mac-setup.md) | base | mac | macOS guard, Homebrew presence check, and the uv/node/jq formulae. | `bootstrap-mac.sh` | — |
+| [coding-pack](docs/cursor-port.md) | default_on | mac | Eleven ported Cursor skills, 30 OpenCode subagents, and the global AGENTS.md rule set. | `bootstrap-mac.sh` | — |
+| [goose-desktop](docs/setup/20-mac-setup.md) | default_on | mac | Human-only, turn OFF Desktop auto-update and pick the custom providers on first run. | by hand | — |
+| [opencode](docs/setup/20-mac-setup.md) | default_on | mac | The OpenCode CLI from anomalyco/tap, ~/.config/opencode/opencode.json, and the Zen credential the bootstrap writes. | `bootstrap-mac.sh` | `check-opencode.sh` |
+| [automations](docs/automations.md) | opt_in | vps | The three non-vault recipes, register-schedules.sh, and the disabled fallback timers. | `deploy-vps.sh` (planned) | — |
+| [brain](docs/setup/50-vps-brain.md) | opt_in | vps | Hetzner VPS, LUKS /data, goose's path root on it, and goose-serve over tailnet TLS. | `deploy-vps.sh` (planned) | `check-brain.sh`, `check-security.sh --local` |
+| [code-agents](docs/setup/70-code-agents.md) | opt_in | vps | Rootless podman, the code-agent image, and the per-chat session manager. | `deploy-vps.sh` (planned) | `check-code-agents.sh` |
+| [connectors](docs/connecting.md) | opt_in | both | The connector vetting registry and the three disabled extension fragments. | by hand | `check-connectors.sh` |
+| [google-workspace](docs/setup/30-google-oauth.md) | opt_in | both | workspace-mcp extension for Gmail/Calendar/Tasks, and its OAuth tokens on /data. | `deploy-vps.sh` (planned) | `check-mcp.sh` |
+| [life-vault](docs/setup/60-vault-setup.md) | opt_in | vps | The private vault repo cloned to /data/life-vault, its template, and vault-qa. | by hand | — |
+| [ntfy-alerts](docs/automations.md) | opt_in | both | notify.sh and the ntfy topic that carries automation failure alerts. | by hand | — |
+| [phone-kit](docs/setup/40-phone-setup.md) | opt_in | checklist | iPhone surfaces - Telegram pairing, Tailscale, Pal Chat, a Siri Shortcut. | by hand | — |
+| [tailnet](docs/setup/10-accounts.md) | opt_in | both | Human-only, the Tailscale account, the client sign-ins, and the MagicDNS + HTTPS-cert toggles. | by hand | — |
+| [telegram-gateway](docs/setup/40-phone-setup.md) | opt_in | vps | goose's Telegram gateway on the brain, installed always and enabled only with a token. | `deploy-vps.sh` (planned) | — |
+| [vault-automations](docs/setup/60-vault-setup.md) | opt_in | vps | health-followups and budget-checkin, gated on the vault files they read. | `deploy-vps.sh` (planned) | — |
+
+<!-- pai-docs:end units-menu -->
+
+`(planned)` means the manifest names an installer function that does not exist
+yet — the unit is real and its runbook works, but today you install it by hand.
+`by hand` means the manifest names no installer at all: sometimes because nothing
+*could* (an App Store download, a browser toggle, a key you type), sometimes
+because nothing does yet. Each manifest says which, and `check-units.sh` fails
+if one of them stops saying it.
+
 ## Before you start
 
 | You need | Notes |
@@ -23,27 +129,7 @@ This repo is the complete, reproducible blueprint: Terraform for the server, con
 | A Mac + an iPhone | The runbooks are written for this pair. **The brain itself is Linux** (Ubuntu 24.04) — goose is not the Mac-only part. What *is* Mac-only is the laptop's secret store (macOS Keychain) and Homebrew; a Linux laptop needs a keyring backend that does not exist here yet. Android likewise substitutes steps. Component-by-component table: [`docs/setup/00-overview.md`](docs/setup/00-overview.md#supported-platforms). |
 | Comfort with a terminal | You'll run scripts, `terraform apply`, and paste commands over SSH. Every step is written out; no improvisation required. |
 | ~$15–35/month | Breakdown in [Budget](#budget). The two inference accounts are pay-as-you-go with hard caps. |
-| A free weekend, roughly | Phase 1 gets you working AI in 1–2 hours; the full build is ~8–10 hours spread over the five phases. |
 | Accounts you'll create | OpenCode Zen, Together AI, Hetzner (VPS), Tailscale, a Google Cloud OAuth app for your own Gmail/Calendar (a todo app like Todoist is optional). Each has a runbook with the gotchas called out. |
-
-## Quickstart
-
-1. **Fork or clone this repo.** Everything you deploy comes from your copy; everything personal stays out of it (see [Adapting it to you](#adapting-it-to-you)).
-2. **Read [`docs/setup/00-overview.md`](docs/setup/00-overview.md)** — it frames the five phases. Then just follow them in order:
-
-| Phase | What happens | Time | Milestone |
-|---|---|---|---|
-| [1 — Day-1 minimal viable](docs/setup/10-accounts.md) | Inference accounts, Mac bootstrap, keys in Keychain | 1–2 h | Working AI on Mac + phone, same day |
-| [2 — Admin plumbing](docs/setup/30-google-oauth.md) | Your own Google OAuth app (+ Tailscale/Todoist steps from phase 1's doc) | 2–3 h | The agent reads your email, calendar, todos |
-| [3 — The brain](docs/setup/50-vps-brain.md) | `terraform apply`, encrypted volume, deploy, pair devices | ~3 h | Same chat history on laptop + phone; morning brief arrives by itself |
-| [4 — Sensitive tier](docs/setup/60-vault-setup.md) | Private life-vault repo, health/finance Q&A | 1–2 h | Ask questions about your own documents, privately |
-| [5 — Go public + roadmap](docs/public-repo.md) | Publish your fork safely; future upgrades | 1 h | — |
-
-<!-- The table above splits this ordered list, so `3.` deliberately continues
-     it as <ol start="3">. `--fix` renumbers it to `1.`, which demotes
-     onboarding step 3 into a second step 1. -->
-<!-- markdownlint-disable-next-line MD029 -->
-3. **Run the verify script at the end of each phase** (`scripts/verify/`). Don't skip them — each one settles exactly the things most likely to be broken (API auth shapes, provider wiring, open ports, cross-device history).
 
 ## Architecture
 
@@ -79,47 +165,76 @@ Siri Shortcut ─────┤            OpenCode CLI (coding, local)      �
 
 ## Repo map
 
+<!-- GENERATED — do not edit between the markers; `bin/pai docs --write`
+     re-renders this. The SHAPE (which paths appear, in which order, carrying
+     which note) is MAP_ENTRIES in scripts/verify/docs_lint.py: hand-written,
+     ordered, and reviewed like prose. Every COUNT comes from the filesystem on
+     each render, so no number here can drift — that is what this whole gate is
+     for. The hand-written half is held honest by two assertions: an annotated
+     path that stops existing fails, and so does a new directory that no line
+     here covers. -->
+<!-- pai-docs:begin repo-map -->
+
 ```text
 .
-├── README.md                           # you are here
-├── LICENSE                             # MIT
-├── .gitignore                          # keeps secrets, tfstate/tfvars, OAuth tokens out of a public repo
-├── .pre-commit-config.yaml             # gitleaks secret scan before every commit
-├── .github/workflows/secret-scan.yml   # gitleaks CI over full history on every push/PR
+├── README.md                          # you are here: install, the add-on menu, the budget
+├── LICENSE                            # MIT
+├── bin/pai                            # the one entry point: doctor, status, list, units, verify, docs
+├── .gitignore                         # keeps secrets, tfstate/tfvars, OAuth tokens out of a public repo
+├── .pre-commit-config.yaml            # gitleaks, ruff, yamllint, shellcheck before every commit
+├── .github/workflows/                 # the CI gates: secret scan, lint, types, coverage, install tests
+├── .coveragerc                        # coverage scope and the project floor
+├── .markdownlint-cli2.jsonc           # markdownlint config
+├── lychee.toml                        # the offline link and anchor checker's config
+├── mypy.ini                           # the --strict roster; every tracked .py is on it
+├── ruff.toml                          # ruff with every rule on; exceptions justified in place
+├── package.json                       # markdownlint-cli2 only, pinned by package-lock.json
 ├── docs/
-│   ├── setup/00-overview.md … 60-vault-setup.md   # the five-phase runbooks — START at 00
-│   ├── model-routing.md                # which model for which job + hard privacy rules
-│   ├── privacy.md                      # data classification per provider tier; encryption model & residual risk
-│   ├── automations.md                  # add/manage scheduled workflows; scheduler-bug fallback flip
-│   ├── code-agents.md                  # code agents: per-chat containers, lifecycle, git/permission model
-│   ├── providers.md                    # email/calendar provider convention (multi-account today, more providers next)
-│   ├── cursor-port.md                  # the Cursor kit ported to Goose + OpenCode: what went where and why
-│   ├── security.md                     # threat model, LUKS design, Tailscale-only exposure, serve TLS/secret
-│   ├── public-repo.md                  # what may/may-not be committed; go-public checklist
-│   ├── troubleshooting.md              # base_url 404s, scheduler bugs, pairing, LUKS, rate limits
-│   └── roadmap.md                      # SearXNG, memory, budgeting-app API, vault RAG
-├── infra/terraform/                    # Hetzner server, deny-all firewall, encrypted volume, cloud-init
+│   ├── index.md                       # the GitHub Pages landing page (LOAD-BEARING EXTERNALLY)
+│   ├── app-privacy-policy.md          # the URL on the Google OAuth consent screen (LOAD-BEARING EXTERNALLY)
+│   ├── _config.yml                    # Jekyll config for those two pages
+│   ├── setup/                         # 8 runbooks, in order; START at 00-overview.md
+│   ├── connecting.md                  # adding a connector, end to end
+│   ├── model-routing.md               # which model for which job + hard privacy rules
+│   ├── privacy.md                     # data classification per provider tier; encryption model and residual risk
+│   ├── automations.md                 # add/manage scheduled workflows; scheduler-bug fallback flip
+│   ├── code-agents.md                 # code agents: per-chat containers, lifecycle, git/permission model
+│   ├── providers.md                   # email/calendar provider convention (multi-account today, more next)
+│   ├── cursor-port.md                 # the Cursor kit ported to Goose + OpenCode: what went where and why
+│   ├── security.md                    # threat model, LUKS design, Tailscale-only exposure, serve TLS/secret
+│   ├── public-repo.md                 # what may/may-not be committed; go-public checklist
+│   ├── troubleshooting.md             # base_url 404s, scheduler bugs, pairing, LUKS, rate limits
+│   └── roadmap.md                     # SearXNG, memory, budgeting-app API, vault RAG
+├── infra/terraform/                   # Hetzner server, deny-all firewall, encrypted volume, cloud-init
 ├── config/
-│   ├── goose/config.yaml               # goose settings + MCP extensions (developer, memory, workspace, Todoist, playwright)
-│   ├── goose/custom_providers/         # together (DEFAULT), zen-openai, zen-anthropic, zen-free (trains on data — isolated on purpose)
-│   ├── goose/goosehints.example        # identity, routing rules, vault path, PHI standing rules
-│   ├── opencode/opencode.json          # OpenCode: Zen models + Together provider, cheap small_model
-│   ├── opencode/AGENTS.md              # global coding/workflow rules template (→ ~/.config/opencode/AGENTS.md)
-│   ├── opencode/agents/                # 30 review/research subagents (→ ~/.config/opencode/agents/)
-│   ├── opencode/project-rules/         # per-project rule snippets (python, django, linear…) — paste-in
-│   ├── skills/                         # 12 skills, Claude-compatible SKILL.md (→ ~/.agents/skills — read by BOTH OpenCode and goose)
-│   ├── code-agents/                    # code-agent image, per-chat opencode config, repo-allowlist template
-│   ├── mcp/workspace-mcp.env.example   # Google Workspace MCP env template
-│   └── env/secrets.env.example         # every secret VAR NAME (no values) — copy to /data/secrets.env
-├── recipes/                            # the six automations (brief, triage, review, health, vault-qa, budget)
+│   ├── units/                         # 18 unit manifests — the add-on menu above is rendered from these
+│   ├── pins.yaml                      # the versions the installers pin and the checks compare against
+│   ├── goose/config.yaml              # GENERATED from config.base.yaml + extensions.d/
+│   ├── goose/extensions.d/            # 4 MCP extension fragments, one file each
+│   ├── goose/custom_providers/        # together (DEFAULT), zen-openai, zen-anthropic, zen-free (trains on data)
+│   ├── goose/goosehints.example       # identity, routing rules, vault path, PHI standing rules
+│   ├── goose/acp-contract.json        # the captured ACP method list check-connectors.sh asserts against
+│   ├── opencode/opencode.json         # OpenCode: Zen models + Together provider, cheap small_model
+│   ├── opencode/AGENTS.md             # global coding/workflow rules template
+│   ├── opencode/agents/               # 30 review/research subagents
+│   ├── opencode/project-rules/        # per-project rule snippets (python, django, linear…) — paste-in
+│   ├── skills/                        # 12 skills, Claude-compatible SKILL.md (→ ~/.agents/skills) — read by BOTH OpenCode and goose
+│   ├── connectors/                    # 5 connector manifests + the contract in that directory's README
+│   ├── code-agents/                   # the code-agent image, per-chat opencode config, repo-allowlist template
+│   ├── mcp/workspace-mcp.env.example  # Google Workspace MCP env template
+│   └── env/secrets.env.example        # every secret VAR NAME (no values) — copy to /data/secrets.env
+├── recipes/                           # 7 goose recipes; which of them are scheduled is docs/automations.md's table
 ├── scripts/
-│   ├── mac/                            # bootstrap-mac.sh, keychain-secrets.sh
-│   ├── vps/                            # deploy-vps.sh, LUKS setup/unlock, schedule registration, systemd units
-│   ├── common/                         # run-recipe.sh (failure watchdog), notify.sh (failure alerts → ntfy email gateway)
-│   ├── sync-models.sh                  # refresh provider model lists from the live Zen/Together catalogs
-│   └── verify/                         # phase smoke-test scripts + model-drift detector
-└── vault-template/                     # skeleton for the SEPARATE PRIVATE vault repo — no real data here
+│   ├── pai/                           # the `pai` dispatcher, doctor, goosecfg
+│   ├── mac/                           # bootstrap-mac.sh, keychain-secrets.sh
+│   ├── vps/                           # deploy-vps.sh, LUKS setup/unlock, schedule registration, systemd units
+│   ├── common/                        # run-recipe.sh (failure watchdog), notify.sh (alerts to ntfy's email gateway)
+│   ├── sync-models.sh                 # refresh provider model lists from the live Zen/Together catalogs
+│   └── verify/                        # 12 check-*.sh, plus the harnesses and the fakes they drive
+└── vault-template/                    # skeleton for the SEPARATE PRIVATE vault repo — no real data here
 ```
+
+<!-- pai-docs:end repo-map -->
 
 ## Adapting it to you
 
@@ -133,7 +248,7 @@ The repo is a template; your identity and choices live outside it or in a handfu
 
 ## Principles
 
-1. **One brain, one history.** The hub agent runs only on the VPS; its `sessions.db` is the single chat history. Every device — Desktop, iPhone, CLI — is a client to the same brain, so a conversation started anywhere continues everywhere. *One deliberate carve-out:* **code-agent chats** live in their own per-chat volumes on the brain (`docs/code-agents.md`), never in `sessions.db` — coding sessions and life-admin history stay structurally separate, unified only in the client UI.
+1. **One brain, one history.** The hub agent runs only on the VPS; its `sessions.db` is the single chat history. Every device — Desktop, iPhone, CLI — is a client to the same brain, so a conversation started anywhere continues everywhere. That is the invariant of the base install, and every add-on on the menu above preserves it. Exactly one add-on deliberately does not put its chats in `sessions.db`, and it explains itself in its own doc: [`docs/code-agents.md`](docs/code-agents.md#why-code-agent-chats-are-not-in-the-shared-history).
 2. **Native Goose automations.** Scheduled work is Goose recipes registered on Goose's built-in scheduler (`goose schedule add`), manageable from Desktop's Scheduler UI — not bare cron. Each scheduled recipe delivers its own result as an explicit final step: one self-addressed email via the Gmail send tool. `scripts/common/run-recipe.sh` acts as a failure watchdog (one retry, then a high-priority alert through `scripts/common/notify.sh`, emailed via ntfy's gateway) for manual and fallback-timer runs. Disabled systemd-timer fallbacks ship in-repo in case of scheduler bugs.
 3. **Privacy tiers.** Every job class is pinned to a provider tier (`docs/model-routing.md`, `docs/privacy.md`). Health and finance data go to Together AI only (ZDR/HIPAA posture). Zen free models never see personal data. Claude/GPT via Zen never see health/finance data. Delivery emails and failure alerts never contain PHI.
 4. **Everything as code.** Infrastructure is Terraform, configs are templates, host state is scripts + systemd units, and every manual step is a runbook. A dead laptop or dead VPS is an inconvenience, not a loss.

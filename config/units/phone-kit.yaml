@@ -19,9 +19,14 @@ host: checklist
 tier: opt_in
 requires: []
 
-# Copied VERBATIM from README.md's budget table (:152). It is the only phone
+# Copied VERBATIM from the "Budget" table in README.md. It is the only phone
 # line item and the only one-time cost in the table; everything else here is a
 # free app or an existing account.
+#
+# The SECTION is cited, never a line number: the (:152) that stood here named
+# the code-agents row, and code-agents.yaml cited this one -- a straight
+# transposition that both files carried while the validator stayed green,
+# because it checks the CONTENT of the row and never the number in a comment.
 cost:
   - line: Pal Chat (backup phone client)
     amount: ~$7 one-time

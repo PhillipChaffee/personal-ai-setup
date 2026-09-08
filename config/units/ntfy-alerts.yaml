@@ -16,7 +16,8 @@ host: both
 tier: opt_in
 requires: [base-secrets]
 
-# Copied VERBATIM from README.md's budget table (:151). The row is shared with
+# Copied VERBATIM from the "Budget" table in README.md (the section, never a
+# line number -- that file carries two generated regions). The row is shared with
 # the tailnet - it is one line covering both free-tier services - and the
 # validator's rule is that `line` and `amount` appear on the SAME LINE of the
 # source, not that a row belongs to one unit. Quoting the shared row is

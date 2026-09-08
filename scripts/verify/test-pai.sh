@@ -1999,6 +1999,37 @@ else
   fail "bin/pai units --field verify did not exit 0"
 fi
 
+# ---- the `docs` arm: the generated-region gate, through the real CLI ---------
+# NAMED, NOT NUMBERED. The section numbers above are claimed in landing order
+# and three open PRs each planned "a new section 10"; a name cannot collide.
+#
+# TWO ASSERTIONS AND NO MORE, on purpose. scripts/verify/docs_lint.py lives on
+# the coverage-exempt side of .coveragerc (`omit = scripts/verify/*`) and has
+# its own harness, scripts/verify/test-docs-lint.sh, which feeds a broken input
+# to every one of its assertions. What is NOT covered there is the thing this
+# file owns: that cli.sh's `docs)` arm reaches it at all, and that an unknown
+# flag comes back as check-docs.sh's own usage error rather than as a word this
+# dispatcher silently drops. Both run through bin/pai and both cost ZERO
+# coverage -- cli.sh execs a plain python3 under py_runner, outside $PAI_PY,
+# exactly as the `bin/pai list` assertion in section 7 notes.
+#
+# NEITHER OF THESE MAY BE `pai docs --write`. That is a writing verb, and a test
+# that ran it would rewrite the checkout it is running in.
+if "$REPO_ROOT/bin/pai" docs >/dev/null 2>&1; then
+  pass "bin/pai docs exits 0: the generated regions in README.md are current"
+else
+  fail "bin/pai docs did not exit 0 — README.md's generated regions are stale," \
+       "or the docs) arm does not reach scripts/verify/check-docs.sh"
+fi
+
+DOCS_RC=0
+DOCS_OUT="$("$REPO_ROOT/bin/pai" docs --no-such-flag 2>&1)" || DOCS_RC=$?
+if [ "$DOCS_RC" -eq 2 ] && printf '%s\n' "$DOCS_OUT" | grep -qF "check-docs.sh: unknown argument"; then
+  pass "bin/pai docs forwards flags verbatim: an unknown one is check-docs.sh's exit 2"
+else
+  fail "bin/pai docs --no-such-flag gave exit $DOCS_RC:"$'\n'"$DOCS_OUT"
+fi
+
 # Nothing sections 8 and 9 spawned may survive them. The trap at the top of this
 # file is the backstop; this is the assertion.
 LEFTOVER="$(find "$GC_WORK/tmp/pai-goosecfg" "$FIX_WORK/tmp/pai-goosecfg" \

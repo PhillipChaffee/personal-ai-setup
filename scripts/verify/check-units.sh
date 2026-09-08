@@ -9,8 +9,10 @@
 # secrets, and freshness. config/units/README.md is the contract; the reasons
 # each rule exists are there and in units_lint.py's docstring.
 #
-# THE POINT IS THE ABSENCES. Eight of eighteen units have nothing that installs
-# them and eleven have no verify script. The schema has a place to record every
+# THE POINT IS THE ABSENCES. Several units have nothing that installs them and
+# most have no verify script — the counts are PRINTED under P8 on every run
+# rather than written here, where they had gone stale (this header said eight
+# and eleven against a live seven and twelve). The schema has a place to record every
 # such gap, and this gate FAILS when one is unrecorded — `verify: []` without a
 # `no-verify` blocker, `installer: null` without manual steps. A manifest that
 # papers over a gap converts an unknown into a wrong known.
@@ -25,7 +27,7 @@
 # from the manifests' `verify:` — but this script is UNCLAIMABLE
 # (units_lint.py's UNCLAIMABLE map): a unit claiming it would be asserting that
 # the validator proves something about that unit, when what it does is validate
-# every manifest including that one. `pai verify` lists it, with the other two
+# every manifest including that one. `pai verify` lists it, with the other
 # unclaimable gates, under "claimed by no unit". data-lint.yml runs it.
 set -euo pipefail
 

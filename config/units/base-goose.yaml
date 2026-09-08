@@ -13,9 +13,11 @@ host: mac
 tier: base
 requires: [base-toolchain, base-secrets]
 
-# Both entries are copied VERBATIM from README.md's budget table (:149, :150).
-# The validator re-reads that file and requires `line` and `amount` to appear
-# on the same line of it, so no figure can originate here or drift from there.
+# Both entries are copied VERBATIM from the "Budget" table in README.md -- the
+# two inference rows. The validator re-reads that file and requires `line` and
+# `amount` to appear on the same line of it, so no figure can originate here or
+# drift from there. The SECTION is cited, never a line number: README.md carries
+# two generated regions and a change to either shifts every line below them.
 cost:
   - line: OpenCode Zen inference (PAYG — **disable auto-reload, set a cap**)
     amount: ~$5–20/mo typical

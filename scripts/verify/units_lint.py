@@ -4,10 +4,13 @@
 A unit manifest describes what one installable piece of this setup ACTUALLY IS
 TODAY: what installs it, what it puts on disk, which secrets it needs, which
 check-*.sh proves it works — and, crucially, which of those things do not exist
-yet. Eight of this repo's eighteen units have nothing that installs them and
-eleven have no verify script. A manifest that papers over that is worse than no
-manifest, so the schema has a place to record every absence and this file FAILS
-when an absence is unrecorded.
+yet. Several of this repo's eighteen units have nothing that installs them and
+most have no verify script -- and the exact counts are PRINTED on every run
+rather than written down here, where they had already gone stale (this docstring
+said eight and eleven against a live seven and twelve, which is the same drift
+scripts/verify/docs_lint.py exists to end). A manifest that papers over an
+absence is worse than no manifest, so the schema has a place to record every
+absence and this file FAILS when an absence is unrecorded.
 
 WHY A TRACKED .py AND NOT A HEREDOC. This follows the tree's newest pattern,
 check-goose-template.sh + goose_template.py: the work is a YAML parse, a
@@ -228,6 +231,10 @@ HOME_INTRUDERS_SHOWN: Final = 5
 UNCLAIMABLE: Final[dict[str, str]] = {
     "check-coverage.sh": "a repo-wide coverage gate, not a unit's proof",
     "check-goose-template.sh": "a generated-artifact gate, not a unit's proof",
+    # README.md's generated regions describe the WHOLE repo, this unit included.
+    # A unit claiming this gate would be claiming that the README's account of
+    # every other unit is its own proof.
+    "check-docs.sh": "a generated-docs gate, not a unit's proof",
     # This file's own driver. A unit claiming it would be asserting that the
     # validator proves something about that unit, when what it actually does is
     # validate every manifest including that one.

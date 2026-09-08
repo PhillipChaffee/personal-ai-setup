@@ -1,17 +1,26 @@
 #!/usr/bin/env bash
-# cli.sh — the `pai` dispatcher. READ-ONLY EXCEPT FOR ONE OPT-IN FLAG.
+# cli.sh — the `pai` dispatcher. READ-ONLY EXCEPT FOR THE COMMANDS LISTED BELOW.
 #
 # doctor/status/list are doctor.py; verify is a runner over the existing
-# scripts/verify/check-*.sh. The split is deliberate: verify is shell because
-# the things it runs are shell, and a Python wrapper would only re-implement
-# exit-code plumbing that lib.sh already has.
+# scripts/verify/check-*.sh; docs is check-docs.sh. The split is deliberate:
+# verify and docs are shell because the things they run are shell, and a Python
+# wrapper would only re-implement exit-code plumbing that lib.sh already has.
 #
-# EVERY COMMAND HERE WRITES NOTHING, with exactly one exception, added in #34:
-# `pai doctor --fix`. It re-asserts, over goose's ACP config API, the keys the
-# repo's own templates declare — the API rather than the file because goose
-# serde-round-trips config.yaml, so a file-copying "fix" would be undone the
-# next time goose starts. `pai doctor --dry-run` prints the same plan and
-# writes nothing; that is the reading to reach for first.
+# WRITING COMMANDS — THE WHOLE LIST. Everything not named here writes nothing,
+# and a command that gains a writing verb belongs in this list in the same diff
+# that gives it one. (This used to be the sentence "with exactly one
+# exception", written in three places; the enumeration is what stops the count
+# and the code from disagreeing.)
+#
+#   doctor --fix   re-asserts, over goose's ACP config API, the keys the repo's
+#                  own templates declare — the API rather than the file because
+#                  goose serde-round-trips config.yaml, so a file-copying "fix"
+#                  would be undone the next time goose starts. `doctor
+#                  --dry-run` prints the same plan and writes nothing; that is
+#                  the reading to reach for first.
+#   docs --write   re-renders the generated regions of README.md in place from
+#                  config/units/*.yaml and the tree. Bare `docs` only checks
+#                  them, which is what docs-lint.yml runs.
 #
 # Flags are forwarded VERBATIM to doctor.py ("$@", not "$1") — it owns the
 # option vocabulary, and an unknown flag must be its usage error rather than a
@@ -33,6 +42,7 @@ Usage: pai <command> [options]
   units    one field of every manifest, one value per line (for scripts)
   secrets  the credential roster for one host, projected from the manifests
   verify   run the checks the manifests claim, one table, one exit code
+  docs     the generated regions of README.md, checked against the tree
 
   verify --require <check>     a check that exits 2 (precondition missing) is a
                                SKIP in a sweep. Name it here and its skip
@@ -56,7 +66,7 @@ Usage: pai <command> [options]
                                Keychain row. scripts/mac/keychain-secrets.sh is
                                the consumer.
 
-Every command writes nothing, except `doctor --fix`:
+Every command writes nothing. These two are the whole list of exceptions:
 
   doctor --dry-run             say exactly what --fix would do. writes nothing.
   doctor --fix                 re-assert the repo's own keys over goose's ACP
@@ -65,6 +75,9 @@ Every command writes nothing, except `doctor --fix`:
                                `envs` values, because any ACP write erases them.
   doctor --fix --migrate-envs  additionally promote those values into goose's
                                secret store. One way; the value is never printed.
+  docs --write                 re-render README.md's generated regions from the
+                               manifests and the tree. THIS WRITES. Bare `docs`
+                               compares them and changes nothing.
 
 Exit: 0 ok, 1 findings, 2 usage/precondition.
 
@@ -241,7 +254,8 @@ cmd_verify() {
     echo
     note "claimed by no unit, so not in this roster:$unclaimed"
     note "(check-coverage.sh is produced by coverage.yml; check-units.sh and"
-    note " check-goose-template.sh are repo gates data-lint.yml runs. A check"
+    note " check-goose-template.sh are repo gates data-lint.yml runs, and"
+    note " check-docs.sh is the one docs-lint.yml runs — \`pai docs\`. A check"
     note " here that ISN'T one of those is a manifest missing a \`verify:\` entry.)"
   fi
 
@@ -260,5 +274,10 @@ case "${1:-}" in
     exec "${PY[@]}" "$REPO_ROOT/scripts/pai/doctor.py" "$@"
     ;;
   verify) shift; cmd_verify "$@" ;;
+  # exec, not a call: check-docs.sh sources the same lib.sh this file did and
+  # owns its own counters, usage text and 0/1/2 convention. Wrapping it would
+  # mean deciding here what `--write` means, which is precisely the duplication
+  # cmd_verify's roster comment is about.
+  docs) shift; exec "$REPO_ROOT/scripts/verify/check-docs.sh" "$@" ;;
   *) die_usage "unknown command: $1" ;;
 esac
