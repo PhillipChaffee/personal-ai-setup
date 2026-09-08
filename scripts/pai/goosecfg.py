@@ -126,6 +126,9 @@ RESERVED_PORTS: Final[frozenset[int]] = frozenset({3284, 3288, 4397, 4398, 4399}
 
 _SPAWN_TRIES: Final = 3
 _PORT_TRIES: Final = 8
+# The last port that exists. A candidate P needs P+1 to exist too, so P itself
+# must be strictly below it -- see choose_port.
+_MAX_PORT: Final = 65535
 _POLL_S: Final = 0.02
 _MARKER_DIR_NAME: Final = "pai-goosecfg"
 
@@ -938,10 +941,16 @@ class EphemeralGoose:
         never steal a neighbour's port on the way up. The close-then-spawn window
         is a real TOCTOU; the answer is not a lock, it is the readiness probe
         plus a retry on a fresh port.
+
+        `port >= _MAX_PORT` is not defensive padding: the OS hands out 65535 like
+        any other ephemeral port, and `bind(65536)` raises OverflowError, which is
+        NOT an OSError -- so it would escape the retry below and reach the caller
+        as a traceback out of `pai doctor --fix`. Rare and real: observed once in
+        a harness run.
         """
         for _ in range(_PORT_TRIES):
             port = _ephemeral_port()
-            if port in RESERVED_PORTS or port + 1 in RESERVED_PORTS:
+            if port >= _MAX_PORT or port in RESERVED_PORTS or port + 1 in RESERVED_PORTS:
                 continue
             try:
                 with socket.socket() as neighbour:

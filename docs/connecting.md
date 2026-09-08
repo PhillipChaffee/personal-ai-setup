@@ -63,7 +63,7 @@ happy path is correct either way.)*
 ### The client: `scripts/pai/goosecfg.py`
 
 One adapter, imported rather than re-implemented, by `scripts/verify/check-connectors.sh
---acp-roundtrip` and (from #34) by `pai doctor --fix`. It is stdlib-only and prints nothing:
+--acp-roundtrip` and by `pai doctor --fix`. It is stdlib-only and prints nothing:
 failures are typed exceptions carrying a machine-readable reason, and the prose belongs to
 whichever surface has a reader.
 
@@ -100,6 +100,57 @@ same uid can read, and that residual is strictly smaller than turning authentica
 Offline test double: `scripts/verify/fake-goose-acp.py`, which reproduces the measured
 misbehaviours above (and a dozen more) so `scripts/verify/test-pai.sh` can drive every arm
 without a real goose.
+
+### The caller: `pai doctor --fix`
+
+`pai doctor` is read-only and stays read-only. `pai doctor --fix` is the one mutating verb
+in the tool, it is never implied, and `pai doctor --dry-run` prints the same plan — line for
+line — without writing anything. Read the dry run first.
+
+What it does: re-assert, over the API above, the keys the repo's own templates declare. What
+it will **not** touch, because a tool that silently rewrites a config is worse than one that
+reports and stops:
+
+| Refused | Why |
+|---|---|
+| any extension the repo does not declare | the ownership rule. On the author's Mac that is fourteen goose added itself. |
+| a `builtin`/`platform` extension that is absent | `config/extensions/add` speaks `type: mcp` and nothing else. `goose configure` creates one. |
+| any field of a `builtin`/`platform` except `enabled` | `set-enabled` is the only ACP call that reaches one. It is enough for `apps`. |
+| a template value that is a placeholder | that is personalisation. `--fix` never invents a value. |
+| **an extension whose live config still holds inline `envs`** | see below. Opt in with `--migrate-envs`. |
+| a template spelling the allowlist `availableTools` | refused *before* any write: goose accepts it and stores no allowlist at all. |
+| enabling anything with no non-empty `available_tools` | an absent allowlist means every tool is allowed. It is applied and left **disabled** — two refusals, not one, which is why playwright and tavily are repairable at all. |
+| skills, `.goosehints`, provider wiring, the model catalogue | `bootstrap-mac.sh` and `sync-models.sh` own those. Plain `pai doctor` reports them. |
+
+Every refusal is a `NOTE` and none of them set the exit code. Exit `0` nothing fixable
+remains, `1` an unfixed FAIL, `2` refused or no goose reachable.
+
+**`envs` is a one-way door, so it is opt-in.** Measured on 1.46.0: `envs` is unreadable over
+ACP in *both* directions and **any** ACP write leaves disk `envs: {}`. So re-asserting an
+extension that carries an inline value destroys it, as a side effect of fixing something
+else. Re-sending it as `server.env` does not preserve it either — goose promotes it into its
+secret store, appends the name to `env_keys`, and still writes `envs: {}`. `--fix` therefore
+leaves such an extension **entirely alone** and names the key; `--fix --migrate-envs`
+performs the migration, announces it before it happens, and proves it landed with
+`config/read {key, isSecret: true}` returning non-null. The value is never printed, never
+compared and never logged — only the key is ever named.
+
+A name the migration appended to `env_keys` is then **preserved by every later repair**.
+`config/extensions/add` is a full replace, so a payload carrying only the template's
+`env_keys` would delete it: the value would stay in goose's secret store and the extension
+would silently stop being handed it, with nothing to report the loss.
+
+**There is no journal.** The plan is recomputed from the live ACP listing on every run, so a
+goose restart that put a key back is detected and re-asserted by exactly the same code path
+as the first run — and running `--fix` twice is a no-op, because the read-back *is* the
+state.
+
+**On the brain, point it at the running server.** `--fix` refuses to spawn a second writer
+(the table above), and `goose-serve.service` is permanent there, so the `GOOSE_ACP_URL`
+export shown earlier is required rather than optional. `--fix` also refuses outright when
+`PAI_HOME` is not `$HOME` and neither `GOOSE_ACP_URL` nor `PAI_GOOSE_BIN` says which goose
+is meant: otherwise `PAI_HOME=/tmp/fixture pai doctor --fix` would diagnose a fixture and
+repair the live machine.
 
 ## Which direction does traffic go?
 

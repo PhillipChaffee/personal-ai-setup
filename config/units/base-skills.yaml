@@ -67,7 +67,7 @@ blockers:
   - id: no-verify
     severity: warn
     detail: "No scripts/verify/check-*.sh covers this unit, which is all
-      `verify` is allowed to name. It is NOT unchecked: doctor.py:147-163
+      `verify` is allowed to name. It is NOT unchecked: doctor.py:166-182
       (`pai doctor`) FAILs when a shipped skill is missing from
       ~/.agents/skills, and test-pai.sh:134 deletes this very skill to prove
       that check bites. The gap is that `pai verify` never runs it."

@@ -83,7 +83,7 @@ blockers:
   - id: no-verify
     severity: warn
     detail: "No check-*.sh touches OpenCode. The only automated coverage
-      anywhere is doctor.py:249-257, which FAILs when `which -a opencode`
+      anywhere is doctor.py:268-279, which FAILs when `which -a opencode`
       resolves more than once -- a PINNING check (a self-updating vendor
       install shadowing brew's), not a working-install check, and it is
       skipped entirely unless doctor is inspecting the real $HOME. A Mac where
