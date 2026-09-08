@@ -460,15 +460,15 @@ jobs:
       # store: goose_secret_store forbids from both global rosters).
       - name: Negative test — the doc's Mac Keychain column must match the manifests
         run: |
-          # shellcheck disable=SC2016  # the backticks below are markdown table
-          # cells, not command substitution -- the strings must stay literal
           set -euo pipefail
           work="$RUNNER_TEMP/units-negative-maccol"; mkdir -p "$work"
           git archive HEAD | tar -x -C "$work"
           doc="$work/docs/setup/10-accounts.md"
+          # shellcheck disable=SC2016  # markdown table cells, not a substitution
           sed -i 's/| `TODOIST_API_KEY` | no | no |/| `TODOIST_API_KEY` | yes | yes |/' "$doc"
           # A sed that matched nothing makes this whole step a green no-op, and
           # this table's cells move. Assert the mutation landed before running.
+          # shellcheck disable=SC2016  # same literal, for the same reason
           grep -qF '| `TODOIST_API_KEY` | yes | yes |' "$doc" || {
             echo "::error::the TODOIST row moved — this negative test is no longer mutating anything"
             exit 1
