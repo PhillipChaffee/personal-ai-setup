@@ -10,7 +10,7 @@
 id: opencode
 manifest_version: 1
 verified_on: "2026-09-07"
-summary: The OpenCode CLI formula from anomalyco/tap plus the shipped ~/.config/opencode/opencode.json.
+summary: The OpenCode CLI from anomalyco/tap, ~/.config/opencode/opencode.json, and the Zen credential the bootstrap writes.
 host: mac
 tier: default_on
 requires: [base-goose, base-secrets]
@@ -29,13 +29,13 @@ installer:
   function: unit_opencode
   status: present
 
-# NO check-*.sh COVERS THIS UNIT. docs/setup/20-mac-setup.md:174 tells a HUMAN
-# to run `opencode run "Say 'opencode wired'"` as verification step 3, and that
-# line is the entire proof: nothing under scripts/verify/ runs opencode, reads
-# ~/.config/opencode/opencode.json, or checks that /connect stored a
-# credential. mock-opencode-server.py exists but serves
+# check-opencode.sh is this unit's first verify script (#38). Nine rows: the
+# config template, the credential file's existence/mode/contents, the ported
+# agents, one real `opencode run`, and three about WHICH opencode the PATH
+# resolves to. It exits 2 -- a skip, not a finding -- on a machine with no
+# opencode at all. mock-opencode-server.py is unrelated: it serves
 # test-code-agent-manager.sh, which drives the BRAIN's containers, not this CLI.
-verify: []
+verify: [scripts/verify/check-opencode.sh]
 runbook: docs/setup/20-mac-setup.md#3-opencode-zen
 
 secrets:
@@ -47,12 +47,15 @@ secrets:
     store: mac_keychain
     secret: true
     optional: false
-  # store: none, deliberately. `/connect` (20-mac-setup.md:121-122) writes the
-  # Zen key into OpenCode's OWN credential store, which is neither
-  # config/env/secrets.env.example nor keychain-secrets.sh's VARS. It is a
-  # third store this validator cannot read, so claiming `mac_keychain` here
-  # would assert a file location that is not where the key ends up -- even
-  # though the same NAME is in the Keychain roster for goose's sake.
+  # store: none, still, and #39 is what changes it. The Zen key ends up in
+  # OpenCode's OWN credential store (~/.local/share/opencode/auth.json), which
+  # is neither config/env/secrets.env.example nor keychain-secrets.sh's VARS --
+  # a third store this validator cannot read, so claiming `mac_keychain` here
+  # would assert a file location that is not where the key ends up. What #38
+  # changed is HOW it gets there: scripts/mac/opencode-auth.sh reads
+  # $OPENCODE_ZEN_API_KEY out of the environment and writes that file, so the
+  # environment is now the input and the Keychain is one hop further back. See
+  # the env-only-for-now blocker below.
   - key: OPENCODE_ZEN_API_KEY
     store: none
     secret: true
@@ -66,14 +69,29 @@ owns:
   - {kind: brew_formula, target: anomalyco/tap/opencode}
   - {kind: repo_file, target: config/opencode/opencode.json}
   - {kind: home_path, target: ~/.config/opencode/opencode.json}
+  # The credential file, and the script unit_opencode() calls to write it. This
+  # is the footprint that used to belong to a TUI: /connect wrote the same path
+  # and no manifest could claim it, because no code in this repo put it there.
+  - {kind: repo_file, target: scripts/mac/opencode-auth.sh}
+  - {kind: home_path, target: ~/.local/share/opencode/auth.json}
 
 manual_steps:
-  - id: connect-zen
-    summary: Run `opencode` in any project, type /connect, pick OpenCode Zen
-      and paste the key. The bootstrap never does this -- it only prints the
-      instruction in the next-steps epilogue.
-    doc: docs/setup/20-mac-setup.md#3-opencode-zen
-    blocking: true
+  # connect-zen is GONE, not demoted: scripts/mac/opencode-auth.sh writes
+  # ~/.local/share/opencode/auth.json and unit_opencode() calls it, so there is
+  # no /connect step left to record. What remains manual is having the key in
+  # the environment at all, and that is base-secrets' step, not this unit's.
+  #
+  # set-default-model STAYS, and it is not a leftover. Writing auth.json
+  # addresses the CREDENTIAL; it says nothing about a model OpenCode may have
+  # already persisted in its own state from an earlier session. opencode.json
+  # pins the defaults for a fresh profile; /models is the repair for a profile
+  # that is not fresh.
+  #
+  # AND THIS ENTRY IS LOAD BEARING ON PROSE ELSEWHERE. I12 in
+  # scripts/verify/test-base-install.sh fails while this id exists AND
+  # bootstrap-mac.sh's next-steps screen claims there is no /models step -- the
+  # exact pair #38 shipped. Delete this step and that claim becomes true again;
+  # keep it and the installer has to say so.
   - id: set-default-model
     summary: Type /models and set the daily driver to kimi-k2.6 per
       docs/model-routing.md. opencode.json already pins it, so this is only
@@ -82,14 +100,27 @@ manual_steps:
     blocking: false
 
 blockers:
-  - id: no-verify
+  - id: zen-key-is-env-only
+    severity: note
+    detail: "scripts/mac/opencode-auth.sh reads $OPENCODE_ZEN_API_KEY from the
+      ENVIRONMENT only; it does not ask the Keychain. That is #39's job and the
+      reason is mechanical rather than aesthetic: a `security` call from a
+      bootstrap child lands in $PAI_DENY_LOG, which test-base-install.sh's A5
+      and B4 require to be empty, so it would have to be routed through the
+      PAI_EXEC seam -- a new fake-exec.sh arm plus a rewrite of fake-brew.sh's
+      redaction contract, both holding a live credential, for a value ~/.zshrc
+      already exports. Until then the failure mode is: run keychain-secrets.sh,
+      forget to open a NEW terminal, and auth.json is not written (the script
+      says so and exits 0 rather than failing the bootstrap)."
+  - id: install-method-is-brew-but-a-vendor-build-can-shadow-it
     severity: warn
-    detail: "No check-*.sh touches OpenCode. The only automated coverage
-      anywhere is doctor.py:268-279, which FAILs when `which -a opencode`
-      resolves more than once -- a PINNING check (a self-updating vendor
-      install shadowing brew's), not a working-install check, and it is
-      skipped entirely unless doctor is inspecting the real $HOME. A Mac where
-      /connect was never run passes everything until a human types `opencode`."
+    detail: "install_method is brew (anomalyco/tap/opencode), and that is the
+      copy this repo pins. OpenCode's own installer puts a SELF-UPDATING build
+      at ~/.opencode/bin/opencode, and on the owner's machine that one is ahead
+      of brew's on PATH -- `brew list --versions opencode` said 1.18.19 while
+      the binary that ran was 1.18.26. check-opencode.sh's C7 FAILs on exactly
+      that and names both paths and versions; nothing here removes the vendor
+      install, by design (see the ticket's OUT scope)."
   - id: together-provider-ships-two-model-ids
     severity: note
     detail: "opencode.json:14 and :17 hardcode openai/gpt-oss-120b and
@@ -99,8 +130,8 @@ blockers:
 
 uninstall:
   supported: false
-  reason: "`brew uninstall opencode` would leave ~/.config/opencode and the
-    credential /connect stored behind, and nothing in this repo removes
+  reason: "`brew uninstall opencode` would leave ~/.config/opencode and
+    ~/.local/share/opencode/auth.json behind, and nothing in this repo removes
     either. Deleting them by hand is safe but undocumented."
 
 notes: >-
@@ -108,4 +139,4 @@ notes: >-
   three of goose's four custom providers name OPENCODE_ZEN_API_KEY, so the Zen
   account is load-bearing for base-goose whether or not this CLI is installed.
   That is why base-goose keeps the mac_keychain claim on that key and this
-  unit records the separate store /connect actually writes to.
+  unit records the separate store OpenCode itself keeps the credential in.
