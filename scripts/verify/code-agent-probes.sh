@@ -247,9 +247,18 @@ else:
 #     is the only shape that is isolation.
 #   * manager proxy: A must reach the gateway's /api/health. Unreachable is a
 #     SKIP naming the reason wget gave, never a pass.
+#   * THE CREDENTIAL, for both network arms. Every "it refused me" verdict is
+#     isolation only if the thing refused was a key the plane accepts, so a
+#     refusal is read as isolation only when some server took the same token:
+#     the gateway itself (GWCTL:ok), or A's own published port (ROUTE ok), or
+#     A's own server inside its netns (TOOL:ok). A container whose
+#     OPENCODE_SERVER_PASSWORD is empty or wrong 401s everywhere, and that must
+#     be a SKIP — the probe is broken — rather than a pass earned by having
+#     nothing to be let in with.
 # `TOOL:` (A's own server on loopback inside its netns) is kept, demoted from
-# a gate to the sub-reason a SKIP quotes: it separates "no wget in the image"
-# from "the route is closed".
+# a gate on the port arm to two smaller jobs: the sub-reason a SKIP quotes (it
+# separates "no wget in the image" from "the route is closed"), and the
+# credential control the proxy arm consults before reading a 401 as isolation.
 #
 # DOES NOT PROVE: that no vector exists. It proves these three are closed on
 # the brain it ran on. A shared kernel is a shared kernel (issue #17 Phase 3
@@ -295,19 +304,27 @@ cat \"/chat/workspace/$CA_MARKER\" 2>/dev/null || true"
 # command is data rather than an abort.
 #
 # It prints one tagged line per observation and decides nothing:
-#   OWN:<nonce>     the marker A found in its own workspace (the fs control)
-#   READ:<path>     B's nonce, read at a path A could NAME
-#   SCAN:<path>     B's nonce, found anywhere under / (the arm that subsumes)
-#   TOOL:<answer>   A's own server on 127.0.0.1:4096, inside A's netns
-#   ROUTE:<host>    A reached ITS OWN published port via that host address
-#                   — the container->host route control
-#   NET:<host>      A reached B's published port via that host address
-#   GWCTL:<answer>  the manager gateway's /api/health, from inside A
-#   GW:<answer>     the gateway's /chat/<B>/session, from inside A
+#   OWN:<nonce>          the marker A found in its own workspace (the fs control)
+#   READ:<path>          B's nonce, read at a path A could NAME
+#   SCAN:<path>          B's nonce, found anywhere under / (the arm that subsumes)
+#   TOOL:<answer>        A's own server on 127.0.0.1:4096, inside A's netns
+#   ROUTE:<host>=<answer>  A dialling ITS OWN published port via that host
+#                          address — the container->host route control
+#   NET:<host>=<answer>    A dialling B's published port via that host address
+#   GWCTL:<answer>       the manager gateway's /api/health, from inside A
+#   GW:<answer>          the gateway's /chat/<B>/session, from inside A
 #
 # <answer> is `ok`, `http:<code>`, `down:<what wget said>`, `nowget`, or
 # `nogateway`. The distinction is the whole point: "refused" and "could not be
 # reached" are opposite results that both make wget exit non-zero.
+#
+# ROUTE/NET CARRY THE WHOLE ANSWER, not just a hit. The first cut emitted them
+# only on `ok`, which folded "B refused me" into "B was not there" — the exact
+# collapse the gateway arm below was rewritten to stop making. It is not
+# reachable today (every container holds the same password, so B cannot 401 A),
+# but the moment issue #115 is fixed with per-chat tokens it becomes the NORMAL
+# answer, and "chat A reaches the host but NOT chat B's published port" would
+# then be a false statement about reachability printed under a PASS.
 ca_cross_chat_script() {
   local b_id="$1" b_dir="$2" a_port="$3" b_port="$4" nonce_b="$5" gateway="$6"
   cat <<EOS
@@ -360,8 +377,8 @@ ca_gw() {
 if command -v wget >/dev/null 2>&1; then
   echo "TOOL:\$(ca_try "http://127.0.0.1:4096/session")"
   for h in host.containers.internal 10.0.2.2 10.88.0.1; do
-    if [ "\$(ca_try "http://\$h:$a_port/session")" = "ok" ]; then echo "ROUTE:\$h"; fi
-    if [ "\$(ca_try "http://\$h:$b_port/session")" = "ok" ]; then echo "NET:\$h"; fi
+    echo "ROUTE:\$h=\$(ca_try "http://\$h:$a_port/session")"
+    echo "NET:\$h=\$(ca_try "http://\$h:$b_port/session")"
   done
   if [ -n "\$gw" ]; then
     echo "GWCTL:\$(ca_gw "\$gw/api/health")"
@@ -404,42 +421,129 @@ ca_cross_chat_verdict() {
   fi
 
   tool="$(printf '%s\n' "$out" | sed -n 's/^TOOL://p' | head -n1)"
-  route="$(printf '%s\n' "$out" | sed -n 's/^ROUTE://p' | head -n1)"
-  nets="$(printf '%s\n' "$out" | sed -n 's/^NET:/  via /p')"
+  route="$(printf '%s\n' "$out" | sed -n 's/^ROUTE://p')"
+  nets="$(printf '%s\n' "$out" | sed -n 's/^NET://p')"
   ca_published_port_verdict "$tool" "$route" "$nets"
 
   gwctl="$(printf '%s\n' "$out" | sed -n 's/^GWCTL://p' | head -n1)"
   gw="$(printf '%s\n' "$out" | sed -n 's/^GW://p' | head -n1)"
-  ca_manager_proxy_verdict "$gwctl" "$gw"
+  ca_manager_proxy_verdict "$tool" "$gwctl" "$gw"
   return 0
 }
 
-# ca_published_port_verdict <tool> <route> <nets> — vector 2.
+# ca_dial_hosts <class> <dials> — the HOST half of every `<host>=<answer>` dial
+# in <dials> whose answer falls in <class>:
+#
+#   ok       a 2xx — the port answered this credential
+#   refused  401/403 — the port ANSWERED and rejected the credential
+#   other    any other HTTP status — it answered, but about something else
+#   dead     no HTTP status at all — nothing was reached
+#
+# The reason this exists rather than a grep for `=ok` is that `refused` and
+# `dead` are opposite facts that a hit-or-miss reading renders identically, and
+# every arm below has to be able to say which one it saw. `dead` is the class
+# no arm asks for BY NAME and that is deliberate: a verdict is only ever
+# licensed by something that happened, so the arms ask which of the other three
+# they got and treat "none of them" as the absence of an observation.
+ca_dial_hosts() {
+  local want="$1" line host answer class
+  printf '%s\n' "$2" | while IFS= read -r line; do
+    case "$line" in *=*) ;; *) continue ;; esac
+    host="${line%%=*}"; answer="${line#*=}"
+    case "$answer" in
+      ok) class=ok ;;
+      http:401|http:403) class=refused ;;
+      http:*) class=other ;;
+      *) class=dead ;;
+    esac
+    if [ "$want" = "$class" ]; then printf '%s\n' "$host"; fi
+  done
+}
+
+# ca_published_port_verdict <tool> <routes> <nets> — vector 2.
 #
 # THE ORDER IS THE FIX. A miss at B's port is only isolation if the route that
 # would have carried a hit is known to work, and the only way to know that is
 # to have carried one: chat A's own published port, over the same three host
 # addresses. Everything else is a SKIP.
+#
+# AND THE OUTCOME IS THREE-WAY, exactly like the proxy arm's: B refused / B
+# served / B was not reached. Those are three different facts about the sandbox
+# and only the middle one is a leak, so a verdict that can print only "leak" or
+# "unreachable" has to lie about one of them.
 ca_published_port_verdict() {
-  local tool="$1" route="$2" nets="$3"
-  if [ -n "$nets" ]; then
+  local tool="$1" routes="$2" nets="$3"
+  local route_ok route_refused route_other net_ok net_refused net_other h
+  route_ok="$(ca_dial_hosts ok "$routes")"
+  route_refused="$(ca_dial_hosts refused "$routes")"
+  route_other="$(ca_dial_hosts other "$routes")"
+  net_ok="$(ca_dial_hosts ok "$nets")"
+  net_refused="$(ca_dial_hosts refused "$nets")"
+  net_other="$(ca_dial_hosts other "$nets")"
+
+  # A read is a read: it needs no control, because it happened.
+  if [ -n "$net_ok" ]; then
     fail "chat A reached chat B's opencode server over the network:"
-    printf '%s\n' "$nets"
+    printf '%s\n' "$net_ok" | while IFS= read -r h; do printf '  via %s\n' "$h"; done
     note "Every container holds OPENCODE_SERVER_PASSWORD, so reachability is access."
-  elif [ -n "$route" ]; then
-    pass "chat A reaches the host (via $route) but NOT chat B's published port"
-  else
+    return 0
+  fi
+
+  # THE CONTROL, AND ITS THREE WAYS OF FAILING, each its own sentence. `ok` is
+  # the only one that licenses a verdict about chat B; the other two are the
+  # same collapse this arm was rewritten for, one level up. A 401 at A's own
+  # port is a broken credential; a 404 or a 500 there is something ELSE
+  # listening on A's port, and calling that "refused A's credential" would be
+  # the probe inventing a reason.
+  if [ -n "$route_refused" ] && [ -z "$route_ok" ]; then
+    skip "cross-chat published-port arm NOT exercised (A's own port refused A's credential)"
+    note "The container->host route is live, but chat A's OWN published port"
+    note "rejected the OPENCODE_SERVER_PASSWORD chat A's environment holds. Every"
+    note "answer from chat B's port is then about the credential, not about the"
+    note "sandbox. Check that run_container() injected the manager's password."
+    return 0
+  fi
+  if [ -n "$route_other" ] && [ -z "$route_ok" ]; then
+    skip "cross-chat published-port arm NOT exercised (A's own port answered as something else)"
+    printf '%s\n' "$route_other" | while IFS= read -r h; do printf '  via %s\n' "$h"; done
+    note "Something is listening where chat A's OWN published port should be and"
+    note "it did not answer as an opencode server. The control is not the control,"
+    note "so nothing chat B's port says can be read as isolation."
+    return 0
+  fi
+  if [ -z "$route_ok" ]; then
     skip "cross-chat published-port arm NOT exercised (no container->host route)"
     note "A could not reach its OWN published port on host.containers.internal,"
     note "10.0.2.2 or 10.88.0.1, so B's silence measures nothing. Rootless podman"
     note "defaults to allow_host_loopback=false and chat ports bind 127.0.0.1."
     note "A's own server inside its netns answered: ${tool:-no answer}"
     note "(nowget = the image has no wget; add one or this vector stays untested.)"
+    return 0
   fi
+
+  if [ -n "$net_refused" ]; then
+    pass "chat A REACHED chat B's published port but B refused its credential"
+    printf '%s\n' "$net_refused" | while IFS= read -r h; do printf '  via %s\n' "$h"; done
+    note "The network path to chat B is OPEN — the credential is the only thing"
+    note "in the way, which is what fixing issue #115 with per-chat tokens looks"
+    note "like from in here. It is not what this brain does today (one password"
+    note "for every container), so a refusal now means B's port is not B's."
+    return 0
+  fi
+
+  if [ -n "$net_other" ]; then
+    skip "cross-chat published-port arm INCONCLUSIVE — B's port answered, but neither served nor refused"
+    printf '%s\n' "$net_other" | while IFS= read -r h; do printf '  via %s\n' "$h"; done
+    note "An HTTP status that is not 2xx and not 401/403 came back, so something"
+    note "is listening on chat B's port and it is not answering as chat B."
+    return 0
+  fi
+
+  pass "chat A reaches the host (via $(printf '%s\n' "$route_ok" | head -n1)) but NOT chat B's published port"
   return 0
 }
 
-# ca_manager_proxy_verdict <gwctl> <gw> — vector 3, and the loudest FAIL here.
+# ca_manager_proxy_verdict <tool> <gwctl> <gw> — vector 3, the loudest FAIL here.
 #
 # The gateway's /chat/<id>/<path> takes any chat id and does no per-chat
 # authorization; the only gate is one global password that every container is
@@ -449,7 +553,7 @@ ca_published_port_verdict() {
 # "could not reach it" must land as a SKIP: rendering that as a pass is the
 # same false negative the published-port arm used to ship.
 ca_manager_proxy_verdict() {
-  local gwctl="$1" gw="$2"
+  local tool="$1" gwctl="$2" gw="$3"
   case "$gw" in
     ok)
       fail "chat A DROVE chat B through the manager's proxy (/chat/<B-id>/session)"
@@ -461,13 +565,48 @@ ca_manager_proxy_verdict() {
       return 0
       ;;
   esac
+  # THE CREDENTIAL CONTROL, and it gates exactly one arm. "The gateway rejected
+  # this request" is isolation only if the request carried a credential the
+  # plane accepts; a container with an empty or mismatched
+  # OPENCODE_SERVER_PASSWORD 401s EVERYWHERE, and the sentence below it would
+  # otherwise print is a green verdict produced by holding no key at all.
+  #
+  # `gwctl:ok` needs no control — a 2xx from /api/health IS the credential
+  # working, and it is proof from the gateway itself. `gwctl:http:401` is the
+  # ambiguous one, so it consults TOOL: chat A's own opencode server, dialled
+  # inside A's netns with the same token. Already collected; never consulted
+  # until now.
+  case "$gwctl" in
+    http:401|http:403)
+      case "$tool" in
+        ok) : ;;
+        http:401|http:403)
+          skip "cross-chat proxy arm NOT exercised (the probe holds no working credential)"
+          note "The gateway refused chat A's token — and so did chat A's OWN server"
+          note "on 127.0.0.1:4096, which answered $tool. A 401 from everything is a"
+          note "broken probe, not a sandbox: an empty or mismatched"
+          note "OPENCODE_SERVER_PASSWORD in the container produces exactly this."
+          return 0
+          ;;
+        *)
+          skip "cross-chat proxy arm NOT exercised (the probe's credential is unproven)"
+          note "The gateway answered $gwctl, but nothing here shows the token chat A"
+          note "sent is one the plane accepts: A's own server answered ${tool:-no answer}."
+          note "Until some server takes this credential, a refusal measures nothing."
+          return 0
+          ;;
+      esac
+      ;;
+  esac
   case "$gwctl:$gw" in
     ok:http:401|ok:http:403)
       pass "the gateway refused chat A's request for chat B's session ($gw)"
       ;;
     http:401:*|http:403:*)
       pass "the gateway is reachable from chat A but refuses the credential it holds"
-      note "Control: /api/health answered $gwctl to the container's own password."
+      note "Control: /api/health answered $gwctl to the container's own password,"
+      note "and chat A's own server answered $tool to it — so the token works and"
+      note "the refusal is the gateway's decision, not a missing key."
       ;;
     ok:*)
       skip "cross-chat proxy arm INCONCLUSIVE — gateway up, /chat/<B>/session said ${gw:-nothing}"

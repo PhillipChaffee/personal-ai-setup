@@ -353,7 +353,7 @@ fi
 # template guard and the handle-eviction bound: reachable in principle, never
 # reached by an end-to-end run. All in-process, no wall clock.
 cat >"$WORK/preflight-shapes.py" <<'PY'
-import importlib.util, json, sys, tempfile
+import importlib.util, inspect, json, re, sys, tempfile
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location("cam", sys.argv[1])
@@ -461,87 +461,222 @@ assert plain["agent_authored"] is False, plain
 none = mod.pull_to_wire("o/n", {"number": 3, "body": None}, with_checks=False)
 assert "agent_authored" not in none, none
 
-# --- every route the dispatcher serves is named in the module docstring ------
+# --- every route+VERB the dispatcher serves is named in BOTH published lists -
 # Issue #17 C1's "exposes exactly" list named five things; the dispatcher
-# serves twelve API routes plus the proxy, and the docstring had drifted three
-# routes behind. Derived from the dispatch tables so the NEXT route cannot.
+# serves twelve API paths plus the proxy — thirteen (verb, path) rows — and the
+# module docstring had drifted three routes behind. It is derived here so the
+# NEXT route cannot, and derived at VERB granularity, which the first cut was
+# not: it compared PATHS, so deleting only the `GET /api/chats` row left the
+# path documented by `POST /api/chats` and reported a clean sweep, and a NEW
+# verb on an existing path was invisible for the same reason. `blind` below
+# holds exactly the rows that gate could not report, as an assertion.
 #
-# MATCHED AS WHOLE ROUTES, NOT AS SUBSTRINGS, and that is a bug fix rather than
-# a refinement. `route not in doc` can never report a route that is a PREFIX of
-# another documented one, and five of the twelve are: /api/chats (shadowed by
-# /api/chats/<id>/...), /api/chats/<id>, /api/chats/<id>/pulls, /api/repos
-# (shadowed by /api/repos/<name>/branches) and /api/permissions (named in this
-# docstring's own PROSE as well as its table). Delete the `GET /api/chats` row
-# and the substring version reported a clean sweep. So the docstring's route
-# TABLE is parsed into a set of exact paths, and membership is tested in it.
-VERBS = {"GET", "POST", "DELETE", "PUT", "PATCH", "*"}
+# TWO LISTS, ONE GATE. The docstring is not the only place this surface is
+# published: docs/code-agents.md carries the same thirteen rows in a table that
+# reads as generated. A hand-maintained copy that looks derived is worse than
+# one that looks hand-maintained, so both are checked against the dispatcher
+# and against each other, in both directions — a row served and not listed is
+# drift, and a row listed and not served is drift too.
+DOCS_MD = Path(sys.argv[2]).read_text()
 
-def doc_route(line):
-    """The route a docstring table row documents, or None if it is not one."""
-    parts = line.split()
-    if len(parts) >= 2 and parts[0] in VERBS and parts[1].startswith("/"):
-        return parts[1].split("[")[0]   # DELETE /api/chats/<id>[?purge=1]
-    return None
+# THE VERBS ARE THE SERVER'S OWN, read off the do_* methods rather than typed
+# out here: add `do_HEAD = handle_any` and this probe widens by itself. The
+# floor assertion is against VACUITY — an empty verb set would make every
+# "the list is complete" claim below true for free.
+VERBS = sorted(n[3:] for n in dir(mod.Handler) if n.startswith("do_"))
+assert {"GET", "POST", "DELETE"} <= set(VERBS), VERBS
 
-def readable(pattern):
+# One table, read twice: what a published list calls the placeholder, and a
+# value that really matches the group. The same pattern therefore yields both
+# the row a list has to contain and a path the dispatcher can be DRIVEN with,
+# and the `match` assertion in surface() fails loudly the day a pattern change
+# makes the sample stale rather than silently dropping the route.
+GROUPS = (("([a-zA-Z0-9-]+)", "<id>", "probe-chat"),
+          ("([0-9]+)", "<n>", "7"),
+          ("([^/]+)", "<name>", "probe-repo"),
+          ("(/.*|$)", "/<path>", "/session"))
+
+def expand(pattern, column):
     text = pattern.lstrip("^").rstrip("$")
-    for regex, shown in (("([a-zA-Z0-9-]+)", "<id>"), ("([0-9]+)", "<n>"),
-                         ("([^/]+)", "<name>"), ("(/.*|$)", "/<path>")):
-        text = text.replace(regex, shown)
+    for regex, shown, sample in GROUPS:
+        text = text.replace(regex, shown if column == "shown" else sample)
     if "(wake|stop)" in text:
         return [text.replace("(wake|stop)", "wake"), text.replace("(wake|stop)", "stop")]
     return [text]
 
-def served():
-    routes = list(mod.Handler.API_READS)
-    for name in dir(mod.Handler):
-        if name.startswith("ROUTE_"):
-            routes.extend(readable(getattr(mod.Handler, name).pattern))
-    return sorted(set(routes))
+def surface(cls):
+    """[(published path, a path that matches it)] for every path the tables name."""
+    out = [(p, p) for p in cls.API_READS]
+    for name in sorted(dir(cls)):
+        if not name.startswith("ROUTE_"):
+            continue
+        pattern = getattr(cls, name).pattern
+        for shown, real in zip(expand(pattern, "shown"), expand(pattern, "real")):
+            assert re.compile(pattern).match(real), f"{name}: sample {real} no longer matches"
+            out.append((shown, real))
+    return sorted(set(out))
 
-def undocumented(doc):
-    documented = {r for r in (doc_route(l) for l in doc.splitlines()) if r}
-    return sorted(r for r in served() if r not in documented)
+def dispatched(cls, verb, path):
+    """Drive the REAL dispatcher once; say whether it routed the request.
 
-def drop_route(doc, route):
-    """Delete the rows documenting exactly <route> — not the rows it prefixes."""
-    return "\n".join(l for l in doc.splitlines() if doc_route(l) != route)
+    Nothing here reads handle_any's SOURCE — that would be a second guess at
+    the routing table, which is the thing being checked. The handler is the one
+    the server uses, with its leaves replaced by recorders. A method that is
+    handed the verb (route_pull_requests) is a dispatcher in its own right and
+    is left REAL: stubbing it would erase exactly the verb distinction this
+    gate exists to see. A method that is never handed the verb cannot make a
+    verb decision, so recording it is lossless.
 
-routes = served()
-assert len(routes) == 12, f"expected twelve routes, derived {len(routes)}: {routes}"
-missing = undocumented(mod.__doc__)
-assert not missing, f"routes served but not in the module docstring: {missing}"
+    A dispatch target that is neither `proxy` nor `route_*` would run for real;
+    the `routed or refused` assertion is what catches that, loudly and with the
+    output in the message, rather than letting a new target answer silently.
+    """
+    handler = cls.__new__(cls)
+    handler.path, handler.command = path, verb
+    handler.authed = lambda: True
+    seen = []
+    handler.send_json = lambda status, body: seen.append((status, body))
+    for name in dir(cls):
+        takes_verb = name.startswith("route_") and \
+            "verb" in inspect.signature(getattr(cls, name)).parameters
+        if (name == "proxy" or name.startswith("route_")) and not takes_verb:
+            setattr(handler, name, (lambda n: lambda *a, **k: seen.append(("ROUTED", n)))(name))
+    handler.handle_any()
+    routed = [s for s in seen if s[0] == "ROUTED"]
+    refused = [s for s in seen
+               if s[0] == 404 and str(s[1].get("error", "")).startswith("no route")]
+    assert routed or refused, f"{verb} {path} neither routed nor refused: {seen}"
+    return bool(routed)
 
-# THE GATE'S OWN FALSIFIABILITY, fed in once per route rather than once. The
-# shipped version deleted every line CONTAINING "/api/permissions" — which took
-# the prose mention with it — and checked one route that happens not to be
-# shadowed, so the blind spot was invisible from inside the test. Each route is
-# now dropped on its own and has to come back named, prefix-shadowed or not.
-for route in routes:
-    holed = drop_route(mod.__doc__, route)
-    assert holed != mod.__doc__, f"drop_route removed no row for {route}"
-    assert undocumented(holed) == [route], (route, undocumented(holed))
+def served(cls):
+    """{(verb, published path)} the dispatcher routes.
 
-# ...and the blindness is real, not hypothetical. `blind` is every route the
-# SUBSTRING rule cannot report when its own row is deleted; asserting on the
-# set keeps this comment checkable and makes the day a route stops being
-# shadowed a day this test says so out loud.
-def substring_undocumented(doc):
-    return sorted(r for r in served() if r not in doc)
+    `*` when EVERY verb the server answers is routed, which is the wildcard the
+    published lists already use for the proxy — the one route with no verb
+    allowlist of its own.
+    """
+    rows = set()
+    for shown, real in surface(cls):
+        verbs = [v for v in VERBS if dispatched(cls, v, real)]
+        if len(verbs) == len(VERBS):
+            rows.add(("*", shown))
+        else:
+            rows.update((v, shown) for v in verbs)
+    return rows
 
-blind = sorted(r for r in routes if not substring_undocumented(drop_route(mod.__doc__, r)))
-assert blind == ["/api/chats", "/api/chats/<id>", "/api/chats/<id>/pulls",
-                 "/api/permissions", "/api/repos"], blind
+def doc_rows(text, table=False):
+    """Every `VERB /path` row in a published list.
+
+    `table=True` for markdown, where only a `|`-delimited cell counts: prose in
+    docs/code-agents.md names `GET /api/chats/<id>/pulls` in a sentence, and
+    letting a sentence stand in for a table row is how a table starts lying.
+    """
+    rows = set()
+    for line in text.splitlines():
+        if table:
+            if not line.startswith("|"):
+                continue
+            line = line.split("|")[1]
+        parts = line.replace("`", "").split()
+        if len(parts) >= 2 and parts[0] in [*VERBS, "*"] and parts[1].startswith("/"):
+            rows.add((parts[0], parts[1].split("[")[0]))  # DELETE /api/chats/<id>[?purge=1]
+    return rows
+
+def drop_row(text, verb, path, table=False):
+    """Delete the ONE row for (verb, path) — not the rows sharing its path."""
+    return "\n".join(l for l in text.splitlines()
+                     if (verb, path) not in doc_rows(l, table))
+
+rows = served(mod.Handler)
+for name, listed in (("module docstring", doc_rows(mod.__doc__)),
+                     ("docs/code-agents.md", doc_rows(DOCS_MD, table=True))):
+    assert not sorted(rows - listed), f"served but not in the {name}: {sorted(rows - listed)}"
+    assert not sorted(listed - rows), f"in the {name} but not served: {sorted(listed - rows)}"
+# LAST, so the two assertions above get to name the drift first — this one only
+# has a count to report. It is the floor against a surface() that quietly
+# stopped deriving anything, and the reason adding a route means editing a test.
+assert len(rows) == 13, f"expected thirteen (verb, route) rows, derived {sorted(rows)}"
+
+# THE GATE'S OWN FALSIFIABILITY, fed in once per row rather than once — for
+# both lists, because a gate that covers one copy of a list and not the other
+# is how the second copy rots. Every row is deleted on its own and has to come
+# back named, prefix-shadowed or verb-shadowed.
+for verb, path in sorted(rows):
+    for name, text, table in (("module docstring", mod.__doc__, False),
+                              ("docs/code-agents.md", DOCS_MD, True)):
+        holed = drop_row(text, verb, path, table)
+        assert holed != text, f"drop_row removed no {name} row for {verb} {path}"
+        assert sorted(rows - doc_rows(holed, table)) == [(verb, path)], \
+            f"{name}: holing {verb} {path} reported {sorted(rows - doc_rows(holed, table))}"
+
+# THE ROWS THE PATH-ONLY GATE COULD NOT REPORT, as an assertion rather than a
+# claim in a comment. `/api/chats` is served under two verbs, so deleting
+# either row leaves the PATH documented by the other and the previous revision
+# of this gate swept clean — the literal acceptance test it was asked to fail.
+def path_only_undocumented(text, table=False):
+    listed = {p for _, p in doc_rows(text, table)}
+    return sorted({p for _, p in rows} - listed)
+
+blind = sorted(r for r in rows if not path_only_undocumented(drop_row(mod.__doc__, *r)))
+assert blind == [("GET", "/api/chats"), ("POST", "/api/chats")], blind
+
+# ...and the other half of the same blindness: a verb the dispatcher GROWS on a
+# path that is already documented. `PUT /api/chats` is served by this subclass
+# and named by no list, which the path-only gate reported as a clean sweep
+# because `POST /api/chats` keeps the path listed. served() is driven, not
+# parsed, so it sees the new verb without being told the route exists.
+class GrewAVerb(mod.Handler):
+    def handle_any(self):
+        if self.command == "PUT" and self.path == "/api/chats":
+            self.route_list_chats()
+            return
+        mod.Handler.handle_any(self)
+
+grew = sorted(served(GrewAVerb) - doc_rows(mod.__doc__))
+assert grew == [("PUT", "/api/chats")], grew
+
+# THE TWO GUARDS INSIDE THE HELPERS, fired once each. Both exist so that a
+# future edit degrades LOUDLY instead of shrinking the derived surface, and an
+# assertion nobody has ever seen fail is an assertion nobody has seen.
+class AnsweredSomethingElse(mod.Handler):
+    """A dispatch target that is neither `proxy` nor `route_*` runs for real.
+    dispatched() has to refuse to read that as "not served" — which is what it
+    looks like, and which would drop the route out of the surface silently."""
+    def handle_any(self):
+        self.send_json(500, {"error": "boom"})
+
+try:
+    dispatched(AnsweredSomethingElse, "GET", "/api/health")
+except AssertionError as e:
+    assert "neither routed nor refused" in str(e), e
+else:
+    raise AssertionError("a handler that neither routed nor refused was read as a verdict")
+
+class StaleSample(mod.Handler):
+    """A route pattern GROUPS cannot instantiate. Without the match assertion
+    the sample path simply never dispatches, and the route disappears from the
+    derived surface — a gate that quietly loses routes as the code is edited."""
+    ROUTE_STALE = re.compile(r"^/api/widgets/([0-9a-f]{8})$")
+
+try:
+    surface(StaleSample)
+except AssertionError as e:
+    assert "no longer matches" in str(e), e
+else:
+    raise AssertionError("a route whose sample cannot match it was derived anyway")
 PY
-if "${MANAGER_PY[@]}" "$WORK/preflight-shapes.py" "$REPO_ROOT/scripts/vps/code-agent-manager.py"
+if "${MANAGER_PY[@]}" "$WORK/preflight-shapes.py" "$REPO_ROOT/scripts/vps/code-agent-manager.py" \
+  "$REPO_ROOT/docs/code-agents.md"
 then
   ok "a hand-mangled index.json or repos.json degrades instead of raising"
   ok "the notification handle memory is bounded and evicts oldest-first"
   ok "a non-object config template is refused; the model override and push grant apply"
   ok "the container's AGENTS.md is rendered into the chat volume, and a missing one is survivable"
   ok "agent_authored is true/false from the PR body, and absent when GitHub sent none"
-  ok "every route the dispatcher serves is named in the module docstring"
-  ok "...and holing any ONE route's row — prefix-shadowed or not — reports exactly it"
+  ok "every VERB+route the dispatcher serves is named in the docstring AND in docs/code-agents.md"
+  ok "...and holing any ONE row of either list — path- or verb-shadowed — reports exactly it"
+  ok "...and a verb the dispatcher GROWS on an already-listed path is reported too"
+  ok "...and the derivation refuses to guess: an unroutable answer and a stale sample both raise"
 else
   bag="state-shape / config-template / instructions / route-doc checks"
   bad "$bag (see the assertion above)"

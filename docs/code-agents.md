@@ -172,11 +172,18 @@ delivered branch carries no personal name or email (issue #17 C4).
 ## The manager's whole HTTP surface
 
 Every route below is authenticated (HTTP Basic, or `?auth_token=` for
-EventSource); there is no unauthenticated path. Twelve API routes plus the
-proxy — **not** the five that issue #17 C1's "exposes exactly" sentence names.
-The list is kept honest by `test-code-agent-manager.sh`, which derives the
-routes from the dispatcher and fails when one is missing from the manager's own
-module docstring.
+EventSource); there is no unauthenticated path. Twelve API paths plus the proxy
+— **not** the five that issue #17 C1's "exposes exactly" sentence names.
+
+**This table is generated-equivalent, not hand-maintained.**
+`test-code-agent-manager.sh` derives the surface by driving the dispatcher —
+every path its routing tables name, crossed with every verb it answers — and
+asserts that the rows below equal that set exactly, in both directions, and
+that the manager's own module docstring does too. A route added without a row
+here fails the harness; so does a row here for a route that no longer exists,
+and so does a **verb** added to a path that is already listed. Only a `|` table
+row counts: the sentence about `GET /api/chats/<id>/pulls` further up this page
+is prose and cannot stand in for a row.
 
 | Route | What it does |
 |---|---|

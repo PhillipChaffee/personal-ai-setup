@@ -85,7 +85,7 @@
 # the fixture spellings are the ones already committed at
 # test-code-agent-manager.sh:217/219. No assertion message below interpolates a
 # captured value -- booleans, counts and status codes only
-# (test-code-agent-manager.sh:523-525).
+# (test-code-agent-manager.sh:744-746).
 #
 # Runs on a laptop, not only in CI: python3 (with PyYAML) + curl + the usual
 # BSD/GNU userland, and the fakes do no real work, so the whole thing is
@@ -214,7 +214,7 @@ PORT="${PORT:-4396}"
 PROVIDER_URL="http://127.0.0.1:$PORT"
 mkdir -p "$FAKE_HOME" "$STATE" "$PREFIX" "$WORK/out"
 
-# UNSET FIRST, EXPORT SECOND. test-code-agent-manager.sh:504-508: "leaving them
+# UNSET FIRST, EXPORT SECOND. test-code-agent-manager.sh:725-729: "leaving them
 # inherited would let the developer's real environment decide the outcome."
 # Concretely, an inherited GOOSE_BIN points check-goose.sh at a REAL goose,
 # which reads the just-installed provider JSONs carrying the real

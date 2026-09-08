@@ -656,6 +656,61 @@ saw "a filesystem-clean chat that can reach B's PORT is still a FAIL" \
 saw "...naming the host address it got through on" "via host.containers.internal"
 CA_FAKE_NET=down
 
+# THE BROKEN SENTENCE (published port): chat B's port ANSWERS chat A and turns
+# the credential away. Not producible on this brain — one password serves every
+# container — but it is the normal answer the day issue #115 is fixed with
+# per-chat tokens, and until now it left no tag at all, so the arm printed
+# "chat A reaches the host but NOT chat B's published port" about a port that
+# had just replied. That is the same collapse the proxy arm was fixed for,
+# left in its sibling: "refused" is not "unreachable".
+CA_FAKE_NET=401
+probe_pair "$WORK/chats/chat-b"
+saw "B refusing the credential is reported as REACHED, not as unreachable" \
+  "PASS  chat A REACHED chat B's published port but B refused its credential"
+absent "...and the old sentence claiming B's port was not reached is gone" \
+  "but NOT chat B's published port"
+saw "...and it says the network path is open and only the key is not" \
+  "The network path to chat B is OPEN"
+CA_FAKE_NET=down
+
+# ...and an answer that is neither a read nor a refusal. Something is listening
+# on chat B's published port and it is not answering as chat B, which is a
+# broken subject rather than a result — the mirror of the proxy arm's 404.
+CA_FAKE_NET=404
+probe_pair "$WORK/chats/chat-b"
+saw "a non-refusal HTTP answer from B's port is INCONCLUSIVE, not isolation" \
+  "SKIP  cross-chat published-port arm INCONCLUSIVE"
+absent "...and claims no isolation about a port that answered" \
+  "but NOT chat B's published port"
+CA_FAKE_NET=down
+
+# THE VACUOUS SHAPE (credential, port arm): the container->host route is LIVE —
+# chat A's own published port answers — and it turns chat A's own password
+# away. A probe holding a key nothing accepts gets silence from chat B for a
+# reason that has nothing to do with the sandbox, so the arm must not read that
+# silence as isolation.
+CA_FAKE_ROUTE=401
+probe_pair "$WORK/chats/chat-b"
+saw "a credential A's OWN port rejects is a SKIP, not isolation" \
+  "SKIP  cross-chat published-port arm NOT exercised (A's own port refused A's credential)"
+absent "...and no pass sentence about chat B's port survives it" \
+  "but NOT chat B's published port"
+CA_FAKE_ROUTE=ok
+
+# ...and the SAME COLLAPSE one level up, which is the one this file is for: a
+# 404 at chat A's own published port is NOT a rejected credential, it is some
+# other process on A's port. Reporting it with the sentence above would be the
+# probe inventing a reason, so it gets its own.
+CA_FAKE_ROUTE=404
+probe_pair "$WORK/chats/chat-b"
+saw "a non-refusal answer at A's OWN port is its own SKIP, not a credential story" \
+  "SKIP  cross-chat published-port arm NOT exercised (A's own port answered as something else)"
+absent "...and does not blame the credential for it" \
+  "refused A's credential"
+absent "...and still claims no isolation" \
+  "but NOT chat B's published port"
+CA_FAKE_ROUTE=ok
+
 # THE VACUOUS SHAPE THIS WHOLE ARM WAS REWRITTEN FOR, and the one the shipped
 # probe reported as isolation. The container->host route is dead: chat A cannot
 # reach its OWN published port on any of the three host addresses, so chat B's
@@ -726,10 +781,39 @@ CA_FAKE_GWCTL=ok CA_FAKE_GW=403
 # The gateway is reachable but will not take the credential the container
 # holds. That IS isolation — a different sentence, because it is a different
 # fact, and it is what fixing #115 by option 2 would look like from here.
+# TOOL is `ok` throughout this file's isolated fixture, which is what makes the
+# sentence true: some server DID take this token.
 CA_FAKE_GWCTL=401 CA_FAKE_GW=401
 probe_pair "$WORK/chats/chat-b"
 saw "a gateway that rejects the container's credential is a PASS of its own" \
   "PASS  the gateway is reachable from chat A but refuses the credential it holds"
+
+# THE VACUOUS SHAPE THE SENTENCE ABOVE HIDES: a container whose
+# OPENCODE_SERVER_PASSWORD is empty or does not match the manager's 401s
+# EVERYWHERE, including at its own opencode server. The identical gateway
+# answer then means "this probe has no key", not "this plane refuses this
+# chat", and printing an isolation PASS off it is a green verdict produced by
+# the probe being broken. Unreachable in practice — the manager refuses to
+# serve on an empty password and injects it into every container — which is
+# what was said about the loopback control, too.
+CA_FAKE_TOOL=401
+probe_pair "$WORK/chats/chat-b"
+saw "401 from A's OWN server as well makes it a SKIP, not a refusal" \
+  "SKIP  cross-chat proxy arm NOT exercised (the probe holds no working credential)"
+absent "...and no isolation is claimed for a probe with no key" \
+  "PASS  the gateway is reachable from chat A"
+
+# ...and the case where the control cannot settle it either way: A's own server
+# is not answering at all, so nothing shows the token is one the plane takes.
+# Unproven is a SKIP with its own sentence, because "we could not tell" and "we
+# tested and the key is dead" are different things to go and look at.
+CA_FAKE_TOOL=down
+probe_pair "$WORK/chats/chat-b"
+saw "an unproven credential is its own SKIP, naming what the control answered" \
+  "SKIP  cross-chat proxy arm NOT exercised (the probe's credential is unproven)"
+absent "...and still claims no isolation" \
+  "PASS  the gateway is reachable from chat A"
+CA_FAKE_TOOL=ok
 CA_FAKE_GWCTL=ok CA_FAKE_GW=403
 
 # The gateway answered, but not about chat B: a 404 means the probe lost its

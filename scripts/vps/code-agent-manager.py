@@ -18,13 +18,16 @@ HTTP surface (all authed with HTTP Basic, password = OPENCODE_SERVER_PASSWORD,
 username free-form; `?auth_token=<base64(user:pass)>` accepted for
 EventSource/browser contexts; TLS via the brain's tailnet cert when present):
 
-THE COMPLETE LIST, and it is checked. Issue #17 C1 says the manager "exposes
-exactly" five things (list, create, wake, delete, routing); the dispatcher
-serves twelve API routes plus the proxy, and this docstring was itself missing
-three of them (/api/permissions and both pull-request routes) until the gate
-below existed. test-code-agent-manager.sh derives the routes from API_READS and
-the ROUTE_* patterns and fails if any is unnamed here, so the next route to be
-added cannot go undocumented the same way.
+THE COMPLETE LIST, VERB INCLUDED, and it is checked. Issue #17 C1 says the
+manager "exposes exactly" five things (list, create, wake, delete, routing);
+the dispatcher serves twelve API paths plus the proxy — thirteen rows below —
+and this docstring was itself missing three of them (/api/permissions and both
+pull-request routes) until the gate existed. test-code-agent-manager.sh derives
+the surface by DRIVING handle_any: every path the tables name, crossed with
+every verb the do_* methods answer, dispatched for real with the leaf handlers
+recorded. Both this table and the copy in docs/code-agents.md must equal that
+set exactly, in both directions, so an added route, a dropped row, and a NEW
+VERB on a path already listed are all failures rather than silent drift.
 
     GET    /api/health                  liveness + engine/image/chat counts
     GET    /api/repos                   the allowlist (names + flags)
