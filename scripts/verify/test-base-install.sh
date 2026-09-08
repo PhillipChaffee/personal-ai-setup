@@ -1871,19 +1871,33 @@ sys.exit(0 if ok else 1)
   # exists. Nested `if`s rather than the file's `&&` idiom because the inner grep
   # FAILING is the good case, and `grep ... && X=1` as the last command of a body
   # would take errexit down with it.
+  #
+  # BOTH HALVES, because "does not deny it" alone is satisfiable by silence. The
+  # first cut of this row checked only $I12_DENIED, and deleting the entire
+  # OpenCode paragraph out of the epilogue left it at `24 passed, 0 failed` --
+  # the user is told nothing about /models, which is the same person, in the same
+  # state, as the one #38's wording misinformed. $I12_TOLD is the anchor: while
+  # the manifest declares the step, the screen has to mention it.
   I12_STEP=0
   I12_DENIED=0
+  I12_TOLD=0
   if grep -qE '^  - id: set-default-model$' "$REPO_ROOT/config/units/opencode.yaml"; then
     I12_STEP=1
   fi
   if grep -qF "no /models step" "$A_OUT"; then
     I12_DENIED=1
   fi
-  [ "$I12_STEP" -eq 0 ] || [ "$I12_DENIED" -eq 0 ] &&
-    ok "I12: the installer's next-steps screen does not deny a manual step opencode.yaml keeps" || {
-    bad "I12: bootstrap-mac.sh's epilogue says there is no /models step, but opencode.yaml still declares set-default-model"
+  if grep -qF "/models" "$A_OUT"; then
+    I12_TOLD=1
+  fi
+  if [ "$I12_STEP" -eq 0 ]; then
+    ok "I12: opencode.yaml declares no set-default-model step, so the epilogue owes the user nothing"
+  elif [ "$I12_DENIED" -eq 0 ] && [ "$I12_TOLD" -eq 1 ]; then
+    ok "I12: the installer's next-steps screen names the manual step opencode.yaml keeps, and does not deny it"
+  else
+    bad "I12: opencode.yaml declares set-default-model, but the epilogue denies or omits /models (denied=$I12_DENIED, mentioned=$I12_TOLD)"
     echo "      | fix the PROSE or drop the manual step — one of the two is wrong"
-  }
+  fi
 
   # -- I7: the invariant, over this phase --------------------------------------
   [ -s "$OC_DENY" ] && {
