@@ -27,7 +27,7 @@ cost:
 # NOTHING INSTALLS THIS UNIT. There is no API call and no CLI flag for
 # "create an account" or "enable HTTPS certificates" -- both toggles live at
 # https://login.tailscale.com/admin/dns. Legal only because manual_steps is
-# non-empty. deploy-vps.sh:91 asserts the CLI is present and already joined
+# non-empty. deploy-vps.sh:357 asserts the CLI is present and already joined
 # ("cloud-init should have installed and joined the tailnet") rather than
 # doing any of it.
 installer: null

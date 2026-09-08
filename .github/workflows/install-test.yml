@@ -162,3 +162,139 @@ jobs:
             || { echo "::error::--only opencode failed, but not at I1 — the negative test" \
                       "is going red for some other reason:"; sed 's/^/  /' "$out"; exit 1; }
           echo "Phase I correctly caught an OpenCode install with no credential."
+
+  # The brain's deploy, on the same terms: a program whose entire job is side
+  # effects, executed against fakes. It gets its own job rather than another
+  # step because it shares nothing with the Mac install -- different seam
+  # (PAI_* roots vs PAI_EXEC), different fake, different assertions -- and
+  # because a red deploy differential should not be reported as "base install
+  # failed".
+  #
+  # WHAT GREEN HERE MEANS: deploy-vps.sh issues the same privileged sequence it
+  # issued before the carve, plus one enumerated daemon-reload, and a strictly
+  # smaller one when a unit is deselected. It says NOTHING about whether
+  # podman, apt, systemd, rootless subuid ranges or loginctl linger behave as
+  # modelled on a real Ubuntu, and nothing at all about a real brain. The
+  # harness's header enumerates that list; read it before trusting this badge.
+  deploy-vps:
+    name: brain deploy against fakes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          # LOAD BEARING, for the same reason as the job above. Assertion V1
+          # runs the PRE-CARVE deploy-vps.sh out of git history by pinned sha
+          # and diffs its privileged sequence and its file tree against this
+          # checkout's. On a shallow clone that blob is absent and V1/V1b
+          # degrade to counted SKIPs -- so "the carve changed nothing" would be
+          # asserted nowhere.
+          fetch-depth: 0
+
+      - name: Brain deploy against the fakes
+        run: scripts/verify/test-deploy-vps.sh
+
+      # Five negative tests, each naming the assertion it must break. All work
+      # on a COPY in $RUNNER_TEMP so the checkout is never modified, and all
+      # use INDENTATION-TOLERANT anchors: the carve moved most of these lines
+      # inside a function body, and a `^sudo` anchor would match nothing, pass
+      # on an unmodified script, and report the gate as inert when the only
+      # inert thing is the sed. install-test.yml:107-113 records that lesson.
+      #
+      # `test -x` first, deliberately: a harness committed 100644 would make
+      # every one of these a silent no-op that always "passes".
+      - name: Negative test — enable --now for the manager must fail
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/neg-enable-now"
+          rm -rf "$work"; mkdir -p "$work"
+          git archive HEAD | tar -x -C "$work"
+          test -x "$work/scripts/verify/test-deploy-vps.sh" \
+            || { echo "::error::harness is not executable in the archive"; exit 1; }
+          sed -i 's|^\( *\)sudo systemctl restart code-agent-manager\.service$|\1sudo systemctl enable --now code-agent-manager.service|' \
+            "$work/scripts/vps/deploy-vps.sh"
+          grep -q 'enable --now code-agent-manager' "$work/scripts/vps/deploy-vps.sh" \
+            || { echo "::error::the sed matched nothing — this control is inert"; exit 1; }
+          if "$work/scripts/verify/test-deploy-vps.sh" --only constraints; then
+            echo "::error::--now is a no-op on a running unit, and V2e did not notice"
+            exit 1
+          fi
+          echo "V2e correctly rejected 'enable --now' for the manager."
+
+      - name: Negative test — ln without -T must fail
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/neg-ln"
+          rm -rf "$work"; mkdir -p "$work"
+          git archive HEAD | tar -x -C "$work"
+          test -x "$work/scripts/verify/test-deploy-vps.sh" \
+            || { echo "::error::harness is not executable in the archive"; exit 1; }
+          sed -i 's|ln -sfnT|ln -sfn|g' "$work/scripts/vps/deploy-vps.sh"
+          if "$work/scripts/verify/test-deploy-vps.sh" --only constraints; then
+            echo "::error::a symlink can now nest inside a surviving directory and V3 did not notice"
+            exit 1
+          fi
+          echo "V3 correctly rejected ln without -T."
+
+      - name: Negative test — a missing unit gate must fail
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/neg-gate"
+          rm -rf "$work"; mkdir -p "$work"
+          git archive HEAD | tar -x -C "$work"
+          test -x "$work/scripts/verify/test-deploy-vps.sh" \
+            || { echo "::error::harness is not executable in the archive"; exit 1; }
+          before="$(grep -c 'want code-agents' "$work/scripts/vps/deploy-vps.sh")"
+          sed -i '/^ *want code-agents || return 0$/d' "$work/scripts/vps/deploy-vps.sh"
+          after="$(grep -c 'want code-agents' "$work/scripts/vps/deploy-vps.sh" || true)"
+          [ "$before" -eq 1 ] && [ "$after" -eq 0 ] \
+            || { echo "::error::the sed did not remove the gate (before=$before after=$after) — this control is inert"; exit 1; }
+          if "$work/scripts/verify/test-deploy-vps.sh" --only select; then
+            echo "::error::--without code-agents installed podman anyway and V5 did not notice"
+            exit 1
+          fi
+          echo "V5 correctly caught a unit that ignored its gate."
+
+      - name: Negative test — the tls-cert-renew reload must stay below its installs
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/neg-reload-tls"
+          rm -rf "$work"; mkdir -p "$work"
+          git archive HEAD | tar -x -C "$work"
+          test -x "$work/scripts/verify/test-deploy-vps.sh" \
+            || { echo "::error::harness is not executable in the archive"; exit 1; }
+          # Column 0 anchors the UNCONDITIONAL reload specifically: the other
+          # two live inside unit bodies and are indented. Deleting it puts the
+          # tree back where it was before this PR, where `enable --now
+          # tls-cert-renew.timer` ran against a cached unit definition.
+          before="$(grep -c '^sudo systemctl daemon-reload$' "$work/scripts/vps/deploy-vps.sh")"
+          [ "$before" -eq 1 ] \
+            || { echo "::error::expected exactly 1 top-level daemon-reload, found $before — this control is inert"; exit 1; }
+          sed -i '/^sudo systemctl daemon-reload$/d' "$work/scripts/vps/deploy-vps.sh"
+          if "$work/scripts/verify/test-deploy-vps.sh" --only constraints; then
+            echo "::error::tls-cert-renew.timer is armed against a stale unit file and V2b' did not notice"
+            exit 1
+          fi
+          echo "V2b' correctly caught a reload that moved above its installs."
+
+      - name: Negative test — the in-unit reloads must stay between install and enable
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/neg-reload-unit"
+          rm -rf "$work"; mkdir -p "$work"
+          git archive HEAD | tar -x -C "$work"
+          test -x "$work/scripts/verify/test-deploy-vps.sh" \
+            || { echo "::error::harness is not executable in the archive"; exit 1; }
+          # The two INDENTED reloads: unit_telegram_gateway's (this PR's other
+          # bug fix) and unit_code_agents' (which predates it). Removing both
+          # must break V2b and V2c.
+          before="$(grep -c '^  sudo systemctl daemon-reload$' "$work/scripts/vps/deploy-vps.sh")"
+          [ "$before" -eq 2 ] \
+            || { echo "::error::expected exactly 2 in-unit daemon-reloads, found $before — this control is inert"; exit 1; }
+          sed -i '/^  sudo systemctl daemon-reload$/d' "$work/scripts/vps/deploy-vps.sh"
+          if "$work/scripts/verify/test-deploy-vps.sh" --only constraints; then
+            echo "::error::a unit enables what it just installed without reloading, and V2b/V2c did not notice"
+            exit 1
+          fi
+          echo "V2b/V2c correctly caught a unit that enabled a cached unit file."

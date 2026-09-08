@@ -175,7 +175,11 @@ The repo ships **disabled** systemd units: the template service
 `scripts/vps/systemd/fallback/goose-recipe@.service` plus four timers —
 `morning-brief.timer`, `inbox-triage.timer`, `weekly-review.timer`, and
 `health-followups.timer` in the same directory, installed by deploy-vps.sh as
-`goose-recipe@<id>.timer`. They drive the very same recipes through `run-recipe.sh` —
+`goose-recipe@<id>.timer`. They are installed by the **brain core**, not by the
+`automations` unit, so `deploy-vps.sh --without automations` registers no goose
+schedules but still lands these five files: they are the escape hatch you reach
+for when a deploy is broken, so they have to arrive before anything that can
+fail. They drive the very same recipes through `run-recipe.sh` —
 same models, same delivery (the recipes still email their own results), OS-grade
 scheduling, no Goose scheduler involved, plus the watchdog's retry and failure alert.
 `budget-checkin` has no fallback timer — it ships paused; if the native scheduler is

@@ -6,7 +6,27 @@
 # Idempotent — re-running is the upgrade path: it pulls the repo, refreshes
 # configs (never clobbering local state), reinstalls units, restarts
 # goose-serve, and re-registers the schedule roster.
+#
+# FOUR OF THE ADD-ONS ARE UNITS: unit_google_workspace, unit_telegram_gateway,
+# unit_code_agents and unit_automations, each the installer named by a manifest
+# in config/units/ (`installer.function`), each gated by --with/--without/--only
+# and each defined immediately above its one call site. `--without code-agents`
+# is the one that pays for itself: without it every brain apt-installs podman,
+# grants a subuid range, enables linger and runs a multi-minute `podman build`
+# for a feature it may never enable.
+#
+# THE BRAIN CORE IS NOT A UNIT AND IS NOT SELECTABLE. The path-root migration,
+# the goose config install, the systemd unit files, `goose-serve` and the
+# /status gate are eight non-contiguous regions interleaved with the four units
+# above; wrapping them in one unit_brain() would either reorder the deploy or
+# hand every future author a function that silently must not be skipped. Every
+# selective run says so on stdout, and config/units/brain.yaml records it as a
+# blocker rather than leaving it in nobody's head.
 set -euo pipefail
+# errtrace. REQUIRED, not tidiness: without it an ERR trap is NOT inherited by
+# shell functions, and every unit body below is a function — so the attribution
+# in on_unit_err() would never print for the only failures it exists to name.
+set -E
 
 # --------------------------------------------------------------- the seam --
 # PAI_* — TESTING ONLY. Never set any of these on a real brain.
@@ -55,9 +75,26 @@ CODE_AGENTS_ROOT="$DATA_ROOT/code-agents"
 GOOSE_CONFIG_DIR="$HOME/.config/goose"
 SERVE_PORT=3284
 
+# ------------------------------------------------------- the unit selection
+# A space-delimited string, matched with `case " $SELECTED " in *" $id "*)`,
+# and NOT a `declare -A`. This file is bash-3.2-clean and stays that way: an
+# associative array, `mapfile` or `${x,,}` would work on the Ubuntu brain and
+# break the moment anyone runs it under /bin/bash on a Mac, and nothing in CI
+# here would catch it.
+#
+# THE ORDER IS THE CALL ORDER, and the --dry-run plan prints it in this order.
+UNIT_IDS="google-workspace telegram-gateway code-agents automations"
+SELECTED="$UNIT_IDS"
+# Set by want(), cleared by completed(), read by on_unit_err(). Top-level
+# globals on purpose — see the note above resume_goose_units about what `local`
+# does to a variable an EXIT trap reads.
+CURRENT_UNIT=""
+DONE_UNITS=""
+ERR_REPORTED=0
+
 usage() {
   cat <<'EOF'
-Usage: deploy-vps.sh [REPO_URL]
+Usage: deploy-vps.sh [--with ID] [--without ID] [--only ID] [--dry-run] [REPO_URL]
 
 Deploys/upgrades the brain: repo clone or pull, migration of goose's
 config/data/state onto the encrypted volume (GOOSE_PATH_ROOT=/data/goose),
@@ -68,17 +105,110 @@ e.g.:
 
   deploy-vps.sh https://github.com/<your-github-username>/personal-ai-setup.git
 
+Selectable units (all of them are on by default):
+
+  google-workspace   ~/.google_workspace_mcp -> /data/workspace-mcp
+  telegram-gateway   goose-telegram-gateway.service, enabled when the token is set
+  code-agents        rootless podman, the code-agent:local image, /data/code-agents
+                     and code-agent-manager.service. This is the expensive one:
+                     an apt install and a multi-minute image build on every brain.
+  automations        register-schedules.sh — the goose scheduler roster
+
+  --with ID       select ID. A NO-OP today, because every unit is already on by
+                  default; it exists so the flag surface matches the Mac
+                  installer's. `--with X --without X` warns and DESELECTS X —
+                  deselection is the safe direction to lose an argument in.
+  --without ID    deselect ID
+  --only ID       select exactly ID (repeat, or comma-separate, for several).
+                  Not combinable with --with/--without.
+  --dry-run       print the plan and exit 0 without touching anything
+
+THE BRAIN CORE IS NOT SELECTABLE. The path-root migration, the goose config
+install, the systemd unit files, the goose-serve restart and the /status gate
+run on every invocation, including `--only automations`. There is no flag that
+skips them and there should not be: everything else depends on them.
+
 Prerequisites: /data mounted (luks-setup.sh / luks-unlock.sh) and
 /data/secrets.env filled in (chmod 600).
 EOF
 }
 
-case "${1:-}" in
-  -h|--help) usage; exit 0 ;;
-esac
-REPO_URL="${1:-${REPO_URL:-}}"
-
 fail() { echo "ERROR: $*" >&2; exit 1; }
+# Usage errors exit 2, the convention every other entry point here follows
+# (bootstrap-mac.sh, check-units.sh, cli.sh's `2 == precondition/usage`).
+die_usage() { echo "deploy-vps.sh: $*" >&2; usage >&2; exit 2; }
+
+# ------------------------------------------------------------- arguments --
+WITH_IDS=""; WITHOUT_IDS=""; ONLY_IDS=""; ONLY_GIVEN=0; DRY_RUN=0; SELECTIVE=0
+REPO_URL_ARG=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --with|--without|--only)
+      [ "$#" -ge 2 ] || die_usage "$1 needs a unit id"
+      # Commas are accepted as well as repetition, because `--only a,b` is what
+      # everyone types first and a silent "unknown unit 'a,b'" is a worse
+      # answer than either.
+      case "$1" in
+        --with)    WITH_IDS="$WITH_IDS $(echo "$2" | tr ',' ' ')" ;;
+        --without) WITHOUT_IDS="$WITHOUT_IDS $(echo "$2" | tr ',' ' ')" ;;
+        --only)    ONLY_IDS="$ONLY_IDS $(echo "$2" | tr ',' ' ')"; ONLY_GIVEN=1 ;;
+      esac
+      SELECTIVE=1
+      shift 2 ;;
+    --*) die_usage "unknown argument: $1" ;;
+    *)
+      [ -z "$REPO_URL_ARG" ] || die_usage "more than one REPO_URL given"
+      REPO_URL_ARG="$1"; shift ;;
+  esac
+done
+REPO_URL="${REPO_URL_ARG:-${REPO_URL:-}}"
+
+# Every named id must be a known one. A typo like `--without code-agent` that
+# silently installed podman anyway is the whole reason this is exit 2 and not a
+# warning.
+for id in $WITH_IDS $WITHOUT_IDS $ONLY_IDS; do
+  case " $UNIT_IDS " in
+    *" $id "*) ;;
+    *) die_usage "unknown unit '$id'; known units: $UNIT_IDS" ;;
+  esac
+done
+
+if [ "$ONLY_GIVEN" -eq 1 ]; then
+  [ -z "$WITH_IDS$WITHOUT_IDS" ] || die_usage "--only cannot be combined with --with/--without"
+  SELECTED=""
+  for id in $UNIT_IDS; do
+    case " $ONLY_IDS " in
+      *" $id "*) SELECTED="$SELECTED $id" ;;
+    esac
+  done
+else
+  SELECTED=""
+  for id in $UNIT_IDS; do
+    # `|| continue`, never `[ cond ] && action` as a loop's last statement: the
+    # for-loop inherits the status of its final command, and a false `&&` list
+    # on the last iteration makes the whole loop — and under `set -e` the whole
+    # script — fail after having done all of its work.
+    case " $WITHOUT_IDS " in
+      *" $id "*)
+        case " $WITH_IDS " in
+          *" $id "*) echo "WARNING: '$id' is named by both --with and --without; --without wins (use --only $id to select it alone)." >&2 ;;
+        esac
+        continue ;;
+    esac
+    SELECTED="$SELECTED $id"
+  done
+fi
+# Trim the leading space so `--dry-run`'s plan and the error attribution read
+# as a list rather than as a ragged one.
+SELECTED="${SELECTED# }"
+
+if [ "$SELECTIVE" -eq 1 ]; then
+  echo "==> units selected: ${SELECTED:-(none)}"
+  echo "    note: the brain core (migration, goose config, goose-serve, /status)"
+  echo "          is not selectable and always runs."
+fi
 
 # --------------------------------------------------- seam containment gate
 # BEFORE the preflight, on purpose: the preflight already probes $DATA_ROOT and
@@ -97,6 +227,88 @@ elif [[ -n "${PAI_REPO_DIR:-}${PAI_DATA_ROOT:-}${PAI_SYSTEMD_DIR:-}${PAI_GOOSE_B
   fail "a PAI_* root is set without PAI_FAKE_ROOT.
        These variables exist only for scripts/verify/test-deploy-vps.sh, and
        they are refused unless the whole tree is contained under one root."
+fi
+
+# ------------------------------------------------------- the unit gate ----
+# want <id> — the FIRST executable line of every unit body, as `want <id> ||
+# return 0`. It also records which unit is running, for on_unit_err().
+want() {
+  case " $SELECTED " in
+    *" $1 "*) CURRENT_UNIT="$1"; return 0 ;;
+  esac
+  echo "==> skipping $1 (deselected)"
+  return 1
+}
+
+# completed <id> — the line AFTER every call site. It runs only if the unit
+# returned 0, because errexit aborts otherwise, which is exactly what makes
+# $DONE_UNITS mean "completed" rather than "attempted". Ends in an assignment
+# (always exit 0), never in a `[ ... ]` test.
+completed() {
+  case " $SELECTED " in
+    *" $1 "*) DONE_UNITS="$DONE_UNITS $1" ;;
+  esac
+  CURRENT_UNIT=""
+}
+
+# on_unit_err — attribution, and the honest answer to "one clear failure per
+# unit rather than one exit code for six features".
+#
+# It does NOT continue past a failed unit, and that is deliberate. Continuing
+# needs `unit_x || rc=$?` at the call site, which (a) is the errexit-disabling
+# shape the rules above forbid, (b) breaks units_lint.py's P3 call count, and
+# (c) is unsafe here in a way it is not on the Mac: the brain core is a
+# prerequisite for everything after it, so "carry on" would mean carrying on
+# with a stopped goose-serve and a half-migrated /data/goose.
+#
+# The summary has to live INSIDE this trap. errexit aborts at the failing call
+# site, so nothing printed after it ever runs, and `trap - EXIT` further down
+# means the EXIT trap is gone for the tail of the script.
+on_unit_err() {
+  local rc=$?
+  # Bash fires ERR once for the failing command and again for each enclosing
+  # function that inherits its status, so without this the message prints twice
+  # and the second copy names the same unit.
+  [ "$ERR_REPORTED" -eq 0 ] || return 0
+  ERR_REPORTED=1
+  [ -n "$CURRENT_UNIT" ] || return 0
+  local pending="" id
+  for id in $UNIT_IDS; do
+    case " $SELECTED " in
+      *" $id "*) ;;
+      *) continue ;;
+    esac
+    case " $DONE_UNITS $CURRENT_UNIT " in
+      *" $id "*) continue ;;
+    esac
+    pending="$pending $id"
+  done
+  echo "ERROR: unit '$CURRENT_UNIT' failed (exit $rc)." >&2
+  echo "       completed:${DONE_UNITS:- (none)}" >&2
+  echo "       not reached:${pending:- (none)}" >&2
+  echo "       Re-run just that unit with: deploy-vps.sh --only $CURRENT_UNIT" >&2
+  return 0
+}
+trap on_unit_err ERR
+
+# --------------------------------------------------------------- dry run --
+# ABOVE the preflight and above every mutation, not "the gate returns 1".
+# The brain core is ungateable, so a dry-run that only silenced the four unit
+# bodies would still stop both goose units, migrate three directories, install
+# seven unit files and restart goose-serve — writing most of a deploy while
+# printing the word "dry". bootstrap-mac.sh:380-408 exits above its platform
+# guard for the same reason.
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "==> deploy-vps.sh --dry-run: nothing below this line ran, and nothing was written."
+  echo "    always runs: brain core (path-root migration, goose config, systemd unit"
+  echo "                 files, goose-serve restart, /status gate)"
+  for id in $UNIT_IDS; do
+    case " $SELECTED " in
+      *" $id "*) echo "    run:  $id" ;;
+      *)         echo "    skip: $id" ;;
+    esac
+  done
+  exit 0
 fi
 
 # ---------------------------------------------------------------- preflight
@@ -196,6 +408,11 @@ echo "==> Migrating goose config/data/state onto the encrypted volume ($GOOSE_RO
 # nothing but a stack of output to say so. The EXIT trap brings back whatever
 # was running on ANY exit path; it is cleared just before the intentional
 # restart at the end.
+# TOP LEVEL, and it must stay there. This trap fires OUTSIDE every unit body,
+# so a `local GATEWAY_WAS_ENABLED` inside one would leave the test below
+# reading an unbound variable under `set -u` — the trap would die after
+# goose-serve had been started and before the gateway was, on the one path
+# where nobody is watching. Same rule as install_template and migrate_into_root.
 GATEWAY_WAS_ENABLED=0
 resume_goose_units() {
   sudo systemctl start goose-serve.service >/dev/null 2>&1 || true
@@ -334,24 +551,57 @@ elif ! cmp -s "$REPO_DIR/config/goose/goosehints.example" "$GOOSE_CONFIG_DIR/.go
 fi
 
 # --------------------------------------- encrypted workspace-mcp token dir
+# FOUR RULES FOR EVERY UNIT BODY BELOW. Each is a measured failure mode of
+# `set -euo pipefail`, not a style preference. They are bootstrap-mac.sh's
+# rules, and they are written here rather than left to units_lint.py because
+# P3 is purely LEXICAL and accepts three of the four violations.
+#
+#   1. EVERY BODY ENDS IN `return 0`. A function whose last executed command is
+#      false returns false, and a bare call to it aborts the whole script. This
+#      text sat mid-script with lines after it before the carve, so a false tail
+#      was harmless; inside a function it is fatal.
+#   2. EVERY CALL SITE IS A BARE COLUMN-0 LINE — never `if unit_x; then`, never
+#      `unit_x || rc=$?`. A function called from an `if` condition runs its
+#      WHOLE body with errexit disabled. units_lint.py:605 counts `^unit_x$`
+#      and would happily accept the `if` form.
+#   3. `[ cond ] || continue` inside loops, never `[ cond ] && action` as a
+#      loop's last statement — the loop inherits that status and the body then
+#      returns false having done all of its work.
+#   4. HELPERS AND THE TRAP'S GLOBALS STAY TOP LEVEL. install_template is
+#      called from the goose-config block AND from unit_code_agents; a helper
+#      defined inside a unit is not defined until that unit has RUN, so a
+#      selective install would die at `command not found`. GATEWAY_WAS_ENABLED
+#      is the sharp one: make it `local` and the EXIT trap — which fires
+#      OUTSIDE the function — hits an unbound variable under `set -u`, dying
+#      silently after goose-serve is back but before the gateway is.
+#
 # workspace-mcp stores its Google OAuth tokens in ~/.google_workspace_mcp/
 # (the upstream default as of 2026-08-20). Point that at the encrypted
 # volume so the tokens live on /data, never the unencrypted root disk.
 # Verify after the first auth: if token files appear elsewhere, adjust here.
-echo "==> Linking ~/.google_workspace_mcp -> $WMCP_ROOT"
-WMCP_LINK="$HOME/.google_workspace_mcp"
-if [[ -d "$WMCP_LINK" && ! -L "$WMCP_LINK" ]]; then
-  echo "    migrating existing $WMCP_LINK onto the encrypted volume"
+unit_google_workspace() {
+  want google-workspace || return 0
+  # `local` here and not a global: nothing outside this body has ever read it,
+  # and unlike GATEWAY_WAS_ENABLED no trap does either.
+  local wmcp_link="$HOME/.google_workspace_mcp"
+  echo "==> Linking ~/.google_workspace_mcp -> $WMCP_ROOT"
+  if [[ -d "$wmcp_link" && ! -L "$wmcp_link" ]]; then
+    echo "    migrating existing $wmcp_link onto the encrypted volume"
+    mkdir -p "$WMCP_ROOT"
+    cp -an "$wmcp_link/." "$WMCP_ROOT/"
+    rm -rf "$wmcp_link"
+  fi
   mkdir -p "$WMCP_ROOT"
-  cp -an "$WMCP_LINK/." "$WMCP_ROOT/"
-  rm -rf "$WMCP_LINK"
-fi
-mkdir -p "$WMCP_ROOT"
-# -T: the block above removes a real directory here, so this should always be
-# a plain link creation — if it is not, fail loudly rather than nesting the
-# link inside a surviving token directory on the root disk.
-ln -sfnT "$WMCP_ROOT" "$WMCP_LINK" || fail "$WMCP_LINK is still a real directory — the OAuth tokens did not move to $WMCP_ROOT.
+  # -T: the block above removes a real directory here, so this should always be
+  # a plain link creation — if it is not, fail loudly rather than nesting the
+  # link inside a surviving token directory on the root disk.
+  ln -sfnT "$WMCP_ROOT" "$wmcp_link" || fail "$wmcp_link is still a real directory — the OAuth tokens did not move to $WMCP_ROOT.
        Move it aside by hand and re-run."
+  return 0
+}
+
+unit_google_workspace
+completed google-workspace
 
 # ------------------------------------------------------------- systemd
 echo "==> Installing systemd units (sudo)"
@@ -363,66 +613,111 @@ sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/fallback/goose-recipe@.servic
 for t in morning-brief inbox-triage weekly-review health-followups; do
   sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/fallback/$t.timer" "$SYSTEMD_DIR/goose-recipe@$t.timer"
 done
-sudo systemctl daemon-reload
 sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/tls-cert-renew.service" "$SYSTEMD_DIR/tls-cert-renew.service"
 sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/tls-cert-renew.timer" "$SYSTEMD_DIR/tls-cert-renew.timer"
+# THE RELOAD MOVED DOWN TO HERE, and that is a bug fix, not tidying.
+#
+# It used to sit above the two tls-cert-renew installs, so the `enable --now`
+# on the next line ran against whatever definition systemd had cached from the
+# previous deploy — on a re-deploy that changed tls-cert-renew.service, the
+# timer was armed with the OLD one. It survived because a second
+# `daemon-reload` further down (inside the code-agents block) happened to
+# re-read the file afterwards. That rescue is exactly what `--without
+# code-agents` removes, and it was never there at all on the path where
+# `apt-get`/`podman build` aborts the script under `set -e`.
+#
+# One reload, after every unconditional install above it, before every enable
+# below it. Keep it here: scripts/verify/test-deploy-vps.sh V2b' asserts
+# index(install tls-cert-renew.timer) < index(daemon-reload) < index(enable
+# --now tls-cert-renew.timer) and fails if it moves back up.
+sudo systemctl daemon-reload
 sudo systemctl enable --now tls-cert-renew.timer >/dev/null
-sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/goose-telegram-gateway.service" "$SYSTEMD_DIR/goose-telegram-gateway.service"
-if grep -q '^TELEGRAM_BOT_TOKEN=..*' "$SECRETS_FILE" 2>/dev/null; then
-  sudo systemctl enable --now goose-telegram-gateway.service >/dev/null
-  echo "    telegram gateway: enabled (token present)"
-else
-  echo "    telegram gateway: installed but not enabled (no TELEGRAM_BOT_TOKEN in secrets.env; see docs/setup/40-phone-setup.md §1a)"
-fi
+
+# ------------------------------------------------------- telegram gateway
+# Rules 1-4 are above unit_google_workspace().
+unit_telegram_gateway() {
+  want telegram-gateway || return 0
+  sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/goose-telegram-gateway.service" "$SYSTEMD_DIR/goose-telegram-gateway.service"
+  # The gateway's own reload, and the second half of the same bug. Before the
+  # carve the only reload covering this install was the one inside the
+  # code-agents block, so `enable --now` on the next line started the gateway
+  # from a cached unit definition — i.e. potentially without GOOSE_PATH_ROOT,
+  # the exact failure the restart at the end of this script exists to prevent.
+  # It cannot be hoisted to the unconditional reload above: this install is
+  # gated, so an unconditional reload would have to run before it.
+  sudo systemctl daemon-reload
+  if grep -q '^TELEGRAM_BOT_TOKEN=..*' "$SECRETS_FILE" 2>/dev/null; then
+    sudo systemctl enable --now goose-telegram-gateway.service >/dev/null
+    echo "    telegram gateway: enabled (token present)"
+  else
+    echo "    telegram gateway: installed but not enabled (no TELEGRAM_BOT_TOKEN in secrets.env; see docs/setup/40-phone-setup.md §1a)"
+  fi
+  return 0
+}
+
+unit_telegram_gateway
+completed telegram-gateway
+
 # ---------------------------------------------------------- code agents
 # Per-chat OpenCode containers + session manager (docs/code-agents.md,
-# docs/setup/70-code-agents.md). Everything is installed unconditionally;
-# the manager is ENABLED only when both of its secrets are present in
-# secrets.env — the same conditional-enable pattern as the telegram gateway.
-echo "==> Code agents: container engine, image, manager"
-if ! command -v podman >/dev/null 2>&1; then
-  echo "    installing podman (rootless) + uidmap + slirp4netns"
-  sudo apt-get update -qq
-  sudo apt-get install -y -qq podman uidmap slirp4netns >/dev/null
-fi
-# Rootless podman needs subordinate id ranges for agent, and the system unit
-# needs agent's user runtime dir (/run/user/1000) kept alive by linger.
-grep -q '^agent:' "$SUBUID_FILE" 2>/dev/null || \
-  sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 agent
-sudo loginctl enable-linger agent >/dev/null 2>&1 || true
-echo "    building code-agent image (pulls the OpenCode base on first run)"
-podman build -q -t code-agent:local \
-  -f "$REPO_DIR/config/code-agents/Containerfile" \
-  "$REPO_DIR/config/code-agents" >/dev/null
-mkdir -p "$CODE_AGENTS_ROOT/chats"
-install_template "$REPO_DIR/config/code-agents/repos.example.json" "$CODE_AGENTS_ROOT/repos.json"
-sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/code-agent-manager.service" "$SYSTEMD_DIR/code-agent-manager.service"
-sudo systemctl daemon-reload
-if grep -q '^OPENCODE_SERVER_PASSWORD=..*' "$SECRETS_FILE" 2>/dev/null && \
-   grep -q '^GITHUB_CODE_AGENT_PAT=..*' "$SECRETS_FILE" 2>/dev/null; then
-  sudo systemctl enable code-agent-manager.service >/dev/null
-  # RESTART, not `enable --now`. `--now` means `start`, which is a NO-OP on a
-  # unit that is already running — so every deploy after the first one shipped
-  # a new code-agent-manager.py to disk and left the old process serving it,
-  # while printing the success line below. goose-serve (:244) is restarted
-  # explicitly for exactly this reason; this unit was the one that was not.
-  #
-  # The failure was undetectable from outside: check-code-agents.sh probes
-  # /api/health, /api/chats, stop, wake and delete, all of which the OLD
-  # process answers identically. A route added in this deploy would 404, and a
-  # 404 from a stale process looks exactly like a route that was never written.
-  #
-  # This SIGTERMs every chat container, because the unit's ExecStopPost stops
-  # anything labelled code-agent=1 and that runs during the stop half of a
-  # restart. Volumes, agent branches and transcripts survive; an in-flight turn
-  # and OpenCode's in-memory permission asks do not. Deploy when nothing is
-  # mid-turn.
-  sudo systemctl restart code-agent-manager.service
-  echo "    code agents: restarted (manager on the tailnet, port 4300)"
-else
-  echo "    code agents: installed but not enabled (set OPENCODE_SERVER_PASSWORD"
-  echo "    and GITHUB_CODE_AGENT_PAT in secrets.env; docs/setup/70-code-agents.md)"
-fi
+# docs/setup/70-code-agents.md). THIS is the unit --without exists for: an apt
+# install, a subuid grant, linger, and a multi-minute `podman build` that used
+# to run on every brain whether or not the feature was ever enabled. The
+# conditional ENABLE on the two secrets stays exactly as it was — it answers a
+# different question ("are the credentials there?") from the gate ("did you ask
+# for this at all?").
+unit_code_agents() {
+  want code-agents || return 0
+  echo "==> Code agents: container engine, image, manager"
+  if ! command -v podman >/dev/null 2>&1; then
+    echo "    installing podman (rootless) + uidmap + slirp4netns"
+    sudo apt-get update -qq
+    sudo apt-get install -y -qq podman uidmap slirp4netns >/dev/null
+  fi
+  # Rootless podman needs subordinate id ranges for agent, and the system unit
+  # needs agent's user runtime dir (/run/user/1000) kept alive by linger.
+  grep -q '^agent:' "$SUBUID_FILE" 2>/dev/null || \
+    sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 agent
+  sudo loginctl enable-linger agent >/dev/null 2>&1 || true
+  echo "    building code-agent image (pulls the OpenCode base on first run)"
+  podman build -q -t code-agent:local \
+    -f "$REPO_DIR/config/code-agents/Containerfile" \
+    "$REPO_DIR/config/code-agents" >/dev/null
+  mkdir -p "$CODE_AGENTS_ROOT/chats"
+  install_template "$REPO_DIR/config/code-agents/repos.example.json" "$CODE_AGENTS_ROOT/repos.json"
+  sudo install -m 644 "$REPO_DIR/scripts/vps/systemd/code-agent-manager.service" "$SYSTEMD_DIR/code-agent-manager.service"
+  sudo systemctl daemon-reload
+  if grep -q '^OPENCODE_SERVER_PASSWORD=..*' "$SECRETS_FILE" 2>/dev/null && \
+     grep -q '^GITHUB_CODE_AGENT_PAT=..*' "$SECRETS_FILE" 2>/dev/null; then
+    sudo systemctl enable code-agent-manager.service >/dev/null
+    # RESTART, not `enable --now`. `--now` means `start`, which is a NO-OP on a
+    # unit that is already running — so every deploy after the first one shipped
+    # a new code-agent-manager.py to disk and left the old process serving it,
+    # while printing the success line below. goose-serve is restarted explicitly
+    # at the end of this script for exactly this reason; this unit was the one
+    # that was not.
+    #
+    # The failure was undetectable from outside: check-code-agents.sh probes
+    # /api/health, /api/chats, stop, wake and delete, all of which the OLD
+    # process answers identically. A route added in this deploy would 404, and a
+    # 404 from a stale process looks exactly like a route that was never written.
+    #
+    # This SIGTERMs every chat container, because the unit's ExecStopPost stops
+    # anything labelled code-agent=1 and that runs during the stop half of a
+    # restart. Volumes, agent branches and transcripts survive; an in-flight turn
+    # and OpenCode's in-memory permission asks do not. Deploy when nothing is
+    # mid-turn.
+    sudo systemctl restart code-agent-manager.service
+    echo "    code agents: restarted (manager on the tailnet, port 4300)"
+  else
+    echo "    code agents: installed but not enabled (set OPENCODE_SERVER_PASSWORD"
+    echo "    and GITHUB_CODE_AGENT_PAT in secrets.env; docs/setup/70-code-agents.md)"
+  fi
+  return 0
+}
+
+unit_code_agents
+completed code-agents
 
 sudo systemctl enable goose-serve.service >/dev/null
 
@@ -431,8 +726,23 @@ sudo systemctl enable goose-serve.service >/dev/null
 # once at startup and does not hot-reload it, so a schedule registered while
 # serve is running stays dormant until the next restart (verified against
 # goose 1.46.0). Registering first means the restart below picks everything up.
-echo "==> Registering automation schedules"
-bash "$REPO_DIR/scripts/vps/register-schedules.sh"
+# That ordering is the reason this unit's call site is HERE and not at the
+# bottom with the rest of the add-ons; test-deploy-vps.sh V2d asserts
+# index(last `goose schedule add`) < index(restart goose-serve.service).
+#
+# NOTE the asymmetry, recorded in config/units/automations.yaml: the four
+# goose-recipe@<id>.timer FALLBACK units are installed by the brain core above
+# and are NOT removed by --without automations. They are the escape hatch for a
+# broken deploy, so they must land before anything that can fail.
+unit_automations() {
+  want automations || return 0
+  echo "==> Registering automation schedules"
+  bash "$REPO_DIR/scripts/vps/register-schedules.sh"
+  return 0
+}
+
+unit_automations
+completed automations
 
 echo "==> (Re)starting goose-serve"
 # The intentional restart — drop the safety-net trap installed with the
@@ -474,6 +784,11 @@ fi
 echo "    up."
 
 # -------------------------------------------------------------- summary
+# NO LINE IN THIS HEREDOC MAY BEGIN WITH `unit_`. units_lint.py's P3 counts
+# call sites with a lexical `^unit_x$` over the whole file, heredocs and
+# usage() included, so a summary line starting with a unit name would read as a
+# second call site and fail the manifest check with a message about a function
+# that is called twice.
 cat <<EOF
 
 ============================================================

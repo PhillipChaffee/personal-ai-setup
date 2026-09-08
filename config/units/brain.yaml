@@ -4,14 +4,14 @@
 # and the always-on `goose serve` that Desktop and the phone talk to.
 #
 # DESCRIBES TODAY. This is the largest single region of deploy-vps.sh
-# (:47-244 preflight + migration, :302-315 systemd, :373-420 start and the
-# /status gate) and it has no unit_brain() function, so installer.status is
-# `planned` — an assertion that the function does NOT exist. #37 carved the
-# MAC installer into unit functions and left this one alone, so the assertion
-# still holds and no deploy-vps.sh unit has an installer function yet.
+# (:314-516 preflight + migration, :606-634 systemd, :722-784 start and the
+# /status gate) and it STILL has no unit_brain() function, so installer.status
+# is `planned` — an assertion that the function does NOT exist. Four of its
+# neighbours now do have one; see the blocker below for why this one does
+# not, and why writing it would be a mistake rather than a to-do.
 #
 # tls-cert-renew.{service,timer} is FOLDED IN here rather than made a
-# nineteenth unit: it is two files, one `enable --now` at deploy-vps.sh:315,
+# nineteenth unit: it is two files, one `enable --now` at deploy-vps.sh:634,
 # and it restarts goose-serve — which is this unit's own service. The price of
 # folding it in is that its absence of verification has to be said out loud,
 # so it is a blocker below rather than a silent omission.
@@ -22,7 +22,7 @@ summary: Hetzner VPS, LUKS /data, goose's path root on it, and goose-serve over 
 host: vps
 tier: opt_in
 # tailnet before base-secrets on purpose: cloud-init joins the tailnet at
-# first boot, and deploy-vps.sh:91 refuses to run without the tailscale CLI,
+# first boot, and deploy-vps.sh:357 refuses to run without the tailscale CLI,
 # then :400 needs a tailnet IPv4 before it can probe /status at all.
 requires: [tailnet, base-secrets]
 
@@ -59,7 +59,7 @@ runbook: docs/setup/50-vps-brain.md
 secrets:
   # goose-serve.service:29 injects the whole of /data/secrets.env, but this is
   # the one key the SERVER itself consumes - it is the shared secret every
-  # client presents, and deploy-vps.sh:410 uses it for the /status gate.
+  # client presents, and deploy-vps.sh:774 uses it for the /status gate.
   # base-secrets claims the same key as part of the roster it stores; this
   # entry records who READS it. Duplicate claims are legal and deliberate.
   - key: GOOSE_SERVER__SECRET_KEY
@@ -82,7 +82,7 @@ owns:
   - {kind: repo_file, target: scripts/vps/luks-setup.sh}
   - {kind: repo_file, target: scripts/vps/luks-unlock.sh}
   - {kind: data_path, target: /data}
-  # GOOSE_PATH_ROOT. deploy-vps.sh:124-244 moves config/, data/ AND state/
+  # GOOSE_PATH_ROOT. deploy-vps.sh:390-516 moves config/, data/ AND state/
   # here (0700) and leaves the three legacy paths as symlinks so the CLI over
   # SSH and the systemd unit read the same files.
   - {kind: data_path, target: /data/goose}
@@ -127,7 +127,7 @@ manual_steps:
 blockers:
   - id: tls-cert-renew-has-no-verify
     severity: warn
-    detail: tls-cert-renew.timer is `enable --now`d at deploy-vps.sh:315 and
+    detail: tls-cert-renew.timer is `enable --now`d at deploy-vps.sh:634 and
       its service restarts goose-serve weekly, yet `grep -rn tls-cert-renew
       scripts/verify/` returns NOTHING. No check asserts the timer is armed,
       that /data/tls holds a current cert, or that the two Tailscale
@@ -143,15 +143,37 @@ blockers:
       as an argument and must run from a different machine than the brain, so
       no roster entry can supply it. It stays a hand-run command, quoted in
       docs/security.md:52 and docs/setup/70-code-agents.md:81.'
-  - id: deploy-vps-has-no-harness
+  - id: brain-region-is-not-one-function
     severity: warn
-    detail: bootstrap-mac.sh is driven end to end by
-      scripts/verify/test-base-install.sh; deploy-vps.sh has NO test harness
-      at all. Every claim in this manifest about what the deploy does was read
-      out of the script, not observed in a run.
+    detail: "This unit deliberately has no unit_brain(). Its code is EIGHT
+      non-contiguous regions of deploy-vps.sh interleaved with the four units
+      that do have one - preflight, the stop-and-migrate block, the goose
+      config install, the systemd unit files, `systemctl enable
+      goose-serve`, the trap clear, the restart, the /status gate - and a
+      single function wrapping them would either reorder the deploy or hand
+      the next author a `want brain || return 0` that must never fire. Nothing
+      would then stop `--only automations` from skipping the migration that
+      every other unit depends on. The gate surface says so out loud instead:
+      every selective run prints `the brain core ... is not selectable and
+      always runs`, and so does --help. Do not write unit_brain()."
+  - id: what-the-deploy-harness-does-and-does-not-prove
+    severity: warn
+    detail: "scripts/verify/test-deploy-vps.sh now executes deploy-vps.sh
+      against scripts/verify/fake-host.sh, so the claims in this manifest about
+      ORDER and ARGV are observed rather than read: the privileged sequence,
+      the file tree it writes byte for byte, the EXIT trap, idempotence, and a
+      differential against the pre-carve script. It proves NOTHING about a real
+      brain. podman, apt-get, systemd, loginctl and tailscale are modelled, so
+      it cannot tell you that `podman build` succeeds, that rootless subuid
+      ranges or linger work, that `systemctl enable --now` on a stale unit is a
+      no-op (it asserts only that the reload was ISSUED), or that goose serve
+      reads schedule.json only at startup. It is also Linux-only and cannot run
+      on the Mac. The post-deploy checks the script's own summary prints -
+      check-brain.sh, check-security.sh --local, check-code-agents.sh --probe -
+      remain the only evidence about the real host."
   - id: config-install-is-no-clobber
     severity: note
-    detail: install_template at deploy-vps.sh:256-265 never overwrites an
+    detail: install_template at deploy-vps.sh:527-536 never overwrites an
       existing config.yaml, so on a brain deployed before a hardening change
       every "differs from repo template" NOTE is hardening that has not landed
       there. check-security.sh --local asserts the LIVE file, which is why
@@ -166,7 +188,7 @@ uninstall:
     intend to keep."
 
 notes: >-
-  The migration at deploy-vps.sh:124-244 is the part of this unit that is
+  The migration at deploy-vps.sh:390-516 is the part of this unit that is
   easiest to under-read. Before it existed only goose's data/ was on the
   encrypted volume; config/ (config.yaml, memory/, secrets.yaml) and state/
   (logs/llm_request.*.jsonl - the RAW request and response bodies exchanged

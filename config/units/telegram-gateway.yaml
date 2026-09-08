@@ -2,19 +2,20 @@
 # telegram-gateway — the phone's agentic surface: a full goose process on the
 # brain answering one paired Telegram account.
 #
-# DESCRIBES TODAY. The unit file is installed UNCONDITIONALLY at
-# deploy-vps.sh:316 and enabled only when TELEGRAM_BOT_TOKEN is already in
-# /data/secrets.env (:317-322), which is why the token below is `optional` -
-# a brain with no token still has this unit's file on disk, inert.
+# DESCRIBES TODAY. The unit file is installed by unit_telegram_gateway() at
+# deploy-vps.sh:639-640 and enabled only when TELEGRAM_BOT_TOKEN is already in
+# /data/secrets.env (:649-655), which is why the token below is `optional` -
+# a brain with a selected unit and no token still has this unit's file on disk,
+# inert. `--without telegram-gateway` skips the install as well as the enable.
 id: telegram-gateway
 manifest_version: 1
 verified_on: "2026-09-07"
-summary: goose's Telegram gateway on the brain, installed always and enabled only with a token.
+summary: goose's Telegram gateway on the brain, a selectable unit enabled only with a token.
 host: vps
 tier: opt_in
 # brain only. The gateway is a second goose process sharing the server's
 # GOOSE_PATH_ROOT, so everything it writes lands on the LUKS volume that unit
-# creates - and deploy-vps.sh:153-162 stops this unit before moving those
+# creates - and deploy-vps.sh:424-433 stops this unit before moving those
 # directories for exactly that reason.
 requires: [brain]
 
@@ -25,7 +26,7 @@ cost: []
 installer:
   script: scripts/vps/deploy-vps.sh
   function: unit_telegram_gateway
-  status: planned
+  status: present
 
 # NOTHING VERIFIES THIS UNIT - see the blocker below.
 verify: []
@@ -33,7 +34,7 @@ runbook: docs/setup/40-phone-setup.md#1a-telegram-gateway-the-working-agentic-pa
 
 secrets:
   # optional: true is the literal deploy behaviour, not a softening: the
-  # conditional at deploy-vps.sh:317 greps for a NON-EMPTY value and simply
+  # conditional at deploy-vps.sh:649 greps for a NON-EMPTY value and simply
   # prints a line when it is absent. The service's own ExecStart re-checks it
   # (goose-telegram-gateway.service:32) and exits 1 rather than starting a
   # gateway with no bot.
@@ -71,10 +72,22 @@ blockers:
       asserts the gateway that legitimately holds it is running.'
   - id: enable-happens-only-during-a-deploy
     severity: warn
-    detail: The token gate at deploy-vps.sh:317-322 runs during the deploy and
+    detail: The token gate at deploy-vps.sh:649-655 runs during the deploy and
       nowhere else. Adding TELEGRAM_BOT_TOKEN to /data/secrets.env afterwards
       changes nothing until deploy-vps.sh is re-run or the unit is enabled by
       hand, and the only signal is one line of deploy output that scrolls past.
+  - id: the-post-migration-restart-is-the-brain-core
+    severity: note
+    detail: unit_telegram_gateway() installs and enables; the RESTART at
+      deploy-vps.sh:758-761 does not move into it and must not. The brain core
+      is what STOPPED this unit (deploy-vps.sh:424-433, so the path-root
+      migration does not run underneath a live goose process), so the brain
+      core is what owes it a restart - and the `is-enabled` test there
+      deliberately covers a gateway that was enabled BY HAND, which no gate on
+      this unit would see. Consequence to know about - `--without
+      telegram-gateway` on a brain whose gateway is enabled still stops it for
+      the migration and still restarts it at the end, on the unit file that is
+      already on disk.
   - id: token-is-in-no-document
     severity: note
     detail: '`grep -n TELEGRAM docs/security.md docs/setup/20-mac-setup.md`
