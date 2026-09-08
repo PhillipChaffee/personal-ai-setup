@@ -64,6 +64,10 @@ THE EIGHT PROPERTIES, and what each catches that the others do not:
                          still matches. So (f) executes `--dry-run --only <id>`
                          for every id and compares what it PRINTS to the
                          manifests. See dry_run_plan() for why that is safe.
+                         (a) also rejects a REPEATED id: every other arm here
+                         compares sets, and a doubled UNIT_IDS entry is the one
+                         divergence that survives both the set comparisons and
+                         (f) -- see prop_installer_table().
 
 THE ADVISORY SPLIT. P5-reverse, P6-reverse and P7's age arm are NOTE under
 --offline and FAIL under --strict. Every manifest carries the same
@@ -1139,6 +1143,23 @@ def prop_installer_table(units: Sequence[Manifest]) -> Findings:
     # an unclaimed config/skills/ directory says nothing about that table.
     table: list[str] = []
     table.extend(compare_sets("UNIT_IDS", declared, expected))
+    # compare_sets is a SET comparison, so {a, b, a} == {a, b} and a repeated id
+    # walks straight through it. Not academic: UNIT_IDS is the list the plan loop
+    # filters, so doubling `coding-pack` makes the default --dry-run announce
+    # "6 units", print coding-pack twice, and repeat its whole 13-line `would
+    # install` block. (f) below cannot see it either -- it compares set(plan) to
+    # the closure, and builds the expected owns list by walking the plan it was
+    # handed, so the duplication cancels out on both sides of that comparison.
+    # Measured before this check existed: check-units.sh --offline AND --strict
+    # both at "8 passed, 0 failed" against a 46-line dry run. The only thing that
+    # caught it was test-base-install.sh's H1 golden, which runs in a different
+    # workflow, so this gate's own "fails on any divergence" was overstated.
+    table.extend(
+        f"UNIT_IDS lists {uid} {declared.count(uid)} times — the plan loop filters this "
+        f"list rather than re-deriving one, so a repeated id is announced and printed twice"
+        for uid in sorted(set(declared))
+        if declared.count(uid) > 1
+    )
     by_stem = {unit.stem: unit for unit in units}
     requires: dict[str, list[str]] = {
         uid: [dep for dep in strings(by_stem[uid].data.get("requires")) if dep in expected]

@@ -317,8 +317,10 @@ below, because an assertion that cannot fail is the only kind that is never noti
 7. **Freshness** — `verified_on` parses, is not in the future, and is not stale.
 8. **Installer table** — `bootstrap-mac.sh`'s copy of this catalog (§5 above) matches it:
    (a) `UNIT_IDS` is exactly the units whose installer is that script with
-   `status: present`; (b) that list is a topological order of their `requires` graph,
-   because the script's call order *is* that list, filtered; (c) each `REQUIRES_<ID>`
+   `status: present`, **listed once each** — the comparison behind it is over sets, so a
+   repeat is called out on its own; (b) that list is a topological order of their
+   `requires` graph, because the script's call order *is* that list, filtered; (c) each
+   `REQUIRES_<ID>`
    equals the manifest's `requires` **intersected with `UNIT_IDS`**, so `base-goose`
    dropping `base-secrets` (which has `installer: null`) is asserted rather than assumed;
    (d) each `OWNS_<ID>` equals the manifest's `brew_formula` / `brew_cask` / `home_path`
@@ -335,6 +337,15 @@ It is skipped when (a)–(d) already failed — running `--only` against a table
 match the manifests would restate that divergence in a message about the dispatch, which
 is not where the fault is. Negative control: `data-lint.yml`, "a case arm that ignores its
 REQUIRES_* must fail".
+
+8(a)'s "listed once each" is the one divergence neither the set comparisons nor 8(f) could
+see. Doubling `coding-pack` in `UNIT_IDS` makes the default `--dry-run` announce "6 units",
+list it twice and repeat its whole 13-line `would install` block — and 8(f) compares
+`set(plan)` to the closure and derives the expected `owns` list by walking the plan it was
+handed, so the duplication cancels on both sides. Measured before the check existed:
+`check-units.sh` at "8 passed, 0 failed" in *both* modes against that 46-line dry run.
+`test-base-install.sh`'s H1 golden did catch it, but that is a different workflow, so "P8
+fails on any divergence" was true only of the divergences P8 was looking for.
 
 8(e) is the totality gate. The installer enumerates skills per unit by name rather than
 globbing `config/skills/`, precisely so `--without opencode` cannot quietly install a
