@@ -174,19 +174,23 @@ blockers:
     detail: "check-code-agents.sh --probe covers the three properties B1 and B5
       name - /share refused, external_directory denied, and another chat out of
       reach. That last one runs THREE vectors, each with its own verdict: the
-      filesystem (B's host path, traversal out of A's mount, and a bounded
-      find(1) over A's whole filesystem, which subsumes the other two - one
-      vector tried three ways, not three vectors), chat B's published port on
-      the host, and the manager's own /chat/<id>/<path> proxy. All of it reads
-      the RUNNING container rather than the template in this repo, so all of it
-      needs podman and a live gateway; CI drives the same functions in
-      scripts/verify/code-agent-probes.sh against fixtures
+      filesystem (B's host path, traversal out of A's mount, and a find(1) over
+      A's filesystem to a stated depth - CA_SCAN_DEPTH, 12, deep enough for
+      rootless podman's own .../storage/overlay/<id>/diff/ tree - which
+      subsumes the other two WITHIN THAT BOUND, so the verdict prints the
+      bound: one vector tried three ways, not three vectors), chat B's
+      published port on the host, and the manager's own /chat/<id>/<path>
+      proxy. All of it reads the RUNNING container rather than the template in
+      this repo, so all of it needs podman and a live gateway; CI drives the
+      same functions in scripts/verify/code-agent-probes.sh against fixtures
       (test-verify-checks.sh section 5), which proves the probes FIRE and
-      proves nothing about isolation. Two arms can only report a SKIP off a
-      brain, and will report one ON a brain that cannot make the connection:
-      the published-port arm needs A to reach its OWN published port over a
-      host address first, and the proxy arm needs the gateway to answer inside
-      A's netns at all. The external_directory arm is weaker than the rest by
+      proves nothing about isolation. Every arm can only report a SKIP off a
+      brain, and will report one ON a brain whose instrument does not work:
+      the filesystem arm needs its own scan to hand back A's OWN marker, the
+      published-port arm needs A to reach its OWN published port over a host
+      address first, and the proxy arm needs the gateway to answer inside A's
+      netns at all - and, where the gateway answers 401, needs A's own server
+      to both take A's token and refuse a deliberately wrong one. The external_directory arm is weaker than the rest by
       construction: it reads the policy the server resolved, not a denied tool
       call, so it says the policy is loaded and not that it is enforced."
   - id: the-gateway-proxy-has-no-per-chat-authorization
