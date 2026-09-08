@@ -14,7 +14,14 @@
 # config/units/ -- config/units/base-goose.yaml's `installer.function`, for
 # instance, is checked against this file by scripts/verify/check-units.sh, so a
 # renamed function or an uncalled one is a failing gate rather than a comment
-# that went stale. They all run today; choosing between them is the next change.
+# that went stale.
+#
+# WHICH of the five run is chosen by --with/--without/--only, resolved ONCE in
+# the prelude into $SELECTED; --dry-run prints that resolution and exits without
+# touching anything. The unit table those flags are resolved against (UNIT_IDS,
+# REQUIRES_*, OWNS_*) is checked against the manifests by units_lint.py's P8, so
+# it is a copy of config/units/ that cannot silently diverge from it -- see the
+# comment above the table for why it is a copy at all.
 #
 # PAI_EXEC — TESTING/DEV ONLY, never set this on a real Mac. When set, it must
 # name an executable under <this repo>/scripts/verify/ (enforced below, exit 2),
@@ -30,22 +37,68 @@
 # only implementation; scripts/verify/test-base-install.sh drives it.
 set -euo pipefail
 
+# The unit ids in this heredoc are KEBAB-CASE (base-goose), never the function
+# name (unit_base_goose). units_lint.py's P3 counts a unit's call sites with a
+# lexical `^unit_base_goose$` over the whole file, heredocs included, so a
+# column-0 function name in here would read as a second call and fail the gate
+# that checks the manifests against this script.
 usage() {
   cat <<'EOF'
-Usage: bootstrap-mac.sh [--help]
+Usage: bootstrap-mac.sh [--with ID] [--without ID] [--only ID] [--dry-run] [--help]
 
 Installs the Mac toolchain for the personal-ai setup and copies the repo's
 config templates (no-clobber) into place. Run it from your clone of the repo;
 re-running is safe. Follow-ups it will point you at: keychain-secrets.sh,
 OpenCode /connect, and the scripts/verify/ checks.
+
+With no flags it installs all five units, which is what it has always done.
+
+  --with ID[,ID]     add ID (and whatever it requires) to the default set
+  --without ID[,ID]  drop ID, and anything left needing it, from the set
+  --only ID[,ID]     install exactly ID plus what ID requires, nothing else
+  --dry-run          print the resolved plan and exit; touches nothing at all,
+                     needs no Homebrew, and does not even ask what OS this is
+  -h, --help         this text
+
+The five units, in dependency order:
+
+  base-toolchain   uv, node, jq, the Tailscale cask
+  base-goose       the goose CLI + Desktop cask, the pin, ~/.config/goose
+  opencode         the OpenCode CLI and ~/.config/opencode/opencode.json
+  base-skills      the connect-service skill in ~/.agents/skills
+  coding-pack      the eleven ported skills, the OpenCode agents, AGENTS.md
+
+`--only coding-pack` therefore installs four units, because coding-pack needs
+opencode, which needs base-goose, which needs base-toolchain. Excluding a unit
+something else still needs is refused with exit 2 rather than half-installed.
 EOF
 }
 
-case "${1:-}" in
-  -h|--help) usage; exit 0 ;;
-  "") ;;
-  *) echo "bootstrap-mac.sh: unknown argument: $1" >&2; usage >&2; exit 2 ;;
-esac
+# --with/--without/--only accumulate raw, comma-or-repeat separated ids here and
+# are validated after the containment gate, next to the table they are checked
+# against. `${2//,/ }` is a bash 3.2 pattern substitution -- macOS ships bash
+# 3.2.57 and nothing newer is guaranteed, so no ${x^^}, no mapfile, no
+# `declare -A` anywhere in this file.
+DRY_RUN=0
+WITH_IDS=""
+WITHOUT_IDS=""
+ONLY_IDS=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --with)
+      [ "$#" -ge 2 ] || { echo "bootstrap-mac.sh: --with needs a unit id" >&2; usage >&2; exit 2; }
+      WITH_IDS="$WITH_IDS ${2//,/ }"; shift 2 ;;
+    --without)
+      [ "$#" -ge 2 ] || { echo "bootstrap-mac.sh: --without needs a unit id" >&2; usage >&2; exit 2; }
+      WITHOUT_IDS="$WITHOUT_IDS ${2//,/ }"; shift 2 ;;
+    --only)
+      [ "$#" -ge 2 ] || { echo "bootstrap-mac.sh: --only needs a unit id" >&2; usage >&2; exit 2; }
+      ONLY_IDS="$ONLY_IDS ${2//,/ }"; shift 2 ;;
+    *) echo "bootstrap-mac.sh: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
 
 # Hoisted ABOVE the platform guard, because the guard now consults the seam and
 # the containment check below needs REPO_ROOT. cd/dirname/pwd/BASH_SOURCE are
@@ -94,6 +147,264 @@ if [ -n "${PAI_EXEC:-}" ]; then
     echo "bootstrap-mac.sh: PAI_EXEC is set but not executable: $PAI_EXEC" >&2
     exit 2
   }
+fi
+
+# ------------------------------------------------------------- The unit table --
+# The five units, what each requires, and what each puts on the machine. This is
+# a COPY of config/units/*.yaml and it is a copy ON PURPOSE.
+#
+# The selection has to be resolved BEFORE anything is installed, and a YAML read
+# in the install path would be fail-CLOSED where the rest of this script is
+# fail-tolerant. unit_base_goose()'s pins ladder is the evidence sitting in this
+# same file: PyYAML is not guaranteed on a fresh Mac, and its fallback is `uv`
+# -- which THIS SCRIPT installs, in the first unit. `--only coding-pack` could
+# therefore need a parser that does not exist yet, and a PyYAML-less Mac would
+# go from "installs everything" to "installs nothing" with no test able to see
+# it: the harness dies without PyYAML long before it reaches that path.
+#
+# The copy is kept honest from the other side instead. units_lint.py's P8 fails
+# when UNIT_IDS, any REQUIRES_*, or any OWNS_* stops matching config/units/, and
+# it runs in scripts/verify/ where the manifests ARE the source of truth. That
+# is also what makes the --dry-run plan below a claim about the catalog rather
+# than a restatement of this script.
+#
+# DIRECTLY NAMED GLOBALS READ THROUGH A `case`, never `${!ref}` indirection:
+# an indirectly-read global is SC2034 (unused) to ShellCheck 0.11.0, and a
+# warning is a red gate here. (This paragraph deliberately does not start a line
+# with the linter's own name -- that spelling parses as a directive.)
+UNIT_IDS="base-toolchain base-goose opencode base-skills coding-pack"
+
+# `requires`, restricted to the five units this script installs. base-goose and
+# opencode also require base-secrets in the manifests; base-secrets has
+# `installer: null` (the Keychain is a human's job), so it is elided rather than
+# ordered, and P8(c) asserts exactly that elision instead of assuming it.
+REQUIRES_BASE_TOOLCHAIN=""
+REQUIRES_BASE_GOOSE="base-toolchain"
+REQUIRES_OPENCODE="base-goose"
+REQUIRES_BASE_SKILLS="base-goose"
+REQUIRES_CODING_PACK="opencode"
+
+# `owns`, at the manifests' granularity: brew: / cask: / home: prefixes over the
+# manifest's brew_formula, brew_cask and home_path targets, in manifest order.
+# The `~` is LITERAL -- these strings are printed and compared, never used as a
+# path, so nothing here is ever tilde-expanded or globbed.
+OWNS_BASE_TOOLCHAIN="brew:uv brew:node brew:jq cask:tailscale"
+OWNS_BASE_GOOSE="brew:block-goose-cli cask:block-goose
+home:~/.config/goose/config.yaml home:~/.config/goose/custom_providers
+home:~/.config/goose/.goosehints"
+OWNS_OPENCODE="brew:anomalyco/tap/opencode home:~/.config/opencode/opencode.json"
+OWNS_BASE_SKILLS="home:~/.agents/skills/connect-service"
+OWNS_CODING_PACK="home:~/.agents/skills/ci-lint-test home:~/.agents/skills/clean-plan
+home:~/.agents/skills/code-review home:~/.agents/skills/deep-research
+home:~/.agents/skills/looping-code-review home:~/.agents/skills/looping-plan-review
+home:~/.agents/skills/mr-review home:~/.agents/skills/plan-review
+home:~/.agents/skills/pre-mr-checklist home:~/.agents/skills/refactor-planner
+home:~/.agents/skills/ship home:~/.config/opencode/agents
+home:~/.config/opencode/AGENTS.md"
+
+requires_of() {
+  # requires_of <id> -- the ids this unit needs, restricted to UNIT_IDS.
+  case "$1" in
+    base-toolchain) printf '%s' "$REQUIRES_BASE_TOOLCHAIN" ;;
+    base-goose)     printf '%s' "$REQUIRES_BASE_GOOSE" ;;
+    opencode)       printf '%s' "$REQUIRES_OPENCODE" ;;
+    base-skills)    printf '%s' "$REQUIRES_BASE_SKILLS" ;;
+    coding-pack)    printf '%s' "$REQUIRES_CODING_PACK" ;;
+  esac
+}
+
+owns_of() {
+  # owns_of <id> -- the brew:/cask:/home: items this unit puts on the machine.
+  case "$1" in
+    base-toolchain) printf '%s' "$OWNS_BASE_TOOLCHAIN" ;;
+    base-goose)     printf '%s' "$OWNS_BASE_GOOSE" ;;
+    opencode)       printf '%s' "$OWNS_OPENCODE" ;;
+    base-skills)    printf '%s' "$OWNS_BASE_SKILLS" ;;
+    coding-pack)    printf '%s' "$OWNS_CODING_PACK" ;;
+  esac
+}
+
+in_set() {
+  # in_set <id> <space-separated set> -- membership, with no subprocess.
+  case " $2 " in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
+set_minus() {
+  # set_minus <id> <set> -- <set> with every occurrence of <id> removed.
+  local out word
+  out=""
+  for word in $2; do
+    [ "$word" != "$1" ] || continue
+    out="$out $word"
+  done
+  printf '%s' "${out# }"
+}
+
+want() {
+  # want <id> -- the gate every unit body opens with, as `want <id> || return 0`.
+  # It ANNOUNCES the skip: a selective run has to say what it did not do, or the
+  # next person debugging a missing skill has no thread to pull. On a no-flag run
+  # everything is selected, so this never prints and stdout is what it was.
+  case " $SELECTED " in *" $1 "*) return 0 ;; esac
+  echo "==> skipping $1"
+  return 1
+}
+
+# ------------------------------------------------------- Resolve the selection --
+# Everything below is pure computation over the table: no seam call, no brew, no
+# uname, no write. That is what lets --dry-run answer before the platform guard
+# and before the Homebrew guard, and it is the single decision that keeps every
+# mutating helper in this file free of a DRY_RUN branch. `brew`, `mkdir`, `cp`,
+# `mv` and the `rm -rf` sweep are never reached under --dry-run because the
+# script has already exited; there is no second seam to keep honest.
+for want_id in $ONLY_IDS $WITH_IDS $WITHOUT_IDS; do
+  in_set "$want_id" "$UNIT_IDS" || {
+    echo "bootstrap-mac.sh: unknown unit id: $want_id" >&2
+    echo "known units: $UNIT_IDS" >&2
+    exit 2
+  }
+done
+
+# Named and refused in the same command line is a contradiction, not a
+# precedence puzzle. Refuse it rather than picking a winner.
+for want_id in $ONLY_IDS $WITH_IDS; do
+  if in_set "$want_id" "$WITHOUT_IDS"; then
+    echo "bootstrap-mac.sh: $want_id is both requested and excluded — pick one" >&2
+    exit 2
+  fi
+done
+
+# REQUESTED is what a human named. It is what makes the cascade below safe: a
+# unit asked for by name is never dropped quietly to satisfy an exclusion.
+REQUESTED="$ONLY_IDS $WITH_IDS"
+ONLY_COUNT=0
+for want_id in $ONLY_IDS; do
+  ONLY_COUNT=$((ONLY_COUNT + 1))
+done
+
+# --only replaces the default set; --with adds to it. That is the whole
+# difference, and it is why `--only coding-pack` leaves base-skills out while
+# `--with coding-pack` does not.
+if [ "$ONLY_COUNT" -gt 0 ]; then
+  SELECTED="$ONLY_IDS $WITH_IDS"
+else
+  SELECTED="$UNIT_IDS $WITH_IDS"
+fi
+
+# Transitive requires. The passes are BOUNDED by more than the table's depth:
+# P8(b) asserts UNIT_IDS is a topological order of an acyclic manifest graph, so
+# this reaches its fixed point in at most four passes -- and if a future edit
+# ever introduces a cycle, a bounded loop degrades to a wrong answer that the
+# closure check below refuses, rather than to a hang.
+CLOSURE_PASS=0
+while [ "$CLOSURE_PASS" -lt 8 ]; do
+  CLOSURE_ADDED=0
+  for want_id in $SELECTED; do
+    for dep_id in $(requires_of "$want_id"); do
+      if ! in_set "$dep_id" "$SELECTED"; then
+        SELECTED="$SELECTED $dep_id"
+        CLOSURE_ADDED=1
+      fi
+    done
+  done
+  if [ "$CLOSURE_ADDED" -eq 0 ]; then
+    break
+  fi
+  CLOSURE_PASS=$((CLOSURE_PASS + 1))
+done
+
+# THE CASCADE. Dropping a unit drops whatever is left needing it -- but only if
+# nobody named that dependent. `--without opencode` loses coding-pack and says
+# so; `--only coding-pack --without opencode` names coding-pack, so it survives
+# here and the closure check below refuses the whole command line instead.
+DROPPED=""
+CASCADE_PASS=0
+while [ "$CASCADE_PASS" -lt 8 ]; do
+  CASCADE_DROPPED=0
+  for want_id in $WITHOUT_IDS; do
+    SELECTED="$(set_minus "$want_id" "$SELECTED")"
+  done
+  for want_id in $SELECTED; do
+    if in_set "$want_id" "$REQUESTED"; then
+      continue
+    fi
+    for dep_id in $(requires_of "$want_id"); do
+      if in_set "$dep_id" "$SELECTED"; then
+        continue
+      fi
+      if in_set "$want_id" "$SELECTED"; then
+        SELECTED="$(set_minus "$want_id" "$SELECTED")"
+        DROPPED="$DROPPED $want_id"
+        CASCADE_DROPPED=1
+      fi
+    done
+  done
+  if [ "$CASCADE_DROPPED" -eq 0 ]; then
+    break
+  fi
+  CASCADE_PASS=$((CASCADE_PASS + 1))
+done
+
+if [ -n "$DROPPED" ]; then
+  echo "==> --without$WITHOUT_IDS also drops:$DROPPED"
+fi
+
+# THE CLOSURE CHECK, and it is reachable rather than defensive: it is where
+# `--only coding-pack --without opencode` lands. A unit whose requirement the
+# flags removed is refused with exit 2 naming both, because the alternative is
+# unit_coding_pack() installing OpenCode agents onto a machine with no OpenCode
+# -- a broken install that exits 0.
+for want_id in $SELECTED; do
+  for dep_id in $(requires_of "$want_id"); do
+    if ! in_set "$dep_id" "$SELECTED"; then
+      echo "bootstrap-mac.sh: $want_id requires $dep_id, and the flags excluded $dep_id." >&2
+      echo "Either stop excluding $dep_id, or exclude $want_id as well." >&2
+      exit 2
+    fi
+  done
+done
+
+# Order is the static UNIT_IDS order filtered, NEVER the order the flags arrived
+# in: UNIT_IDS is a topological order of the manifest graph, so a unit can never
+# run before something it requires. This also dedupes `--with base-goose` when
+# base-goose was already in.
+PLAN=""
+for want_id in $UNIT_IDS; do
+  if in_set "$want_id" "$SELECTED"; then
+    PLAN="$PLAN $want_id"
+  fi
+done
+SELECTED="${PLAN# }"
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  PLAN_COUNT=0
+  for want_id in $SELECTED; do
+    PLAN_COUNT=$((PLAN_COUNT + 1))
+  done
+  echo "==> plan ($PLAN_COUNT units, in dependency order):"
+  # INDENTED, and kebab-cased, both deliberately: units_lint.py's P3 counts call
+  # sites with a lexical `^unit_base_goose$` over this whole file, heredocs and
+  # format strings included, so a column-0 function name printed here would
+  # register as a second call and fail the manifest gate.
+  for want_id in $SELECTED; do
+    printf '  %s\n' "$want_id"
+  done
+  echo "==> would install:"
+  # At the manifests' granularity, which is why ~/.config/goose/custom_providers
+  # and ~/.config/opencode/agents appear as directories rather than as the files
+  # inside them: it makes the plan mechanically checkable against the catalog by
+  # P8(d) instead of against this script's cp loops.
+  for want_id in $SELECTED; do
+    for own_item in $(owns_of "$want_id"); do
+      case "$own_item" in
+        brew:*) printf '  brew formula  %s\n' "${own_item#brew:}" ;;
+        cask:*) printf '  brew cask     %s\n' "${own_item#cask:}" ;;
+        home:*) printf '  file          %s\n' "${own_item#home:}" ;;
+      esac
+    done
+  done
+  exit 0
 fi
 
 if [ "$(pai_exec uname -s)" != "Darwin" ]; then
@@ -194,12 +505,15 @@ install_skill() {
 
 # ------------------------------------------------- Per-unit package lists ---
 # One list per unit, and they are GLOBALS rather than `local`s inside the unit
-# functions below for two concrete reasons: install-test.yml's negative test
-# mutates `^FORMULAE_BASE_TOOLCHAIN=` to prove the brew golden can fail, and the
-# `--dry-run` planner (#37's flag surface) has to read them BEFORE any unit body
-# runs. A list that moved inside a function would still be sed-able and the
-# negative test would report the golden as inert when the only inert thing is
-# the sed.
+# functions below because install-test.yml's negative test mutates
+# `^FORMULAE_BASE_TOOLCHAIN=` to prove the brew golden can fail. A list that
+# moved inside a function would still be sed-able and the negative test would
+# report the golden as inert when the only inert thing is the sed.
+#
+# The --dry-run planner does NOT read these: it prints OWNS_* from the unit
+# table, which units_lint.py's P8(d) checks against the manifests. These lists
+# are the argument vectors brew is actually handed, and the two agreeing is
+# assertion A1's job, not a variable's.
 #
 # THE EMISSION ORDER IS NOW THE UNIT ORDER, not this declaration order: each
 # list is consumed by exactly one unit_*() below, and the units run in
@@ -215,21 +529,23 @@ FORMULAE_OPENCODE="anomalyco/tap/opencode"
 # skill silently, would make `--without opencode` quietly install it anyway, and
 # would make coding-pack.yaml's `owns` list decorative instead of authoritative.
 # This list is the manifest's list: config/units/coding-pack.yaml `owns` the
-# same eleven names as repo_file entries, and units_lint's totality check
-# (#37's flag surface) is what will fail a twelfth that neither unit claims.
+# same eleven names as repo_file entries, and units_lint.py's P8(e) is the
+# totality check that FAILS a twelfth directory neither unit claims -- the price
+# of enumerating instead of globbing, paid where the manifests can see it.
 SKILLS_CODING_PACK="ci-lint-test clean-plan code-review deep-research
 looping-code-review looping-plan-review mr-review plan-review
 pre-mr-checklist refactor-planner ship"
 
 # ------------------------------------------------------------- The units ----
 # Below this line the install is five functions, one per config/units/*.yaml
-# manifest that names this script. They run unconditionally today: the
-# selection flags (--with/--without/--only/--dry-run) are the next change, and
-# splitting "what the pieces are" from "which pieces you get" keeps the carve
-# provable by test-base-install.sh's A14b -- the pre-carve installer and this
-# one write the same $HOME.
+# manifest that names this script. All five are still CALLED unconditionally;
+# what changed with the flag surface is that each one opens with `want <id> ||
+# return 0`, so the selection decides inside the body and never at the call
+# site. With no flags every unit is selected, want() never prints, and the
+# installed $HOME is byte-for-byte the pre-carve one -- which is not an argument
+# here, it is test-base-install.sh's A14b.
 #
-# FOUR RULES FOR THESE BODIES. Every one of them is a measured failure mode of
+# FIVE RULES FOR THESE BODIES. Every one of them is a measured failure mode of
 # `set -euo pipefail`, not a style preference:
 #
 #   1. EVERY BODY ENDS IN `return 0`. A function whose last executed command is
@@ -243,14 +559,20 @@ pre-mr-checklist refactor-planner ship"
 #      middle of a unit would stop aborting and the bootstrap would exit 0
 #      having installed half of it. units_lint.py's P3 accepts the `if` form,
 #      which is exactly why the rule is written here instead of left to it.
-#   3. NO `local X="$(cmd)"` (SC2155): `local` succeeds whatever the command
+#   3. THE GATE IS THE FIRST EXECUTABLE LINE OF THE BODY, spelled
+#      `want <kebab-id> || return 0`. This is rule 2's other half: gating at the
+#      call site is the ONE place a reviewer would naturally reach for `if`, and
+#      that is precisely the shape that silently disables errexit. A unit skipped
+#      this way returns 0, so the bare call after it is still safe.
+#   4. NO `local X="$(cmd)"` (SC2155): `local` succeeds whatever the command
 #      substitution did, so the failure is swallowed. Declare, then assign.
-#   4. THE SKILLS FILTER IS `|| continue`, never `[ ... ] && install_skill ...`
+#   5. THE SKILLS FILTER IS `|| continue`, never `[ ... ] && install_skill ...`
 #      -- that is rule 1 again. `ship` sorts last, so on the final iteration the
 #      `&&` list is false, the `for` inherits that status, and the unit returns
 #      false after having done all of its work.
 
 unit_base_toolchain() {
+  want base-toolchain || return 0
   brew_formula "$FORMULAE_BASE_TOOLCHAIN"
   brew_cask "tailscale"
 
@@ -262,6 +584,7 @@ unit_base_toolchain() {
 }
 
 unit_base_goose() {
+  want base-goose || return 0
   # pin_py is an array (`read -r -a`) because it is a COMMAND, not a string:
   # `uv run --quiet --with pyyaml python` is five words and "${pin_py[@]}"
   # keeps them five words without a re-split of the whole command line.
@@ -334,6 +657,7 @@ unit_base_goose() {
 }
 
 unit_opencode() {
+  want opencode || return 0
   brew_formula "$FORMULAE_OPENCODE"
 
   # ~/.config/opencode is created HERE and nowhere else, which is what makes a
@@ -346,6 +670,7 @@ unit_opencode() {
 }
 
 unit_base_skills() {
+  want base-skills || return 0
   # One skills target serves both tools: ~/.agents/skills/ is read by OpenCode
   # ("agent-compatible" global dir) AND by goose >= 1.16's built-in skills
   # support. This unit owns exactly one of the shipped skills, connect-service;
@@ -374,6 +699,7 @@ unit_base_skills() {
 }
 
 unit_coding_pack() {
+  want coding-pack || return 0
   # Ported from PhillipChaffee/.cursor (docs/cursor-port.md): eleven skills, the
   # OpenCode subagents, and the global AGENTS.md. The agents and AGENTS.md are
   # OpenCode-only. Same no-clobber rule throughout: a skill directory or agent
@@ -418,6 +744,13 @@ unit_base_skills
 unit_coding_pack
 
 # -------------------------------------------------------------- Next steps --
+# Split into three heredocs so the OpenCode step can be omitted when opencode
+# was not installed -- telling someone to run `/connect` in a CLI this very run
+# deliberately did not install is how a selective install teaches people to
+# distrust the output. The step NUMBER follows, which is why the tail is a
+# separate heredoc rather than a conditional line inside one. With opencode
+# selected (every no-flag run) the three concatenate to exactly the text that
+# was here before.
 cat <<EOF
 
 ==> Bootstrap done. Next steps (docs/setup/20-mac-setup.md):
@@ -425,12 +758,22 @@ cat <<EOF
   1. Store your API keys in the macOS Keychain:
          $SCRIPT_DIR/keychain-secrets.sh
      then open a NEW terminal so the exported vars are live.
+EOF
+
+NEXT_STEP=2
+if in_set opencode "$SELECTED"; then
+  cat <<'EOF'
 
   2. Wire OpenCode to Zen: run 'opencode' in any project, type /connect,
      pick OpenCode Zen, paste your key. Set the daily model per
      docs/model-routing.md (kimi-k2.6).
+EOF
+  NEXT_STEP=3
+fi
 
-  3. Verify before going further:
+cat <<EOF
+
+  $NEXT_STEP. Verify before going further:
          $REPO_ROOT/scripts/verify/check-providers.sh   # raw HTTPS per endpoint
          $REPO_ROOT/scripts/verify/check-goose.sh       # goose through all 3 providers
 EOF

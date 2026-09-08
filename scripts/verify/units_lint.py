@@ -15,7 +15,7 @@ topological sort and six cross-file joins, which is Python's job; the verdict
 counting and the exit-code convention are lib.sh's. check-units.sh is that seam.
 It also means ruff and mypy --strict read this file, which a heredoc forecloses.
 
-THE SEVEN PROPERTIES, and what each catches that the others do not:
+THE EIGHT PROPERTIES, and what each catches that the others do not:
 
   P1 schema & identity   `id` == filename stem, manifest_version == 1, all 17
                          keys present, every enum/type/regex — and an unknown
@@ -48,6 +48,15 @@ THE SEVEN PROPERTIES, and what each catches that the others do not:
                          cannot read connector #2's credentials.
   P7 freshness           `verified_on` parses, is never in the future, and is
                          not stale.
+  P8 installer table     bootstrap-mac.sh resolves --with/--without/--only
+                         against a COPY of this catalog: UNIT_IDS, REQUIRES_*
+                         and OWNS_* are bash globals, because the selection has
+                         to be computed before `uv` (and therefore PyYAML)
+                         exists on a fresh Mac. This is the check that stops the
+                         copy from drifting — and it is the reason the copy is
+                         allowed to exist. It also closes the catalog over
+                         config/skills/: a skill directory no unit claims is a
+                         skill the installer will never install.
 
 THE ADVISORY SPLIT. P5-reverse, P6-reverse and P7's age arm are NOTE under
 --offline and FAIL under --strict. Every manifest carries the same
@@ -86,10 +95,15 @@ UNITS_DIR: Final = REPO_ROOT / "config" / "units"
 VERIFY_DIR: Final = REPO_ROOT / "scripts" / "verify"
 SECRETS_EXAMPLE: Final = REPO_ROOT / "config" / "env" / "secrets.env.example"
 KEYCHAIN_SCRIPT: Final = REPO_ROOT / "scripts" / "mac" / "keychain-secrets.sh"
+SKILLS_DIR: Final = REPO_ROOT / "config" / "skills"
+BOOTSTRAP_MAC: Final = REPO_ROOT / "scripts" / "mac" / "bootstrap-mac.sh"
 
 MANIFEST_VERSION: Final = 1
 SUMMARY_MAX: Final = 120
 STALE_DAYS: Final = 180
+# `config/skills/<name>` -- exactly three parts. A deeper path is a file INSIDE
+# a skill, which is that skill's business rather than a claim on the directory.
+SKILL_PATH_PARTS: Final = 3
 
 # All 17 keys are required. A key with nothing to say is present and explicitly
 # null or []; omitting it is a FAIL, and so is adding an eighteenth.
@@ -136,10 +150,21 @@ INSTALLER_STATUSES: Final[frozenset[str]] = frozenset({"planned", "present"})
 
 # The only two scripts that install anything. Naming a third would mean the
 # catalog had drifted from the tree without anyone saying so.
+MAC_INSTALLER: Final = "scripts/mac/bootstrap-mac.sh"
 INSTALLER_SCRIPTS: Final[frozenset[str]] = frozenset({
-    "scripts/mac/bootstrap-mac.sh",
+    MAC_INSTALLER,
     "scripts/vps/deploy-vps.sh",
 })
+
+# P8's mapping between an `owns` kind and the prefix bootstrap-mac.sh's OWNS_*
+# table uses for it. The three kinds here are exactly the ones the --dry-run
+# plan can print; repo_file and manual describe the repo and a human, neither of
+# which is something the installer puts on the machine.
+OWN_KIND_PREFIX: Final[dict[str, str]] = {
+    "brew_formula": "brew:",
+    "brew_cask": "cask:",
+    "home_path": "home:",
+}
 
 # check-*.sh files that no unit can legitimately claim, with the reason. These
 # are repo/CI gates rather than unit checks, so demanding an owner for them
@@ -815,6 +840,154 @@ def prop_freshness(units: Sequence[Manifest], *, strict: bool) -> Findings:
     return result
 
 
+# ------------------------------------------------------- P8 installer table --
+
+
+def shell_words(text: str, name: str) -> list[str] | None:
+    """Split the value of a `NAME="..."` bash assignment, or None if absent.
+
+    Anchored at column 0 with MULTILINE so an occurrence inside a comment or a
+    heredoc body cannot answer for the declaration. The value may span lines --
+    OWNS_CODING_PACK does -- and a negated character class matches newlines, so
+    no DOTALL is needed and no `"` can be swallowed.
+    """
+    match = re.search(rf'^{re.escape(name)}="([^"]*)"', text, re.MULTILINE)
+    return None if match is None else match.group(1).split()
+
+
+def shell_suffix(uid: str) -> str:
+    """`base-toolchain` -> `BASE_TOOLCHAIN`, the REQUIRES_/OWNS_ variable half."""
+    return uid.upper().replace("-", "_")
+
+
+def mac_installer_units(units: Sequence[Manifest]) -> list[str]:
+    """List the unit ids bootstrap-mac.sh claims to install TODAY, in catalog order."""
+    out: list[str] = []
+    for unit in units:
+        block = unit.data.get("installer")
+        if not isinstance(block, dict):
+            continue
+        if text_field(block, "script") != MAC_INSTALLER:
+            continue
+        if text_field(block, "status") == "present":
+            out.append(unit.stem)
+    return out
+
+
+def owned_items(unit: Manifest) -> list[str]:
+    """Spell this unit's `owns` entries the way the installer table spells them."""
+    out: list[str] = []
+    for entry in unit.list_of("owns"):
+        prefix = OWN_KIND_PREFIX.get(text_field(entry, "kind"))
+        target = text_field(entry, "target")
+        if prefix and target:
+            out.append(prefix + target)
+    return out
+
+
+def compare_sets(where: str, declared: Iterable[str], expected: Iterable[str]) -> list[str]:
+    """Report what the bash table has that the manifests do not, and vice versa."""
+    have = set(declared)
+    want = set(expected)
+    if have == want:
+        return []
+    missing = ", ".join(sorted(want - have)) or "-"
+    extra = ", ".join(sorted(have - want)) or "-"
+    return [f"{where} does not match the manifests (missing: {missing}; extra: {extra})"]
+
+
+def check_table_order(ids: Sequence[str], requires: dict[str, list[str]]) -> list[str]:
+    """P8(b): UNIT_IDS must be a topological order of the graph it spans.
+
+    bootstrap-mac.sh calls its five units in UNIT_IDS order and filters that
+    order rather than re-deriving one, so a unit listed before something it
+    requires would install against a dependency that has not run yet.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for uid in ids:
+        out.extend(
+            f"UNIT_IDS lists {uid} before {dep}, which {uid} requires — "
+            f"the call order is this list, filtered, so {dep} would never have run"
+            for dep in requires.get(uid, [])
+            if dep in ids and dep not in seen
+        )
+        seen.add(uid)
+    return out
+
+
+def check_skill_claims(units: Sequence[Manifest]) -> list[str]:
+    """P8(e): every config/skills/<name>/ is claimed by exactly one unit.
+
+    THE TOTALITY GATE. bootstrap-mac.sh installs skills from two hardcoded
+    per-unit lists rather than from a glob, precisely so `--without opencode`
+    cannot quietly install a coding-pack skill. The cost of that choice is that
+    a thirteenth skill directory would be installed by nobody and noticed by
+    nothing -- which is what this closes, and why it is a FAIL rather than the
+    NOTE that `--offline` would turn a soft finding into.
+    """
+    if not SKILLS_DIR.is_dir():
+        return [f"config/skills/ does not exist at {SKILLS_DIR}"]
+    claims: dict[str, list[str]] = {}
+    for unit in units:
+        for entry in unit.list_of("owns"):
+            if text_field(entry, "kind") != "repo_file":
+                continue
+            parts = Path(text_field(entry, "target")).parts
+            if parts[:2] == ("config", "skills") and len(parts) == SKILL_PATH_PARTS:
+                claims.setdefault(parts[2], []).append(unit.stem)
+    out: list[str] = []
+    for path in sorted(SKILLS_DIR.iterdir()):
+        if not path.is_dir():
+            continue
+        owners = claims.get(path.name, [])
+        if not owners:
+            out.append(f"config/skills/{path.name}/ is claimed by no unit — nothing installs it")
+        elif len(owners) > 1:
+            out.append(f"config/skills/{path.name}/ is claimed by {len(owners)} units: "
+                       f"{', '.join(sorted(owners))}")
+    return out
+
+
+def prop_installer_table(units: Sequence[Manifest]) -> Findings:
+    result = Findings()
+    result.hard.extend(check_skill_claims(units))
+    if not BOOTSTRAP_MAC.is_file():
+        result.hard.append(f"{MAC_INSTALLER} is missing — its unit table cannot be checked")
+        return result
+    text = BOOTSTRAP_MAC.read_text(encoding="utf-8")
+    declared = shell_words(text, "UNIT_IDS")
+    if declared is None:
+        result.hard.append(f'{MAC_INSTALLER} declares no UNIT_IDS="..." — the flag surface '
+                           f'resolves --with/--without/--only against that table')
+        return result
+    expected = mac_installer_units(units)
+    result.hard.extend(compare_sets("UNIT_IDS", declared, expected))
+    by_stem = {unit.stem: unit for unit in units}
+    requires: dict[str, list[str]] = {
+        uid: [dep for dep in strings(by_stem[uid].data.get("requires")) if dep in expected]
+        for uid in expected
+    }
+    result.hard.extend(check_table_order(declared, requires))
+    for uid in expected:
+        if uid not in declared:
+            continue  # compare_sets already named it.
+        suffix = shell_suffix(uid)
+        # `requires` is already intersected with the installer's own ids:
+        # base-goose requires base-secrets, which has installer: null, so the
+        # bash table elides it. That elision is asserted here, not assumed.
+        for name, want in (
+            (f"REQUIRES_{suffix}", requires[uid]),
+            (f"OWNS_{suffix}", owned_items(by_stem[uid])),
+        ):
+            words = shell_words(text, name)
+            if words is None:
+                result.hard.append(f'{MAC_INSTALLER} declares no {name}="..." for unit {uid}')
+                continue
+            result.hard.extend(compare_sets(name, words, want))
+    return result
+
+
 # -------------------------------------------------------------------- driver --
 
 PROPERTY_LABELS: Final[tuple[str, ...]] = (
@@ -825,6 +998,7 @@ PROPERTY_LABELS: Final[tuple[str, ...]] = (
     "P5 references: verify scripts and runbooks resolve, and absences are recorded",
     "P6 secrets: every key matches the roster its `store` names",
     "P7 freshness: every verified_on parses and is not in the future",
+    "P8 installer table: bootstrap-mac.sh's unit table matches the manifests",
 )
 
 
@@ -843,6 +1017,7 @@ def run_checks(*, strict: bool) -> list[str]:
         prop_references(units, strict=strict),
         prop_secrets(units, strict=strict),
         prop_freshness(units, strict=strict),
+        prop_installer_table(units),
     )
     for label, found in zip(PROPERTY_LABELS, results, strict=True):
         hard, soft = found.resolve(strict=strict)

@@ -90,14 +90,6 @@ blockers:
       install shadowing brew's), not a working-install check, and it is
       skipped entirely unless doctor is inspecting the real $HOME. A Mac where
       /connect was never run passes everything until a human types `opencode`."
-  - id: no-switch-for-default-on-yet
-    severity: note
-    detail: "The shared FORMULAE string is gone: this unit's formula comes from
-      FORMULAE_OPENCODE and is installed by unit_opencode(), which also owns
-      the only `mkdir ~/.config/opencode` in the script. What is still missing
-      is the SELECTION -- the five units are called unconditionally, so
-      `default_on` describes intent until bootstrap-mac.sh grows
-      --with/--without/--only."
   - id: together-provider-ships-two-model-ids
     severity: note
     detail: "opencode.json:14 and :17 hardcode openai/gpt-oss-120b and

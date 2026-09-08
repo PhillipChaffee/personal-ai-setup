@@ -95,12 +95,10 @@ directory, in a throwaway $HOME, with no network and fixture keys.
   --only goose       phase A + check-goose.sh against fake-provider.py
   --only providers   phase A + check-providers.sh, and the phase E default-
                      endpoint proof
-  --only select      the selective-install phases (--with/--without/--only and
-                     --dry-run on bootstrap-mac.sh). EMPTY TODAY, on purpose:
-                     the leg name is the contract the workflow steps and the
-                     later phases are written against, so it lands before there
-                     is anything to run rather than with it. Until then this is
-                     phase A and nothing else.
+  --only select      phase A plus F+G+H: the flag surface (unknown ids,
+                     contradictions, --only vs --with), --without opencode, and
+                     --dry-run. `--only goose` also runs G, because G5 asserts
+                     check-goose.sh against the opencode-less $HOME.
   (no flag)          all of it
 
 Needs python3 with PyYAML (bootstrap compares config/pins.yaml with it) and
@@ -305,6 +303,37 @@ run_bootstrap() {
   echo "$rc"
 }
 
+run_bootstrap_flags() {
+  # run_bootstrap_flags <tag> <home> [args...]; echoes rc. Combined stdout+stderr
+  # lands in $WORK/out/<tag>.log, the brew log in $WORK/brew-<tag>.log.
+  #
+  # A TAG-SCOPED BREW STATE, PREFIX AND $HOME, never the shared ones phases
+  # A/B/C use. Those persist on purpose (that persistence IS phase B), and a
+  # selective run sharing them would take the idempotent path and install
+  # nothing -- so every golden below would be measuring phase A's leftovers
+  # instead of this run's flags, and would pass whatever the flags did.
+  #
+  # `"$@"` and not `$ARGS`: a string of flags word-split by the shell is how a
+  # test starts passing vacuously (`--only coding-pack` arriving as one argument
+  # is an unknown-id exit 2 that looks exactly like the assertion succeeding).
+  local tag home rc=0
+  tag="$1"; home="$2"; shift 2
+  mkdir -p "$home" "$WORK/state-$tag" "$WORK/prefix-$tag"
+  : >"$WORK/brew-$tag.log"
+  : >"$WORK/deny-$tag.log"
+  HOME="$home" \
+  PATH="$BOOT_PATH" \
+  PAI_EXEC="$REPO_ROOT/scripts/verify/fake-exec.sh" \
+  PAI_FAKE_ROOT="$WORK" \
+  PAI_DENY_LOG="$WORK/deny-$tag.log" \
+  FAKE_BREW_LOG="$WORK/brew-$tag.log" \
+  FAKE_BREW_STATE="$WORK/state-$tag" \
+  FAKE_BREW_PREFIX="$WORK/prefix-$tag" \
+  FAKE_GOOSE_VERSION="$PINS_VERSION" \
+    "$REPO_ROOT/scripts/mac/bootstrap-mac.sh" "$@" >"$WORK/out/$tag.log" 2>&1 </dev/null || rc=$?
+  echo "$rc"
+}
+
 count_in() {
   # count_in <file> <extended-regex> -- grep -c exits 1 on zero matches, which
   # under set -e would abort the run at the one moment the count matters.
@@ -431,6 +460,21 @@ done
   evidence "$STATE/unhandled.log"
 } || ok "A8: fake-brew saw no unmodelled argv (unhandled.log absent or empty)"
 
+# A9 — THE DEFAULT IS STILL EVERYTHING. want() prints '==> skipping <id>' for
+# every unit the flags left out, so a no-flag run printing even one of those
+# lines means the selection surface changed what the plain install does. This
+# assertion lives in phase A, unconditionally, because every leg runs phase A
+# and the property it names ("no flags == the install this repo has always had")
+# is the entire safety argument for the flag surface. A14b proves the same thing
+# about the installed TREE; this is the cheap half that also runs on a shallow
+# clone, where A14b degrades to a SKIP.
+A9_SKIPS="$(count_in "$A_OUT" '^==> skipping ')"
+[ "$A9_SKIPS" -eq 0 ] &&
+  ok "A9: a no-flag run selected all five units (0 '==> skipping' lines)" || {
+  bad "A9: a no-flag run skipped $A9_SKIPS unit(s) — the default selection is no longer everything"
+  evidence "$A_OUT"
+}
+
 # ---- 4. phase B — the same install again ------------------------------------
 if leg brew || leg routing; then
   echo
@@ -519,7 +563,284 @@ if leg brew; then
   }
 fi
 
-# ---- 6. phase D — the checks the installer tells you to run -----------------
+# ---- 6. phase F — the flag surface ------------------------------------------
+# The refusals first, because a flag surface that installs the wrong thing on a
+# bad command line is worse than one that installs nothing.
+G_NOC_HOME=""
+if leg select; then
+  echo
+  echo "== phase F: --with / --without / --only, and the ways they are refused =="
+
+  # F1 — an unknown id must NAME the id. `sourdough` is not a substring of any
+  # real unit id, so a grep for it cannot pass off a generic usage dump as the
+  # specific complaint. Exit 2 alone would also be satisfied by the pre-existing
+  # "unknown argument" arm, which is why the message is asserted too.
+  F1_RC="$(run_bootstrap_flags f1 "$WORK/home-f1" --only sourdough)"
+  [ "$F1_RC" = "2" ] && grep -qF "unknown unit id: sourdough" "$WORK/out/f1.log" &&
+    ok "F1: an unknown unit id exits 2 and names the id" || {
+    bad "F1: --only sourdough exited $F1_RC without naming the id"
+    evidence "$WORK/out/f1.log"
+  }
+
+  # F2 — the same id requested and excluded in one command line. There is no
+  # right precedence here, so the only honest answer is to refuse.
+  F2_RC="$(run_bootstrap_flags f2 "$WORK/home-f2" --with opencode --without opencode)"
+  [ "$F2_RC" = "2" ] && grep -qF "opencode is both requested and excluded" "$WORK/out/f2.log" &&
+    ok "F2: --with X --without X exits 2 naming X" || {
+    bad "F2: --with opencode --without opencode exited $F2_RC"
+    evidence "$WORK/out/f2.log"
+  }
+
+  # F3 — DEPENDENCY ORDER SURVIVES AN EXCLUSION, and it survives LOUDLY. A unit
+  # named on the command line is never dropped by --without's cascade, so this
+  # command line resolves to "install coding-pack without OpenCode" — which is a
+  # broken install that would otherwise exit 0 having written OpenCode agents
+  # onto a machine with no OpenCode. Both ids must appear in the complaint: the
+  # thing that cannot run, and the thing it needed.
+  F3_RC="$(run_bootstrap_flags f3 "$WORK/home-f3" --only coding-pack --without opencode)"
+  [ "$F3_RC" = "2" ] && grep -qF "coding-pack requires opencode" "$WORK/out/f3.log" &&
+    [ ! -e "$WORK/home-f3/.agents" ] &&
+    ok "F3: --only coding-pack --without opencode is refused (exit 2, names both, writes nothing)" || {
+    bad "F3: a unit whose requirement was excluded was not refused (exit $F3_RC)"
+    evidence "$WORK/out/f3.log"
+  }
+
+  # F4 — a flag that takes a value, given none. `--with` is the last argument,
+  # so the arm that would read $2 under `set -u` is the arm being tested.
+  F4_RC="$(run_bootstrap_flags f4 "$WORK/home-f4" --with)"
+  # `--` before the pattern: it starts with two dashes, and grep would otherwise
+  # read it as an option, print its own usage to stderr and exit 2. The `&&`
+  # chain would then report the assertion as failed for a reason that has
+  # nothing to do with the installer. (Measured: that is exactly how it failed.)
+  [ "$F4_RC" = "2" ] && grep -qF -- "--with needs a unit id" "$WORK/out/f4.log" &&
+    ok "F4: a value-taking flag with no value exits 2 rather than reading \$2 unset" || {
+    bad "F4: --with with no value exited $F4_RC"
+    evidence "$WORK/out/f4.log"
+  }
+
+  # F5/F6 — THE PAIR. --only X and --with X must not mean the same thing, and
+  # the single observable that separates them is base-skills: it is in the
+  # default set, it is NOT in coding-pack's requires closure, and it owns exactly
+  # one file. So --only coding-pack must leave ~/.agents/skills/connect-service
+  # absent and --with coding-pack must leave it present. An assertion that
+  # passed for both would be testing neither.
+  F5_RC="$(run_bootstrap_flags f5 "$WORK/home-f5" --only coding-pack)"
+  F5_HOME="$WORK/home-f5"
+  [ "$F5_RC" = "0" ] &&
+    [ ! -e "$F5_HOME/.agents/skills/connect-service" ] &&
+    [ -d "$F5_HOME/.agents/skills/ship" ] &&
+    [ -f "$F5_HOME/.config/opencode/AGENTS.md" ] &&
+    [ -f "$F5_HOME/.config/goose/config.yaml" ] &&
+    grep -qF "==> skipping base-skills" "$WORK/out/f5.log" &&
+    ok "F5: --only coding-pack installs its requires closure and NOT base-skills" || {
+    bad "F5: --only coding-pack did not resolve to exactly {base-toolchain, base-goose, opencode, coding-pack} (rc=$F5_RC)"
+    evidence "$WORK/out/f5.log"
+  }
+
+  F6_RC="$(run_bootstrap_flags f6 "$WORK/home-f6" --with coding-pack)"
+  F6_HOME="$WORK/home-f6"
+  F6_SKIPS="$(count_in "$WORK/out/f6.log" '^==> skipping ')"
+  [ "$F6_RC" = "0" ] &&
+    [ -d "$F6_HOME/.agents/skills/connect-service" ] &&
+    [ -d "$F6_HOME/.agents/skills/ship" ] &&
+    [ "$F6_SKIPS" -eq 0 ] &&
+    ok "F6: --with coding-pack ADDS to the default set — connect-service is installed, 0 skips" || {
+    bad "F6: --with coding-pack did not keep the default set (rc=$F6_RC, $F6_SKIPS skip line(s))"
+    evidence "$WORK/out/f6.log"
+  }
+fi
+
+# ---- 7. phase G — --without opencode ----------------------------------------
+# `leg goose` runs this too: G5 below asserts check-goose.sh against the $HOME
+# this phase installs, and that assertion lives inside phase D's provider block.
+if leg select || leg goose; then
+  echo
+  echo "== phase G: --without opencode =="
+  G_FULL_HOME="$WORK/home-g-full"
+  G_NOC_HOME="$WORK/home-g-noc"
+  # A no-flag run into a FRESH home, as G3's reference. Not $FAKE_HOME: phase B
+  # appends a sentinel to its .goosehints on purpose, so comparing against it
+  # would fail for a reason that has nothing to do with --without.
+  G_FULL_RC="$(run_bootstrap_flags g-full "$G_FULL_HOME")"
+  G_NOC_RC="$(run_bootstrap_flags g-noc "$G_NOC_HOME" --without opencode)"
+
+  [ "$G_FULL_RC" = "0" ] && [ "$G_NOC_RC" = "0" ] &&
+    ok "phase G: both the reference run and --without opencode exited 0" || {
+    bad "phase G: reference exited $G_FULL_RC, --without opencode exited $G_NOC_RC"
+    evidence "$WORK/out/g-noc.log"
+  }
+
+  # G1 — AN ABSENCE, not an emptiness. ~/.config/opencode is created in exactly
+  # one place (unit_opencode), and coding-pack creates only its agents/
+  # subdirectory, so "opencode was not installed" is observable as the directory
+  # not existing at all. An emptiness check would pass on a run that created the
+  # directory and then failed to fill it.
+  [ ! -e "$G_NOC_HOME/.config/opencode" ] &&
+    ok "G1: ~/.config/opencode does not exist at all under --without opencode" ||
+    bad "G1: ~/.config/opencode exists under --without opencode"
+
+  # G2 — the cascade, observed on disk. coding-pack requires opencode, so
+  # excluding opencode must also leave out its eleven skills; base-skills is
+  # untouched, so exactly one entry is left. `find -mindepth 1 -maxdepth 1` and
+  # not a `*` glob, so a leftover .personal-ai-tmp.* counts as the extra entry
+  # it is instead of being invisible to pathname expansion.
+  G2_LIST="$(find "$G_NOC_HOME/.agents/skills" -mindepth 1 -maxdepth 1 2>/dev/null |
+    sed 's|.*/||' | sort | tr '\n' ' ' | sed 's/ *$//')"
+  [ "$G2_LIST" = "connect-service" ] &&
+    ok "G2: ~/.agents/skills holds exactly one entry, connect-service" ||
+    bad "G2: ~/.agents/skills does not hold exactly connect-service"
+
+  # G2b — the cascade, announced. A selective install that silently drops a unit
+  # the user did not name is the failure mode this whole phase exists for.
+  grep -qF "==> --without opencode also drops: coding-pack" "$WORK/out/g-noc.log" &&
+    ok "G2b: the run announced that --without opencode also dropped coding-pack" || {
+    bad "G2b: the cascade was not announced"
+    evidence "$WORK/out/g-noc.log"
+  }
+
+  # G3 — everything base-goose owns is BYTE-IDENTICAL to the full install's. The
+  # units are supposed to be independent; this is what makes that a measurement
+  # rather than a layout claim. It also covers the four provider JSONs and the
+  # .goosehints, which no other assertion in this phase looks at.
+  if diff -r "$G_FULL_HOME/.config/goose" "$G_NOC_HOME/.config/goose" >"$WORK/g3.diff" 2>&1; then
+    ok "G3: the ~/.config/goose subtree is byte-identical to the no-flag install's"
+  else
+    bad "G3: excluding opencode changed what base-goose installed"
+    evidence "$WORK/g3.diff"
+  fi
+
+  # G4 — the brew golden for a three-unit install, hand-typed like A1 and B1 and
+  # for the same reason: derived from FORMULAE_* it could not fail. It is A1
+  # minus the two opencode lines, which is the whole claim.
+  cat >"$WORK/golden-g.txt" <<'EOF'
+brew list --formula --versions uv
+brew install uv
+brew list --formula --versions node
+brew install node
+brew list --formula --versions jq
+brew install jq
+brew list --cask --versions tailscale
+brew install --cask tailscale
+brew list --formula --versions block-goose-cli
+brew install block-goose-cli
+brew list --cask --versions block-goose
+brew install --cask block-goose
+brew list --pinned
+brew pin block-goose-cli
+EOF
+  if diff -u "$WORK/golden-g.txt" "$WORK/brew-g-noc.log" >"$WORK/golden-g.diff" 2>&1; then
+    ok "G4: --without opencode emits exactly the 14-line golden, with no opencode line"
+  else
+    bad "G4: the --without opencode brew log is not the 14-line golden"
+    evidence "$WORK/golden-g.diff"
+  fi
+fi
+
+# ---- 8. phase H — --dry-run -------------------------------------------------
+if leg select; then
+  echo
+  echo "== phase H: --dry-run touches nothing =="
+  H_HOME="$WORK/home-dry"
+  H_RC="$(run_bootstrap_flags h "$H_HOME" --dry-run)"
+
+  # H1 — the plan, hand-typed. Six lines, in dependency order, kebab-cased and
+  # indented (a column-0 unit_*() name printed here would be counted as a call
+  # site by units_lint.py's P3). The banner is NOT among them: --dry-run answers
+  # before the platform guard, so there is nothing before the plan.
+  cat >"$WORK/golden-h.txt" <<'EOF'
+==> plan (5 units, in dependency order):
+  base-toolchain
+  base-goose
+  opencode
+  base-skills
+  coding-pack
+EOF
+  head -6 "$WORK/out/h.log" >"$WORK/actual-h.txt" 2>/dev/null || true
+  if [ "$H_RC" = "0" ] && diff -u "$WORK/golden-h.txt" "$WORK/actual-h.txt" >"$WORK/h1.diff" 2>&1; then
+    ok "H1: --dry-run prints the five units in dependency order and exits 0"
+  else
+    bad "H1: the --dry-run plan is not the five units in dependency order (rc=$H_RC)"
+    evidence "$WORK/h1.diff"
+  fi
+
+  # H2 — A FRESH $HOME IS STILL EMPTY. mkdir/cp/mv do not go through the seam
+  # (bootstrap-mac.sh:26-28 — a fake $HOME substitutes for all of them), so this
+  # count is the only thing that can catch a mutating helper that grew a
+  # DRY_RUN branch it does not honour.
+  H2_FILES="$(find "$H_HOME" -mindepth 1 | wc -l | tr -d ' ')"
+  [ "$H2_FILES" -eq 0 ] &&
+    ok "H2: --dry-run into a fresh \$HOME left it completely empty" ||
+    bad "H2: --dry-run wrote $H2_FILES entries into a fresh \$HOME"
+
+  # H2b — AND AN EXISTING $HOME IS BYTE-IDENTICAL AFTERWARDS. H2 alone is
+  # satisfiable by a --dry-run that only ever writes into paths that already
+  # exist: every copy_no_clobber destination in this installer is under
+  # ~/.config, which on a fresh home is absent and on a real Mac is not. So the
+  # populated case is the one that matters, and it is asserted as `diff -r`
+  # against a snapshot taken immediately before the run rather than as "no
+  # error". The snapshot is a copy of phase A's install: 61 files, every
+  # template, every skill, every agent.
+  H_POP="$WORK/home-dry-pop"
+  H_REF="$WORK/home-dry-ref"
+  rm -rf "$H_POP" "$H_REF"
+  cp -R "$FAKE_HOME" "$H_POP"
+  cp -R "$FAKE_HOME" "$H_REF"
+  H2B_BEFORE="$(find "$H_REF" -type f | wc -l | tr -d ' ')"
+  H2B_RC="$(run_bootstrap_flags h-pop "$H_POP" --dry-run)"
+  if [ "$H2B_RC" = "0" ] && [ "$H2B_BEFORE" -ge 61 ] &&
+     diff -r "$H_REF" "$H_POP" >"$WORK/h2b.diff" 2>&1; then
+    ok "H2b: --dry-run over a populated \$HOME ($H2B_BEFORE files) left every byte where it was"
+  else
+    bad "H2b: --dry-run modified a populated \$HOME (rc=$H2B_RC, files=$H2B_BEFORE want >=61)"
+    evidence "$WORK/h2b.diff"
+  fi
+
+  # H3 — ZERO EXTERNAL CALLS, including `uname`. The plan is pure computation
+  # over the unit table, so --dry-run answers before the platform guard and
+  # before the Homebrew guard: an empty deny log proves nothing left the seam,
+  # and an empty brew log proves the seam itself was never used. Together they
+  # are what makes `bootstrap-mac.sh --dry-run` honest on a Mac with no brew.
+  H3_DENY="$(count_in "$WORK/deny-h.log" '.')"
+  H3_BREW="$(count_in "$WORK/brew-h.log" '.')"
+  [ "$H3_DENY" -eq 0 ] && [ "$H3_BREW" -eq 0 ] &&
+    ok "H3: --dry-run made no external call at all (deny log and brew log both empty)" || {
+    bad "H3: --dry-run reached outside itself ($H3_DENY denied call(s), $H3_BREW brew call(s))"
+    evidence "$WORK/deny-h.log"
+  }
+
+  # H4 — the whole output for a cascading exclusion, hand-typed. Sixteen lines
+  # that pin, in one artifact: the cascade announcement, the three-unit plan, its
+  # order, and — by their absence — that not one opencode or coding-pack path is
+  # offered. A "no opencode line" grep would pass on an empty file.
+  H4_RC="$(run_bootstrap_flags h-noc "$WORK/home-dry-noc" --dry-run --without opencode)"
+  cat >"$WORK/golden-h4.txt" <<'EOF'
+==> --without opencode also drops: coding-pack
+==> plan (3 units, in dependency order):
+  base-toolchain
+  base-goose
+  base-skills
+==> would install:
+  brew formula  uv
+  brew formula  node
+  brew formula  jq
+  brew cask     tailscale
+  brew formula  block-goose-cli
+  brew cask     block-goose
+  file          ~/.config/goose/config.yaml
+  file          ~/.config/goose/custom_providers
+  file          ~/.config/goose/.goosehints
+  file          ~/.agents/skills/connect-service
+EOF
+  if [ "$H4_RC" = "0" ] &&
+     diff -u "$WORK/golden-h4.txt" "$WORK/out/h-noc.log" >"$WORK/h4.diff" 2>&1; then
+    ok "H4: --dry-run --without opencode prints exactly the 16-line three-unit plan"
+  else
+    bad "H4: the cascading dry-run plan is not the 16-line golden (rc=$H4_RC)"
+    evidence "$WORK/h4.diff"
+  fi
+fi
+
+# ---- 9. phase D — the checks the installer tells you to run -----------------
 if leg goose || leg providers; then
   echo
   echo "== phase D: check-providers.sh and check-goose.sh against fake-provider.py =="
@@ -651,6 +972,36 @@ EOF
       bad "D-deny: check-goose reached a denied binary (curl excepted — it stands in for goose's own HTTP)"
       evidence "$G_DENY"
     } || ok "D-deny: check-goose invoked nothing from the deny wall"
+
+    # G5 (AC2's second half) — check-goose.sh still passes against the $HOME
+    # phase G installed WITHOUT OpenCode. It lives here rather than in phase G
+    # because it needs the provider fake this block starts, and it runs after D5
+    # because D5 diffs the rows recorded since its own mark — these requests are
+    # additional ones and would fail that diff if they arrived first.
+    #
+    # It is not implied by G3. G3 says the goose subtree is byte-identical;
+    # this says the goose those bytes configure actually reaches all three
+    # providers on a machine where OpenCode was never installed.
+    if [ -n "$G_NOC_HOME" ] && [ -d "$G_NOC_HOME/.config/goose" ]; then
+      G5_OUT="$WORK/out/g5.log"; G5_RC=0
+      HOME="$G_NOC_HOME" \
+      PATH="$GOOSE_PATH" \
+      PAI_DENY_LOG="$WORK/deny-g5.log" \
+      FAKE_PROVIDER_URL="$PROVIDER_URL" \
+      FAKE_GOOSE_VERSION="$PINS_VERSION" \
+        "$HERE/check-goose.sh" >"$G5_OUT" 2>&1 || G5_RC=$?
+      G5_ROWS=0
+      grep -qE '^ +zen-openai +minimax-m2\.7 +PASS$' "$G5_OUT" && G5_ROWS=$((G5_ROWS + 1))
+      grep -qE '^ +zen-anthropic +claude-haiku-4-5 +PASS$' "$G5_OUT" && G5_ROWS=$((G5_ROWS + 1))
+      grep -qE '^ +together +openai/gpt-oss-120b +PASS$' "$G5_OUT" && G5_ROWS=$((G5_ROWS + 1))
+      [ "$G5_RC" -eq 0 ] && [ "$G5_ROWS" -eq 3 ] &&
+        ok "G5: check-goose.sh exits 0 with 3 clean PASS rows against the --without opencode \$HOME" || {
+        bad "G5: check-goose exited $G5_RC with $G5_ROWS/3 PASS rows against the opencode-less \$HOME"
+        evidence "$G5_OUT"
+      }
+    else
+      bad "G5: phase G did not leave an opencode-less \$HOME to check (G_NOC_HOME='${G_NOC_HOME:-unset}')"
+    fi
   fi
 
   kill "$PROVIDER_PID" 2>/dev/null || true
@@ -658,7 +1009,7 @@ EOF
   PROVIDER_PID=""
 fi
 
-# ---- 7. phase E — the defaults, with zero packets ---------------------------
+# ---- 10. phase E — the defaults, with zero packets ---------------------------
 if leg providers; then
   echo
   echo "== phase E: ZEN_BASE/TOGETHER_BASE unset still address the real hosts =="
@@ -749,7 +1100,7 @@ EOF
     bad "E2: the recording shim leaked a credential into its log ($E2_HITS line(s)) — not printed here"
 fi
 
-# ---- 8. structural — the seam itself ----------------------------------------
+# ---- 11. structural — the seam itself ----------------------------------------
 if leg routing; then
   echo
   echo "== structural: the seam, the pre-carve differential, the gate, the interlock =="
@@ -969,7 +1320,7 @@ open(sys.argv[3], "w").write("\n".join(code) + "\n")
   }
 fi
 
-# ---- 9. summary --------------------------------------------------------------
+# ---- 12. summary --------------------------------------------------------------
 echo
 if [ "$SKIP_COUNT" -eq 0 ]; then
   echo "== summary: $PASS_COUNT passed, $FAIL_COUNT failed =="
