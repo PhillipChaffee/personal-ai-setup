@@ -1368,6 +1368,10 @@ WIRE_URL_SHAPE = (
 # the only way to spell one. `.github` is a real repo name, so a LEADING dot
 # stays legal — it is only the segment that is nothing but dots that is not.
 WIRE_URL_PART = re.compile(r"^[A-Za-z0-9._-]{1,100}\Z")
+# C0 controls and DEL, anywhere in the url. A regex rather than an ord() range
+# because ruff reads 0x20/0x7F as magic values, and because this reads as what
+# it is: a character class the url may not contain.
+WIRE_URL_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def wire_repo_slug(url: str) -> str | ApiError:
@@ -1398,6 +1402,20 @@ def wire_repo_slug(url: str) -> str | ApiError:
     line. EXACTLY two segments, so `https://github.com/x/y/testowner/testrepo`
     cannot smuggle a third repo's slug in past a `[-2:]`.
     """
+    # BEFORE urlparse, because urlsplit STRIPS \t \r \n from ANYWHERE in the url
+    # while validated_repo_entry only .strip()s the ends. Those two disagreeing is
+    # how the string that gets CHECKED stops being the string that gets WRITTEN:
+    # `https://github.com/testowner/test\nrepo` parses to the slug
+    # `testowner/testrepo`, GitHub vouches for THAT, and the entry lands with the
+    # newline still in it -- an entry whose first chat dies in `git clone`, which
+    # is the exact failure this function exists to move forward in time. It is
+    # also what makes docs/security.md's "the URL that is written is the URL that
+    # was checked" true byte-for-byte rather than nearly.
+    #
+    # REFUSE, do not normalise. Silently rewriting a caller's url is how the
+    # answer stops matching the question, and the caller cannot see it happen.
+    if WIRE_URL_CONTROL.search(url):
+        return ApiError(400, WIRE_URL_SHAPE)
     parsed = urlparse(url)
     if parsed.scheme.lower() != "https" or parsed.netloc.lower() != WIRE_URL_HOST:
         return ApiError(400, WIRE_URL_SHAPE)

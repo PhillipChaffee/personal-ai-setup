@@ -4851,6 +4851,26 @@ EOHOSTILE
   && ok "a URL that is not an https github.com clone URL is refused, however it derives a slug" \
   || bad "add-repo hostile URLs: [ $HOSTILE_SEEN] (each wanted 400 + the shape + unlisted)"
 
+# NOT in the heredoc above, because the character IS a newline and the loop reads
+# by line. JSON's own \n escape carries it instead, so the shell never sees it.
+#
+# THE CHECKED STRING AND THE WRITTEN STRING MUST BE THE SAME BYTES. urlsplit()
+# strips \t \r \n from ANYWHERE in a url; validated_repo_entry only .strip()s the
+# ends. So before the guard, this url derived the slug `testowner/testrepo`,
+# GitHub vouched for THAT, and the entry was written with the newline still in
+# it -- 201, "checked", and a first chat that dies in `git clone`. That is the
+# failure validate_repo_url exists to move forward in time, arriving anyway.
+#
+# It is also what makes docs/security.md's "the URL that is written is the URL
+# that was checked" true byte-for-byte rather than nearly. The boundary half was
+# never breached -- the netloc comparison runs on the stripped string, so
+# `https://github.com\n@evil.example.com/o/n` was already refused -- which is
+# exactly why this needs its own line: the hostile loop above cannot see it.
+CTRL_CODE="$(post_repo '{"name":"ctrl-url","url":"https://github.com/testowner/test\nrepo","tier":1}')"
+[ "$CTRL_CODE" = "400" ] && [ "$(repo_listed "ctrl-url")" = "False" ] \
+  && ok "a URL carrying a control character is refused, not silently normalised" \
+  || bad "add-repo control-char URL: HTTP $CTRL_CODE, listed $(repo_listed "ctrl-url") (wanted 400 + unlisted)"
+
 # A URL that parses to no owner/name at all never reaches GitHub: it is the arm
 # that would otherwise send `/repos/justowner` to GitHub and read its 404 as
 # "the PAT cannot see it". 400, and NOT slug_of's 409 -- 409 on this route
