@@ -46,8 +46,10 @@ The only path in is the **Tailscale tailnet** — WireGuard, key-authenticated d
 outbound-only connections, so it works under the deny-all rules. That includes SSH:
 after bootstrap, SSH is **Tailscale SSH** (authenticated by tailnet identity, no public
 port 22, no host-managed authorized_keys to rot —
-[Tailscale SSH docs](https://tailscale.com/kb/1193/tailscale-ssh)). `goose serve` binds
-the Tailscale IP only, never `0.0.0.0`.
+[Tailscale SSH docs](https://tailscale.com/kb/1193/tailscale-ssh)). `goose serve` (3284)
+and `code-agent-manager` (4300) each bind the Tailscale IP only, never `0.0.0.0`; the
+per-chat OpenCode servers behind the manager bind **loopback** and are reachable only
+through it.
 
 Verify from outside the tailnet after every infra change — `scripts/verify/check-security.sh`
 runs an external port scan and fails if anything public answers.
@@ -75,6 +77,85 @@ The brain's agent endpoint (`goose serve`, port 3284, systemd unit
   `config/goose/config.yaml` sets `apps: enabled: false`; the brain loses nothing, since
   its clients are Goose Desktop, the iOS app and the scheduler. On a brain deployed before
   that template landed, confirm with `goose configure` → Toggle Extensions.
+
+## The code plane: the manager, the containers and the allowlist
+
+The brain's second agent endpoint, and the one this page said nothing about until
+this section existed. `code-agent-manager.py` (port **4300**, systemd unit
+`code-agent-manager.service`) fronts one `opencode serve` container per code chat.
+Concept and operations are in [code-agents.md](code-agents.md); what belongs here
+is the trust boundary and who can move it.
+
+- **Same network posture as `goose serve`** — binds the tailnet address, TLS from
+  the brain's tailnet cert, HTTP Basic on every route including the proxy. There is
+  no unauthenticated path.
+- **`/data/code-agents/repos.json` is the boundary.** A chat can only ever be made
+  from a repo listed there, so the file — not the PAT, not the tailnet — is what
+  decides where a code agent can read and write. It is untracked, per-user, and
+  `deploy-vps.sh` never clobbers it, so **no deploy restores it if it is lost**.
+- **Only Tier 1/2 repos may be listed** ([privacy.md](privacy.md)); the life vault
+  and anything Tier 3 never enter it. That is a human judgment and cannot be
+  validated server-side, which is why `POST /api/repos` **requires** `tier` in the
+  request body, refuses `3`, and refuses an absent one rather than defaulting.
+- **An authorisation that can reach a repo is still not an allowlist entry.** The
+  PAT is scoped to a set of repos; `repos.json` is a strictly smaller set that you
+  chose. A GitHub connection must never imply an entry, which is why the route
+  takes a URL you typed rather than offering a list to pick from
+  ([#99](https://github.com/PhillipChaffee/personal-ai-setup/issues/99) is deferred
+  on exactly that ground). The route's GitHub check is a **precondition**, not a
+  grant: it only refuses repos the PAT cannot read.
+- **The URL that is written is the URL that was checked.** The check asks GitHub
+  about an `owner/repo` slug, so the route accepts only
+  `https://github.com/<owner>/<repo>` from the wire and refuses every other shape
+  — otherwise a URL on any host at all could derive a slug GitHub answers `200`
+  for and be written on the strength of it, and the host in `repos.json` is the
+  one a container clones and takes its `AGENTS.md`/`.claude/` instructions from.
+  The allowlist's own reader stays lenient (it must parse whatever was
+  hand-edited into the file over SSH); the strictness belongs to the route,
+  because that is where the input is untrusted.
+- **Two flags default to the safe value and are never inferred.**
+  `allow_push: true` makes `git push` run with no permission ask;
+  `public_throwaway: true` permits Zen free models, which per the provider table
+  may train on your data. Both default `false`, both are read strictly — a body
+  saying `"allow_push": "false"` is **refused**, never read as truthy — and neither
+  is ever guessed from the repo's GitHub visibility. A public repo is not
+  automatically a throwaway.
+
+### What the write route rests on, since #115 is fixed
+
+`POST /api/repos` widens the trust boundary, so the question is who can reach it.
+`authed()` answers only "do you know `OPENCODE_SERVER_PASSWORD`", and that used to
+include **every code agent**: `run_container` handed each container the gateway's
+own password as its `OPENCODE_SERVER_PASSWORD`. A prompt-injected agent in one repo
+could then have added another repo to the allowlist and opened a chat on it —
+lateral movement becoming privilege escalation.
+
+That is [#115](https://github.com/PhillipChaffee/personal-ai-setup/issues/115) and
+it is **fixed**. Each container now gets a derived per-chat secret,
+`HMAC-SHA256(OPENCODE_SERVER_PASSWORD, "code-agent/<epoch>/<chat-id>")`, which opens
+that chat's own server on its own loopback and nothing else; the gateway password
+never enters a container. So the callers of the write route are the ones that were
+always meant to hold that password, and the route needs **no second secret and no
+out-of-band confirmation** — the two compensating controls it would otherwise have
+required. (An `ntfy` confirmation was never available anyway: a notification is
+never itself answerable, [privacy.md](privacy.md).)
+
+**Residual, and it is the same one the proxy has.** `authed()` is still a single
+shared secret with no per-chat identity, so anything *else* holding it — the phone
+app, anyone on the tailnet — can both drive any chat and now widen the allowlist.
+Rotate `OPENCODE_SERVER_PASSWORD` (below) on any suspicion; every agent that ran
+before #115 held the old value. Separately, and **not** fixed by that mechanism:
+every container still receives the same `GITHUB_CODE_AGENT_PAT` as `GH_TOKEN`, so
+one chat can reach any allowlisted repo, not only its own. GitHub will not mint a
+per-chat PAT.
+
+**The file is never destroyed by a failed write.** The writer reads the raw JSON
+and refuses on anything it cannot parse — it deliberately does not go through
+`load_repos()`, which answers "empty allowlist" for a corrupt file (the safe
+direction for a reader, catastrophic for a writer). Writes are a temp file plus a
+rename, with the file and its directory fsynced, so a concurrent reader sees the
+whole old file or the whole new one and a crash cannot leave an empty boundary.
+`_readme` and every entry's `tier` survive byte-for-byte.
 
 ## Disk: the LUKS design
 

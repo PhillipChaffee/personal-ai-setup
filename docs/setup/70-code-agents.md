@@ -65,8 +65,8 @@ install failed" — if you did select the unit and the check is skipping, re-run
 ## 3. Fill in the repo allowlist
 
 Deploy copied the template to `/data/code-agents/repos.json` (no-clobber).
-Edit it: one entry per repo the agents may touch. The fields are documented
-in the file's `_readme`; the rules that matter:
+One entry per repo the agents may touch. The fields are documented in the
+file's `_readme`; the rules that matter:
 
 - **Only repos you own or trust** — cloned repo content (AGENTS.md, .claude/)
   steers the agent, and the allowlist is the trust boundary.
@@ -77,6 +77,52 @@ in the file's `_readme`; the rules that matter:
 - Keep `setup` commands light (2 vCPU / 4 GB) or set `edit_only: true`.
 
 Restart nothing — the manager reads the file per request.
+
+**Two ways to add one, and they write the same file.**
+
+*Over SSH, with an editor* — the original path, and still the one to use when
+you are changing an existing entry, removing one, or fixing a file the manager
+has refused to write to:
+
+```bash
+ssh agent@<your-brain>.<your-tailnet>.ts.net
+$EDITOR /data/code-agents/repos.json
+```
+
+*Over the API* — `POST /api/repos`, which the app's Repositories sheet calls
+and which you can drive from the Mac. `tier` is **required** and `3` is
+refused; `setup`, `edit_only`, `allow_push` and `public_throwaway` are
+optional and default to the safe value:
+
+```bash
+curl -u "opencode:$OPENCODE_SERVER_PASSWORD" \
+  -X POST "https://<your-brain>.<your-tailnet>.ts.net:4300/api/repos" \
+  -d '{"name":"my-repo","url":"https://github.com/me/my-repo.git","tier":2}'
+```
+
+The route refuses before it writes anything: a missing or `3` tier, a flag
+that is not a JSON boolean (`"allow_push": "false"` is a **refusal**, never
+read as true), a duplicate `name`, and a repo the PAT cannot read — a GitHub
+404 there means either the repo does not exist *or* your token is not scoped
+to it, and from the brain those are indistinguishable. A 5xx from GitHub is
+"could not check", and nothing is written on that either. On success the new
+repo is live immediately; the reply is the same six-field row `GET /api/repos`
+serves, and `tier` is recorded in the file but deliberately not on the wire.
+
+**`url` must be `https://github.com/<owner>/<repo>`** (a trailing `.git` is
+fine) and nothing else — not an scp-style `git@github.com:owner/repo`, not a
+bare `owner/repo`, and above all not some other host. The check the route makes
+is "can the PAT read `<owner>/<repo>`", so a URL pointing anywhere else would be
+written on the strength of an answer GitHub gave about a *different* address;
+and the containers clone with `GH_TOKEN` over HTTPS and hold no SSH key, so the
+https form is also the only one a chat can actually clone. Editing the file by
+hand over SSH is unchanged and still accepts the older shapes.
+
+**An authorisation that can reach a repo is still not an allowlist entry.**
+Your PAT may be scoped to twenty repos; `repos.json` is the smaller set you
+chose, and it stays the Tier 1/2 gate. A GitHub connection must never imply an
+entry — which is why this route takes a URL you type rather than offering a
+picker of everything your account can see.
 
 ## 4. Verify
 
