@@ -277,6 +277,14 @@ recreated from its volume on wake, on proxy, and in one sweep at startup,
 because `podman start` reuses env baked at create and so can never hand a
 container a new credential.
 
+The epoch only tracks a change to *this repo's source*, though. Rotating
+`OPENCODE_SERVER_PASSWORD` changes every derived secret without moving it, so
+those containers are found the other way: they answer the manager 401, and a
+401 from a chat's own server means exactly one thing — rebuild it from the
+volume and send the request again. That happens once per chat, at its first
+wake or request after the rotation, and the caller sees the answer rather than
+the 401 (`scripts/verify/test-code-agent-manager.sh` section 9f).
+
 ## Operations quick reference
 
 ```bash
