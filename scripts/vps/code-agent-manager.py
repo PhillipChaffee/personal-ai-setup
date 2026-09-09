@@ -570,12 +570,19 @@ def load_repos() -> dict[str, RepoEntry]:
             raw: Any = json.load(f)
     except FileNotFoundError:
         return {}
-    except (json.JSONDecodeError, OSError) as e:
+    except (ValueError, OSError) as e:
         # repos.json is the one state file a human is told to edit by hand
         # (docs/code-agents.md), so a trailing comma here is the realistic
         # corruption -- and an uncaught JSONDecodeError takes down every route
         # that resolves a repo, not just this one. An empty allowlist refuses
         # new chats, which is the safe direction for a trust boundary.
+        #
+        # ValueError rather than json.JSONDecodeError for the same reason
+        # read_repos_document catches it: the decode happens while json.load
+        # reads the stream, so a file saved in latin-1 raises
+        # UnicodeDecodeError -- a ValueError, neither an OSError nor a
+        # JSONDecodeError -- and used to take down every repo-resolving route
+        # instead of degrading to the empty allowlist this arm exists for.
         log(f"repos.json is unreadable ({type(e).__name__}) -- allowlist is empty")
         return {}
     repos: dict[str, RepoEntry] = {}
@@ -675,13 +682,26 @@ def read_repos_document() -> tuple[dict[str, Any], list[Any]] | ApiError:
     A missing file is different and IS created: no file means no allowlist to
     lose. Everything else — not JSON, not an object, `repos` not a list — is
     the same class as the trailing comma and gets the same answer.
+
+    `ValueError`, NOT `json.JSONDecodeError`, and the difference is a real
+    hole rather than a widening for its own sake. The decode happens in
+    `read_text` BEFORE `json.loads` is ever called, so a repos.json a human
+    saved from an editor set to latin-1 — one accented word in the `_readme`
+    is enough — raises `UnicodeDecodeError`. That is a `ValueError`; it is
+    not an `OSError` and it is not a `JSONDecodeError`, so it escaped this
+    handler, escaped `add_repo` (whose only `try` wraps the write and catches
+    `OSError`), and reached the caller as an unhandled exception in a request
+    thread. The file survived — nothing had been written yet — but the answer
+    the caller got was a traceback rather than the refusal above, which is
+    the one thing this function exists to produce. `JSONDecodeError` is
+    itself a `ValueError`, so the trailing-comma case is unchanged.
     """
     try:
         raw: Any = json.loads(REPOS_PATH.read_text(encoding="utf-8"))
     except FileNotFoundError:
         entries: list[Any] = []
         return ({"repos": entries}, entries)
-    except (json.JSONDecodeError, OSError) as e:
+    except (ValueError, OSError) as e:
         return ApiError(
             500,
             f"{REPOS_PATH} is unreadable ({type(e).__name__}) and was NOT "

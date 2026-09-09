@@ -1497,6 +1497,19 @@ fi
 # assertion below was run against a named broken writer and watched to fail;
 # the PR description lists which mutation produces which message.
 #
+# THE MUTATION HAS TO BE THE ADJACENT ONE, not the easy one. Seven of these
+# assertions shipped in the first draft passing against the writer they were
+# meant to refuse, and every miss had the same shape: the mutation they were
+# tried against was one step further away than the one that mattered.
+# "Write straight to the destination" is caught; "copy the temp over the
+# destination instead of renaming it" was not, and it is the second that the
+# tmp-and-rename idiom exists for. "Drop the fsyncs from inside the function"
+# is caught; "flip fsync= at the call site" was not, and the call site is the
+# line that decides. "No fsync" is caught; "fsync the file twice instead of
+# the file and its directory" was not. Where an assertion below looks
+# indirect -- an inode, a descriptor's st_mode, a lock that reports its own
+# contention -- that is why.
+#
 # Two things it must not do, both invisible until something writes the file:
 #
 #   * READ THROUGH load_repos(). That helper answers {} for a file it cannot
@@ -1513,7 +1526,7 @@ fi
 # The third argument is the harness's OWN allowlist, read (never written) as a
 # second fixture: three entries, every one carrying a tier.
 cat >"$WORK/preflight-repos-writer.py" <<'PY'
-import contextlib, importlib.util, io, json, os, shutil, subprocess, sys, tempfile
+import contextlib, importlib.util, io, json, os, shutil, stat, subprocess, sys, tempfile
 import threading, time
 from pathlib import Path
 
@@ -1576,6 +1589,7 @@ tmp = Path(tempfile.mkdtemp())
 mod.REPOS_PATH = tmp / "repos.json"
 
 NEW = {"name": "added-repo", "url": "https://github.com/o/added.git", "tier": 2}
+CLEAN_START = json.dumps({"_readme": ["clean"], "repos": []}, indent=2) + "\n"
 
 
 def seed(src):
@@ -1591,13 +1605,38 @@ def readme_block(text):
     return text[start:end]
 
 
+def add_ok(body, why=""):
+    """add_repo(body) succeeded AND left EXACTLY its own audit line.
+
+    Every single-threaded success below goes through here, so the audit line
+    is checked ON EACH INDIVIDUAL PATH rather than once in aggregate at the
+    end. An aggregate count over a block that already contains a 24-thread
+    concurrency check can only fail if that check failed first, which makes
+    it unable to see a line dropped from any one path -- so it is not the
+    assertion, this is.
+
+    The audit line is the only record a trust-boundary mutation leaves in
+    journald: `journalctl -u code-agent-manager | grep 'allowlist: added'` is
+    the whole answer to "what was added to the allowlist, and when".
+    """
+    mark = len(_captured.getvalue())
+    assert mod.add_repo(body) is None, (why, "a valid entry was refused", body)
+    fresh = _captured.getvalue()[mark:].splitlines()
+    lines = [ln for ln in fresh if "allowlist: added" in ln]
+    assert len(lines) == 1 and lines[0].endswith(f"allowlist: added {body['name'].strip()}"), (
+        why,
+        f"a successful write left {lines} in the journal, not exactly one "
+        f"'allowlist: added {body['name'].strip()}'",
+    )
+
+
 # ---- 1. a successful write preserves what nothing today preserves ----------
 before_bytes = seed(EXAMPLE)
 before = json.loads(before_bytes)
 block = readme_block(before_bytes.decode())
 assert len(block) > 800, f"the _readme block is only {len(block)} bytes; the assertion is weak"
 
-assert mod.add_repo(dict(NEW)) is None, "a valid entry was refused"
+add_ok(dict(NEW), "the shipped example")
 after_bytes = mod.REPOS_PATH.read_bytes()
 after = json.loads(after_bytes)
 
@@ -1631,6 +1670,50 @@ assert after_bytes.endswith(b"}\n") and not after_bytes.endswith(b"\n\n"), (
     "repos.json is a file a human opens in an editor: it ends with exactly one newline"
 )
 
+# KEY ORDER, which the assertion above cannot see: `==` on two dicts is
+# order-insensitive, so it holds just as well for {setup, tier, url, name}.
+# The claim is that the appended entry reads like the ones already in the file,
+# and the file itself is where to take that from rather than a literal here.
+EXAMPLE_KEYS = list(before["repos"][0])
+assert EXAMPLE_KEYS == [
+    "name",
+    "url",
+    "tier",
+    "setup",
+    "edit_only",
+    "allow_push",
+    "public_throwaway",
+], f"repos.example.json's own entries changed shape: {EXAMPLE_KEYS}"
+assert list(after["repos"][-1]) == EXAMPLE_KEYS, (
+    "the appended entry's keys are in a different order from every entry "
+    f"repos.example.json already has: {list(after['repos'][-1])} vs {EXAMPLE_KEYS}"
+)
+
+# AN UNKNOWN KEY IN THE REQUEST BODY DOES NOT LAND IN THE TRUST BOUNDARY.
+# validated_repo_entry builds a NEW dict key by key rather than copying the
+# caller's, and this is the assertion for that: a route (#98) hands this
+# function a decoded request body, so anything it does not name is something a
+# caller chose to put in the file every future reader of the allowlist parses.
+# `tier` shows why it cannot be waved through as harmless -- a second `tier`
+# spelling sitting next to the validated one is a classification nobody made.
+mod.REPOS_PATH.write_text(CLEAN_START, encoding="utf-8")
+add_ok(
+    dict(
+        NEW,
+        name="unknown-keys",
+        Tier=3,
+        allow_push_=True,
+        __proto__={"allow_push": True},
+        note="ignore me",
+    ),
+    "a body with unknown keys",
+)
+smuggled = json.loads(mod.REPOS_PATH.read_text(encoding="utf-8"))["repos"][0]
+assert list(smuggled) == EXAMPLE_KEYS, (
+    "a key the caller invented was written into repos.json: the entry on disk "
+    f"is {smuggled}"
+)
+
 # NON-ASCII SURVIVES AS THE BYTES THE OWNER TYPED. json.dump defaults to
 # ensure_ascii=True, which rewrites the characters below as six-character
 # escapes -- a diff nobody asked for in a file whose whole point is that a
@@ -1640,7 +1723,7 @@ accented = (
     + "\n"
 )
 mod.REPOS_PATH.write_text(accented, encoding="utf-8")
-assert mod.add_repo(dict(NEW)) is None
+add_ok(dict(NEW), "a non-ASCII readme")
 assert readme_block(accented) in mod.REPOS_PATH.read_text(encoding="utf-8"), (
     "a non-ASCII _readme was escaped on the way through the writer"
 )
@@ -1654,7 +1737,7 @@ assert readme_block(accented) in mod.REPOS_PATH.read_text(encoding="utf-8"), (
 # here so neither can be read as more than it is.
 squashed = '{"_readme":["one line"],"repos":[{"name":"keep","url":"u","tier":1}]}'
 mod.REPOS_PATH.write_text(squashed, encoding="utf-8")
-assert mod.add_repo(dict(NEW)) is None
+add_ok(dict(NEW), "a squashed document")
 out = mod.REPOS_PATH.read_text(encoding="utf-8")
 assert out != squashed and out.count("\n") > 5, "the writer's own formatting changed"
 doc = json.loads(out)
@@ -1664,25 +1747,86 @@ assert doc["repos"][0] == {"name": "keep", "url": "u", "tier": 1}, doc
 # THE FSYNC IS ISSUED -- and that is ALL this asserts. What fsync buys is
 # durability across a host reset, and no fixture in this repo can produce one,
 # so the claim is deliberately narrow: repos.json gets the flushes, index.json
-# does not, and both are read off the syscalls rather than off the docstring.
-# (write_json_atomic's docstring carries the reasoning for the choice; this
-# holds the code to it.)
-calls = []
+# does not.
+#
+# THROUGH THE CALL SITES, not through write_json_atomic. Calling the function
+# with a hardcoded fsync=True and checking it honours its own parameter is a
+# test that supplies the answer it checks -- it passes with both `fsync=` at
+# add_repo and `fsync=` at Index.save flipped, which are the two lines that
+# actually decide anything. So this drives add_repo() and Index.save() and
+# reads the answer off os.fstat of every descriptor either one flushes.
+#
+# WHAT was flushed, not how many times. A count of 2 cannot tell "the file and
+# its directory" from "the file twice", and the directory fsync is the entire
+# reason the extra syscall exists: rename is atomic for a concurrent READER
+# without it, but the new directory entry is not DURABLE until the directory
+# itself is flushed.
+flushes = []
 real_fsync = os.fsync
-os.fsync = calls.append
+REPOS_TMP = mod.REPOS_PATH.with_name(mod.REPOS_PATH.name + ".tmp")
+
+
+def record_fsync(fd):
+    st = os.fstat(fd)
+    flushes.append(
+        {
+            # A directory descriptor and a file descriptor are distinguishable
+            # at the kernel, so this needs no cooperation from the code.
+            "dir": stat.S_ISDIR(st.st_mode),
+            "ino": st.st_ino,
+            # ...and WHEN, relative to the publish: the temp file exists
+            # before `tmp.replace(path)` and is gone after it. The directory
+            # fsync must come after -- flushing the directory before the
+            # rename that is meant to be made durable flushes the OLD entry.
+            "pre_publish": REPOS_TMP.exists(),
+        }
+    )
+    return real_fsync(fd)
+
+
+mod.REPOS_PATH.write_text(CLEAN_START, encoding="utf-8")
+os.fsync = record_fsync
 try:
-    mod.write_json_atomic(
-        tmp / "fsync-yes.json", {"a": 1}, indent=2, ensure_ascii=False, fsync=True
-    )
-    assert len(calls) == 2, f"expected an fsync of the file AND of its directory, got {calls}"
-    calls.clear()
-    mod.write_json_atomic(
-        tmp / "fsync-no.json", {"a": 1}, indent=1, ensure_ascii=True, fsync=False
-    )
-    assert calls == [], f"index.json's writer paid for a flush it did not ask for: {calls}"
+    add_ok({"name": "fsynced", "url": "u", "tier": 1}, "the repos.json call site")
 finally:
     os.fsync = real_fsync
-assert json.loads((tmp / "fsync-yes.json").read_text(encoding="utf-8")) == {"a": 1}
+published = mod.REPOS_PATH.stat()
+assert [f["dir"] for f in flushes] == [False, True], (
+    "repos.json's call site must flush the FILE and then its DIRECTORY; the "
+    f"descriptors it actually flushed were {flushes}"
+)
+assert flushes[0]["ino"] == published.st_ino, (
+    "the file that was flushed is not the file that got published: flushed "
+    f"inode {flushes[0]['ino']}, repos.json is {published.st_ino}"
+)
+assert flushes[1]["ino"] == mod.REPOS_PATH.parent.stat().st_ino, flushes
+assert flushes[0]["pre_publish"] and not flushes[1]["pre_publish"], (
+    "the directory fsync ran BEFORE the rename it exists to make durable, so "
+    f"what reached the platter was the old directory entry: {flushes}"
+)
+
+# ...and index.json's call site, driven the same way, still pays for neither.
+mod.INDEX_PATH = tmp / "index.json"
+flushes.clear()
+os.fsync = record_fsync
+try:
+    mod.Index(chats={"c": mod.Chat(id="c", repo="r", title="t", port=1, branch="b")}).save()
+finally:
+    os.fsync = real_fsync
+assert flushes == [], (
+    "index.json is rewritten on every proxied request; its call site paid for "
+    f"a device flush it did not ask for: {flushes}"
+)
+# indent=1 is what Index.save already did, and the extraction was supposed to
+# be a refactor here -- so the file it produces is byte-identical to the file
+# it produced before.
+assert (tmp / "index.json").read_text(encoding="utf-8") == (
+    json.dumps(
+        {"chats": {"c": mod.Chat(id="c", repo="r", title="t", port=1, branch="b").to_wire()}},
+        indent=1,
+    )
+    + "\n"
+), (tmp / "index.json").read_text(encoding="utf-8")
 
 # ...and the OTHER half of that split, which is not cosmetic. A chat title
 # comes from a request body, json.loads produces a lone surrogate from
@@ -1692,7 +1836,6 @@ assert json.loads((tmp / "fsync-yes.json").read_text(encoding="utf-8")) == {"a":
 # dashes in its _readme would rewrite lines nobody touched.
 surrogate = json.loads('"\\ud800lone"')
 assert len(surrogate) == 5 and surrogate[0] == "\ud800", repr(surrogate)
-mod.INDEX_PATH = tmp / "index.json"
 mod.Index(chats={"c": mod.Chat(id="c", repo="r", title=surrogate, port=1, branch="b")}).save()
 assert mod.Index.load().chats["c"].title == surrogate, "the index no longer round-trips"
 
@@ -1700,7 +1843,7 @@ assert mod.Index.load().chats["c"].title == surrogate, "the index no longer roun
 # file the live manager is serving, which carries tier on every entry.
 multi_before = json.loads(seed(FIXTURE))
 assert len(multi_before["repos"]) >= 3, multi_before
-assert mod.add_repo(dict(NEW)) is None
+add_ok(dict(NEW), "the harness's own allowlist")
 multi_after = json.loads(mod.REPOS_PATH.read_text(encoding="utf-8"))
 assert [e["tier"] for e in multi_after["repos"][:-1]] == [
     e["tier"] for e in multi_before["repos"]
@@ -1744,6 +1887,29 @@ assert isinstance(err, mod.ApiError) and err.status == 500, err
 assert mod.REPOS_PATH.is_dir(), "the unreadable path was replaced"
 mod.REPOS_PATH.rmdir()
 
+# ...and a file that is not UTF-8 AT ALL, which is the third arm and the one
+# that used to escape. repos.json is edited by hand, and an editor set to
+# latin-1 needs one accented word in the _readme to produce this. The decode
+# happens in read_text BEFORE json.loads is reached, so what comes out is
+# UnicodeDecodeError -- a ValueError, and neither an OSError nor a
+# JSONDecodeError. Caught as json.JSONDecodeError it went straight past both
+# handlers and out of add_repo as an unhandled exception in a request thread;
+# the refusal below is the whole contract of the function.
+LATIN1 = '{\n  "_readme": ["le dépôt, hand-edited"],\n  "repos": [\n' \
+         '    {"name": "keep-me", "url": "u", "tier": 1}\n  ]\n}\n'
+mod.REPOS_PATH.write_bytes(LATIN1.encode("latin-1"))
+before_latin1 = mod.REPOS_PATH.read_bytes()
+err = mod.add_repo(dict(NEW))
+assert mod.REPOS_PATH.read_bytes() == before_latin1, "the latin-1 file was rewritten"
+assert isinstance(err, mod.ApiError) and err.status == 500, (
+    f"a latin-1 repos.json did not come back as a refusal; add_repo returned {err!r}"
+)
+assert "NOT modified" in err.message and "UnicodeDecodeError" in err.message, err.message
+# ...and the READER's own arm of it, which had the identical hole: every route
+# that resolves a repo went down with it rather than degrading to the empty
+# allowlist that arm exists to produce.
+assert mod.load_repos() == {}, "load_repos did not degrade a latin-1 file to an empty allowlist"
+
 # ...and the shapes that parse but are not an allowlist. Same class as the
 # trailing comma: something is in there, and it is not ours to overwrite.
 for junk in ('{"repos": "not a list"}', "[1, 2, 3]", '"a bare string"'):
@@ -1757,7 +1923,7 @@ for junk in ('{"repos": "not a list"}', "[1, 2, 3]", '"a bare string"'):
 # string), 1 as True, and "no" as True. allow_push grants a push with no
 # permission ask and public_throwaway permits models that train on the data, so
 # a value that is not a boolean has to be a refusal rather than a guess.
-CLEAN = json.dumps({"_readme": ["clean"], "repos": []}, indent=2) + "\n"
+CLEAN = CLEAN_START
 for key in ("allow_push", "public_throwaway", "edit_only"):
     for value in ("false", "no", 1, 0, None, [], "true"):
         mod.REPOS_PATH.write_text(CLEAN, encoding="utf-8")
@@ -1772,7 +1938,7 @@ for key in ("allow_push", "public_throwaway", "edit_only"):
         assert key in err.message, err.message
 # ...and real booleans still work, both ways round.
 mod.REPOS_PATH.unlink(missing_ok=True)
-assert mod.add_repo(dict(NEW, allow_push=True, edit_only=True)) is None
+add_ok(dict(NEW, allow_push=True, edit_only=True), "real booleans")
 entry = json.loads(mod.REPOS_PATH.read_text(encoding="utf-8"))["repos"][0]
 assert entry["allow_push"] is True and entry["edit_only"] is True, entry
 assert entry["public_throwaway"] is False, entry
@@ -1805,7 +1971,7 @@ for value in (1, 2):
     mod.REPOS_PATH.unlink(missing_ok=True)
     body = dict(NEW)
     body["tier"] = value
-    assert mod.add_repo(body) is None, value
+    add_ok(body, f"tier={value}")
     assert json.loads(mod.REPOS_PATH.read_text(encoding="utf-8"))["repos"][0]["tier"] == value
 
 # ---- 5. name and url are required; a duplicate name is refused -------------
@@ -1825,7 +1991,7 @@ for body in (
 assert not mod.REPOS_PATH.exists(), "a refused entry created the file anyway"
 
 # A MISSING file IS created -- there is no allowlist there to lose.
-assert mod.add_repo(dict(NEW)) is None
+add_ok(dict(NEW), "a missing file")
 doc = json.loads(mod.REPOS_PATH.read_text(encoding="utf-8"))
 assert [e["name"] for e in doc["repos"]] == ["added-repo"], doc
 
@@ -1841,11 +2007,34 @@ assert mod.load_repos()["added-repo"].allow_push is False, (
 )
 assert isinstance(err, mod.ApiError) and err.status == 409, err
 
+# ...and the WHITESPACE TWIN, which is what makes the .strip() on `name`
+# load-bearing rather than tidy. " added-repo " is a different string, so
+# without the strip it sails past the duplicate scan above and is appended --
+# and load_repos, being last-wins, then hands every chat on `added-repo` the
+# twin's allow_push:true. The refusal is the assertion; the file is the proof.
+err = mod.add_repo(dict(NEW, name=" added-repo ", allow_push=True))
+doc = json.loads(mod.REPOS_PATH.read_text(encoding="utf-8"))
+assert len(doc["repos"]) == 1, (
+    f"a whitespace twin of an existing name was appended: {doc['repos']}"
+)
+assert mod.load_repos()["added-repo"].allow_push is False, (
+    "the whitespace twin took the entry over: allow_push:true is now what "
+    "every chat on this repo gets"
+)
+assert isinstance(err, mod.ApiError) and err.status == 409, err
+# ...and the same strip on the way IN, so the name a future duplicate scan
+# compares against is the trimmed one rather than whatever the caller sent.
+mod.REPOS_PATH.write_text(CLEAN, encoding="utf-8")
+add_ok({"name": "  spaced  ", "url": "  https://github.com/o/spaced.git\n", "tier": 1}, "strip")
+stored = json.loads(mod.REPOS_PATH.read_text(encoding="utf-8"))["repos"][0]
+assert stored["name"] == "spaced" and stored["url"] == "https://github.com/o/spaced.git", stored
+assert "spaced" in mod.load_repos(), sorted(mod.load_repos())
+
 # ---- 6. a document with a _readme and no repos key at all ------------------
 # `.get("repos", [])` hands back a FRESH list for this one, so appending to that
 # list writes a document with no allowlist in it.
 mod.REPOS_PATH.write_text(json.dumps({"_readme": ["docs only"]}, indent=2), encoding="utf-8")
-assert mod.add_repo(dict(NEW)) is None
+add_ok(dict(NEW), "no repos key at all")
 doc = json.loads(mod.REPOS_PATH.read_text(encoding="utf-8"))
 assert doc["_readme"] == ["docs only"], doc
 assert [e["name"] for e in doc.get("repos", [])] == ["added-repo"], (
@@ -1889,6 +2078,45 @@ def parked(*_a, **_k):
     release.wait(20)
 
 
+class WatchedLock:
+    """`_repos_lock`, with an Event set the instant a thread BLOCKS on it.
+
+    This is what makes the mutual-exclusion assertion below deterministic
+    rather than pass-biased. The obvious form -- start a second writer, then
+    `assert not done.wait(1.0)` -- is satisfied by EVERY outcome in which the
+    second thread has not finished in a second, including one where it was
+    never scheduled at all: it cannot fail, so it cannot catch anything. What
+    has to be observed is the second writer REACHING the lock and NOT getting
+    through it, and a lock that reports its own contention says exactly that
+    with no sleep and no timeout in the passing path.
+    """
+
+    def __init__(self):
+        self._inner = threading.Lock()
+        self.contended = threading.Event()
+
+    def acquire(self, blocking=True, timeout=-1):
+        if self._inner.acquire(blocking=False):
+            return True
+        # Held by someone else, so this call is about to block -- which is
+        # the event, and it is recorded BEFORE the block rather than after.
+        self.contended.set()
+        return self._inner.acquire(blocking, timeout)
+
+    def release(self):
+        self._inner.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *_exc):
+        self.release()
+
+
+real_repos_lock = mod._repos_lock
+watched = WatchedLock()
+mod._repos_lock = watched
 mod.write_json_atomic = parked
 first = threading.Thread(target=mod.add_repo, args=({"name": "a", "url": "u", "tier": 1},))
 first.start()
@@ -1904,7 +2132,17 @@ try:
         target=lambda: (mod.add_repo({"name": "b", "url": "u", "tier": 1}), done.set())
     )
     second.start()
-    assert not done.wait(1.0), "a second writer walked straight into the critical section"
+    # BOTH halves, and neither is a timing guess. The first says the second
+    # writer got as far as the module's own `_repos_lock` -- a writer that
+    # takes no lock, or builds a fresh one per call, never contends and hangs
+    # here. The second says that having reached it, it is still on the wrong
+    # side: the holder is parked on `release`, so no scheduling outcome lets
+    # the second thread be finished at this instant.
+    assert watched.contended.wait(10), (
+        "a second writer never blocked on _repos_lock while the first held it: "
+        "it is not taking the module's lock at all"
+    )
+    assert not done.is_set(), "a second writer walked straight into the critical section"
     release.set()
     assert done.wait(10), "the second writer never finished"
     second.join(10)
@@ -1912,11 +2150,13 @@ finally:
     release.set()
     first.join(10)
 mod.write_json_atomic = real_write
+mod._repos_lock = real_repos_lock
 
-# ...and the consequence, against the real writer: concurrent adds do not lose
-# each other. Unlocked, two threads read the same N entries and the second
-# write drops the first's.
+# ...and the consequence, against the real writer AND the real lock: concurrent
+# adds do not lose each other. Unlocked, two threads read the same N entries and
+# the second write drops the first's.
 mod.REPOS_PATH.write_text(json.dumps({"_readme": ["keep"], "repos": []}), encoding="utf-8")
+concurrent_mark = len(_captured.getvalue())
 threads = [
     threading.Thread(target=mod.add_repo, args=({"name": f"c{i}", "url": "u", "tier": 1},))
     for i in range(24)
@@ -1931,12 +2171,112 @@ assert sorted(e["name"] for e in doc["repos"]) == sorted(f"c{i}" for i in range(
     f"{sorted(e['name'] for e in doc['repos'])}"
 )
 assert doc["_readme"] == ["keep"]
+# EXACTLY 24 audit lines, one per name -- not "more than ten". A threshold
+# under a check that already guarantees 24 can only be reached once that check
+# has failed, so it is unfalsifiable where it sits.
+concurrent_audit = sorted(
+    ln.split("allowlist: added ")[1]
+    for ln in _captured.getvalue()[concurrent_mark:].splitlines()
+    if "allowlist: added " in ln
+)
+assert concurrent_audit == sorted(f"c{i}" for i in range(24)), (
+    f"24 concurrent adds left these audit lines: {concurrent_audit}"
+)
 
 
 # ---- 9. the destination never holds a partial document ---------------------
-# Killed mid-write, at a point the child announces, so this is not a race. The
-# control is the same half-write aimed straight at the destination: it has to
-# tear, or the atomic assertion above it is measuring nothing.
+# TWO SEPARATE PROPERTIES, and the torn-write child below only covers the
+# first. It is SIGKILLed while json.dump is still running inside the
+# `with tmp.open(...)` block -- so what it shows is that the SERIALISATION
+# goes to a temp file, and the publish is never reached. Replacing
+# `tmp.replace(path)` with `shutil.copyfile(tmp, path); tmp.unlink()` leaves
+# every one of its checks passing, which is the mutation the tmp-and-rename
+# idiom exists to refuse.
+#
+# So the publish gets its own two assertions, before the child runs.
+
+# (a) THE DIRECTORY ENTRY IS SWAPPED, the destination is not rewritten. This
+# is the difference between rename and copy stated in the one place the kernel
+# will answer honestly: rename gives the destination the temp file's inode,
+# and any writer that opens the destination and writes into it -- copyfile,
+# read-truncate-write, plain `open(path, "w")` -- leaves the inode alone.
+mod.REPOS_PATH.write_text(CLEAN, encoding="utf-8")
+before_ino = mod.REPOS_PATH.stat().st_ino
+add_ok({"name": "published", "url": "u", "tier": 1}, "the publish")
+assert mod.REPOS_PATH.stat().st_ino != before_ino, (
+    "repos.json still has the inode it had before the write: the new document "
+    "was written INTO the destination rather than published over it by rename, "
+    "so every byte of it was visible to a concurrent reader as it landed"
+)
+
+# (b) ...and the consequence, measured on a reader that is actually looking.
+# 30 writes of a ~350KB document with a reader hammering the path: with
+# rename, a reader gets the whole old file or the whole new one and there is
+# no third outcome, so the tolerance is ZERO. Under copyfile the same loop
+# sees dozens of half-documents -- which is what `load_repos` would log as
+# "repos.json is unreadable -- allowlist is empty" on a live brain.
+crowd = {
+    "_readme": ["x" * 400],
+    "repos": [
+        {"name": f"r{i}", "url": "u" * 60, "tier": 1, "setup": "",
+         "edit_only": False, "allow_push": False, "public_throwaway": False}
+        for i in range(1500)
+    ],
+}
+mod.REPOS_PATH.write_text(json.dumps(crowd, indent=2) + "\n", encoding="utf-8")
+assert mod.REPOS_PATH.stat().st_size > 300_000, mod.REPOS_PATH.stat().st_size
+reader_stop, reader_read, reader_moved = threading.Event(), threading.Event(), threading.Event()
+partial = []
+
+
+def watch_repos():
+    """Read the destination in a tight loop; record anything that is not whole."""
+    first_size = None
+    while not reader_stop.is_set():
+        try:
+            blob = mod.REPOS_PATH.read_bytes()
+        except FileNotFoundError:
+            partial.append("the destination did not exist")
+            continue
+        if first_size is None:
+            first_size = len(blob)
+            reader_read.set()
+        elif len(blob) != first_size:
+            reader_moved.set()
+        try:
+            doc = json.loads(blob)
+        except ValueError as e:
+            partial.append(f"{type(e).__name__}: {e}")
+            continue
+        if len(doc.get("repos", [])) < len(crowd["repos"]):
+            partial.append(f"a document with only {len(doc.get('repos', []))} entries")
+
+
+watcher = threading.Thread(target=watch_repos, daemon=True)
+watcher.start()
+assert reader_read.wait(30), "the reader thread never ran; it would prove nothing"
+for i in range(30):
+    add_ok({"name": f"w{i}", "url": "u", "tier": 1}, "under a concurrent reader")
+# NOT PASS-BIASED: the file is now stable at a size it did not start at, so a
+# reader that is still running observes the change. One that never sampled
+# anything hangs here instead of quietly satisfying the zero-tears assertion.
+assert reader_moved.wait(30), (
+    "the reader never observed the file change at all, so its clean bill of "
+    "health is about a file nobody was writing"
+)
+reader_stop.set()
+watcher.join(30)
+assert not partial, (
+    f"a concurrent reader caught the writer mid-publish {len(partial)} times "
+    f"across 30 writes; the first was {partial[0][:160]!r}. On the brain that "
+    "is load_repos logging 'repos.json is unreadable -- allowlist is empty'"
+)
+
+
+# ...and the serialisation, killed mid-write at a point the child announces, so
+# this is not a race either. The control is the same half-write aimed straight
+# at the destination: it has to tear, or the atomic assertion above it is
+# measuring nothing.
 def killed_mid_write(mode, dest):
     child = subprocess.Popen(
         [sys.executable, sys.argv[0], sys.argv[1], "--torn", mode, str(dest)],
@@ -1982,9 +2322,26 @@ else:
     raise AssertionError("the non-atomic control produced a whole document; it proves nothing")
 
 # ---- 10. the audit trail --------------------------------------------------
+# The per-write assertion lives in add_ok(), which every single-threaded
+# success above goes through, and the 24-thread block checks its own 24 lines
+# by name. What is left for the end is the one thing neither can see: that a
+# refusal never logs one. `len(added) > 10` used to sit here, and it could not
+# fail -- the 24-thread check alone guarantees 24 lines, so the threshold was
+# only reachable once that check had already gone red.
 sys.stdout = sys.__stdout__
-added = [ln for ln in _captured.getvalue().splitlines() if "allowlist: added" in ln]
-assert len(added) > 10, f"the successful writes above left {len(added)} audit lines"
+added = [ln for ln in _captured.getvalue().splitlines() if "allowlist: added " in ln]
+names = {ln.split("allowlist: added ")[1] for ln in added}
+# Every name that was REFUSED somewhere above, and so must appear in no line:
+# the OSError write, the invalid bodies of section 5, and the whitespace twin
+# (whose untrimmed spelling is also what a dropped .strip() would log).
+for refused in ("nospace", "n", " added-repo "):
+    assert refused not in names, (
+        f"a refusal left an audit line claiming {refused!r} was added to the "
+        f"allowlist: {sorted(names)}"
+    )
+# ...and every name that WAS written is in one, which is the same set the
+# per-write add_ok() assertions built up one at a time.
+assert {"added-repo", "spaced", "published", "fsynced", "unknown-keys"} <= names, sorted(names)
 PY
 if "${MANAGER_PY[@]}" "$WORK/preflight-repos-writer.py" \
   "$REPO_ROOT/scripts/vps/code-agent-manager.py" \
@@ -1993,14 +2350,17 @@ then
   ok "a write keeps repos.example.json's 21-line _readme byte for byte, and every pre-existing entry whole"
   ok "...including every tier, the field RepoEntry does not have — and the reader still sees the whole allowlist"
   ok "...and a non-ASCII readme is not escaped, and the file keeps exactly one trailing newline"
-  ok "repos.json's writer fsyncs the file AND its directory; index.json's writer still does neither"
-  ok "...and index.json keeps ensure_ascii, so a lone-surrogate chat title stays writable"
-  ok "a corrupt, unreadable or wrong-shaped repos.json is refused and left byte-identical"
+  ok "an unknown key in the request body is dropped, and the entry's key order is repos.example.json's"
+  ok "add_repo's call site fsyncs the published file AND then its directory; Index.save's still flushes neither"
+  ok "...and index.json keeps indent=1 and ensure_ascii, so a lone-surrogate chat title stays writable"
+  ok "a corrupt, unreadable, latin-1 or wrong-shaped repos.json is refused and left byte-identical"
   ok "allow_push/public_throwaway/edit_only are refused unless they are booleans — _bool would read \"false\" as true"
   ok "tier is required and must be 1 or 2: 3, \"1\", 1.0, true and absent are all refused"
-  ok "a duplicate name is refused (load_repos is last-wins), and a write that fails is reported, not swallowed"
-  ok "the writer takes its OWN lock, never _lock, and 24 concurrent adds all survive"
-  ok "the destination never holds a partial document — and the non-atomic control, killed at the same point, tears"
+  ok "a duplicate name is refused (load_repos is last-wins), and so is its whitespace twin — and name/url are trimmed"
+  ok "a write that fails is reported, not swallowed, and every success leaves exactly one audit line"
+  ok "a second writer BLOCKS on the writer's own lock, never _lock, and 24 concurrent adds all survive"
+  ok "the publish swaps the inode, and 30 writes under a hammering reader yield zero partial documents"
+  ok "...and the serialisation is killed mid-write with the destination untouched, where the non-atomic control tears"
 else
   bad "the repos.json writer (see the assertion above)"
 fi
