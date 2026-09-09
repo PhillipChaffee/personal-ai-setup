@@ -49,15 +49,18 @@ runbook: docs/setup/70-code-agents.md
 
 secrets:
   - key: OPENCODE_SERVER_PASSWORD
-    # HTTP Basic for the manager gateway AND every per-chat server behind it.
+    # HTTP Basic for the manager gateway, AND the root key each per-chat
+    # server's password is derived from (issue #115) -- the containers get
+    # HMAC-SHA256(this, "code-agent/<epoch>/<chat-id>"), never this value.
     # deploy-vps.sh:690-691 enables the unit only when this and the PAT are
     # both non-empty.
     store: vps
     secret: true
     optional: false
     prompt: >-
-      HTTP Basic password for the code-agent gateway and every per-chat server
-      behind it; mint it with openssl rand -hex 32
+      HTTP Basic password for the code-agent gateway, and the root key each
+      chat container's own server password is derived from; mint it with
+      openssl rand -hex 32
     generate: openssl rand -hex 32
   - key: GITHUB_CODE_AGENT_PAT
     # Fine-grained, scoped to the repos in /data/code-agents/repos.json only.
@@ -228,15 +231,17 @@ blockers:
       call, so it says the policy is loaded and not that it is enforced."
   - id: the-gateway-proxy-has-no-per-chat-authorization
     severity: note
-    detail: "Issue #115. code-agent-manager.py's /chat/<id>/<path> takes any
-      chat id and authorizes none of them; the only gate is one global
-      PASSWORD, and run_container hands that same value to every chat
-      container. A code agent that can route to the gateway can therefore read
-      or drive any other chat, and wake a stopped one to do it - no mount bug
-      and no port guess needed. The probe's proxy arm reports whether the
+    detail: "code-agent-manager.py's /chat/<id>/<path> takes any chat id and
+      authorizes none of them; the only gate is one global PASSWORD, so
+      anything holding it - the phone app, anyone on the tailnet - reaches
+      every chat. Issue #115 closed the half that mattered most: run_container
+      no longer hands that value to the containers. Each one is baked with
+      HMAC-SHA256(PASSWORD, code-agent/<epoch>/<chat-id>) instead, which opens
+      only its own server on its own loopback, so a code agent that routes to
+      the gateway now gets a 401. The probe's proxy arm reports whether the
       gateway is reachable from inside a chat's netns (PASS refused / FAIL
-      served / SKIP unreachable); the credential model itself is #115's to fix
-      and is deliberately unchanged here."
+      served / SKIP unreachable). Still open, and deliberately: per-chat
+      authorization in proxy() itself."
   - id: image-build-is-unpinned-at-the-base
     severity: note
     detail: podman build pulls the OpenCode base image on first run

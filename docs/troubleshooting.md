@@ -318,7 +318,21 @@ returns 502, or the gateway itself is unreachable.
   `sudo scripts/vps/renew-tls-cert.sh` — without a cert the manager serves
   plain HTTP and logs a warning.
 - **401 from the gateway.** Password mismatch: the app's Code settings must
-  carry the current `OPENCODE_SERVER_PASSWORD` (username `opencode`).
+  carry the current `OPENCODE_SERVER_PASSWORD` (username `opencode`). A 401
+  from *inside* a chat container is not a fault: since #115 a container holds
+  only its own derived secret, which the gateway does not accept.
+- **502 "rejected the manager's credential", from a wake or a chat request.**
+  The container was created under a different `OPENCODE_SERVER_PASSWORD` and
+  `podman start` reuses env baked at create, so starting it can never fix it.
+  A rotated password is NOT this: the manager rebuilds such a container from
+  the volume and retries, once, before it will say this at all, so a rotation
+  heals itself and never reaches here. Seeing it means the rebuilt container
+  refused too — an engine that reported success without replacing the
+  container, a name collision, or a container recreated by hand. Do what the
+  message says — `podman rm -f code-agent-<id>`, then wake — and check
+  `journalctl -u code-agent-manager` for the rebuild it logged just before.
+  The volume keeps the workspace, the config and the transcript, so nothing is
+  lost.
 - **Create fails with a 403.** The repo isn't in
   `/data/code-agents/repos.json`, or you picked a zen-free model for a repo
   not flagged `public_throwaway` — both are policy, not bugs

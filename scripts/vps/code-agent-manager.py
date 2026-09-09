@@ -52,16 +52,30 @@ VERB on a path already listed are all failures rather than silent drift.
 
 The <id> in that last one is NOT authorized against the caller — there is no
 per-chat identity anywhere in this file. authed() answers "do you know the
-secret", the secret is one module-level PASSWORD, and run_container hands that
-same value to every chat container as OPENCODE_SERVER_PASSWORD. So any caller
-holding it can read or drive ANY chat, and wake a stopped one to do it. That
-is issue #115, which owns the fix (per-chat tokens, or not giving containers
-the gateway password at all); check-code-agents.sh --probe reports whether the
-gateway is reachable from inside a chat's network namespace.
+secret", and the secret is one module-level PASSWORD. So any caller holding
+PASSWORD can read or drive ANY chat, and wake a stopped one to do it.
+
+What issue #115 fixed is the narrower half of that: A CHAT CONTAINER IS NO
+LONGER ONE OF THOSE CALLERS. run_container used to hand every container the
+gateway's own PASSWORD as OPENCODE_SERVER_PASSWORD, so a code agent — an
+autonomous LLM with shell access — held the key to the wildcard proxy. Each
+container now gets chat_server_secret(): an HMAC of PASSWORD over the chat's
+own id, which opens that chat's own opencode server on its own loopback and
+nothing else. See chat_server_secret() for the derivation and CRED_EPOCH for
+how containers baked under an older secret are recreated.
+
+The residual is deliberate and unfixed here: anything ELSE holding PASSWORD —
+the phone app, anyone on the tailnet — still reaches every chat, because
+authed() still answers only "do you know the secret". check-code-agents.sh
+--probe reports whether the gateway is reachable from inside a chat's network
+namespace. Separately, run_container still passes the SAME GITHUB_CODE_AGENT_PAT
+into every container as GH_TOKEN — same class of problem, not fixed by this
+mechanism, since GitHub will not mint a per-chat PAT.
 
 Environment (from /data/secrets.env via the systemd unit):
-    OPENCODE_SERVER_PASSWORD  required — auth for this gateway AND the
-                              per-chat opencode servers behind it
+    OPENCODE_SERVER_PASSWORD  required — auth for this gateway, and the ROOT
+                              KEY the per-chat container credentials are
+                              derived from (never handed to a container itself)
     GITHUB_CODE_AGENT_PAT     required — fine-grained PAT, allowlisted repos
                               only; passed into chat containers as GH_TOKEN
     OPENCODE_ZEN_API_KEY      seeds each chat's opencode auth.json (Zen models)
@@ -103,6 +117,8 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import hashlib
+import hmac
 import http.client
 import json
 import os
@@ -118,7 +134,7 @@ from dataclasses import asdict, dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, ClassVar, TypeGuard
+from typing import Any, ClassVar, Literal, TypeGuard
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 # ------------------------------------------------------------- configuration
@@ -150,6 +166,23 @@ GITHUB_INTERVAL = int(os.environ.get("CODE_AGENT_GITHUB_INTERVAL", "300"))
 MAX_BODY_BYTES = int(os.environ.get("CODE_AGENT_MAX_BODY_MB", "32")) * 1024 * 1024
 
 PASSWORD = os.environ.get("OPENCODE_SERVER_PASSWORD", "")
+# The generation of the per-chat container credential (issue #115). It is in the
+# HMAC message AND recorded on each Chat as `cred_epoch`, so bumping it here is
+# a fleet-wide rotation: every container below the current epoch is recreated on
+# the next wake, proxy or manager start. A CONSTANT, not a knob — an operator who
+# set it per-host would be unable to explain why a chat kept being recreated.
+#
+# 0 is reserved and means "created before this existed", i.e. a container baked
+# with the raw gateway PASSWORD. There is deliberately no epoch-0 derivation.
+#
+# WHAT IT CANNOT DO — and the runbook in docs/security.md turns on this: it
+# cannot notice a rotated OPENCODE_SERVER_PASSWORD. Rotating the root key
+# changes every derived secret without moving this number, so every existing
+# chat goes on reading `cred_epoch == CRED_EPOCH` over a container baked from
+# the OLD key. The epoch is the eager signal for the change the manager can see
+# in its own source; the 401 such a container returns is the ground truth for
+# the one it cannot (recreate_container, and its callers).
+CRED_EPOCH = 1
 GH_PAT = os.environ.get("GITHUB_CODE_AGENT_PAT", "")
 # Overridable so the GitHub integration can be exercised at all: the verify
 # harness points this at a fake GitHub on localhost. Nothing else about the
@@ -253,6 +286,14 @@ class Chat:
     base: str = ""
     model: str | None = None
     probe: bool = False
+    # Which CRED_EPOCH this chat's CONTAINER was baked under — and pointedly
+    # NOT the credential itself. to_wire() is asdict() and route_list_chats
+    # publishes the result over GET /api/chats, so a secret field here would be
+    # served to every authenticated caller and logged by anything in between.
+    # An integer carries zero bits of the secret, which is exactly why it is
+    # the persisted field. Written only after the container has been observed
+    # answering (see mark_epoch); 0 means "recreate before trusting it".
+    cred_epoch: int = 0
     created: float = 0.0
     last_active: float = 0.0
 
@@ -271,6 +312,18 @@ class Chat:
             base=_str(raw, "base"),
             model=model if isinstance(model, str) else None,
             probe=_bool(raw, "probe"),
+            # Named EXPLICITLY, like every other field: from_wire is a
+            # whitelist, so a field it forgets is silently reset to its default
+            # on the first save/load round-trip. Dropping this line would put
+            # every chat back at epoch 0, and the manager would then recreate
+            # every container on every single wake, forever.
+            #
+            # Through _float rather than a bare int(): _float is this file's
+            # tolerate-junk reader and returns 0.0 for anything non-numeric,
+            # where int("x") from a hand-edited index.json would raise out of
+            # Index.load — which catches only JSONDecodeError and OSError — and
+            # so out of every request thread and the reaper.
+            cred_epoch=int(_float(raw, "cred_epoch")),
             created=_float(raw, "created"),
             last_active=_float(raw, "last_active"),
         )
@@ -378,10 +431,34 @@ class ConfigTemplateError(TypeError):
 
 
 class ChatLaunchError(RuntimeError):
-    """A chat's container started but its opencode server never answered."""
+    """A chat's container started but its opencode server never answered.
 
-    def __init__(self, seconds: int) -> None:
-        super().__init__(f"opencode server did not come up in {seconds}s")
+    Carries wait_for_chat's verdict verbatim rather than assuming "down": a
+    "refused" that reached here came back in milliseconds, and reporting it as
+    "did not come up in 90s" would send the reader looking at boot times when
+    the container is up and holding the wrong credential. Interpolated, not
+    branched on, so there is exactly one message to keep true.
+    """
+
+    def __init__(self, seconds: int, verdict: str) -> None:
+        super().__init__(
+            f"opencode server did not come up in {seconds}s (verdict: {verdict})",
+        )
+
+
+class MissingPasswordError(RuntimeError):
+    """No OPENCODE_SERVER_PASSWORD, so no key to derive a chat secret from.
+
+    Raised where the empty key would otherwise be silently ACCEPTED:
+    hmac.new(b"", ...) returns a normal-looking digest rather than failing, so
+    nothing downstream would ever notice. See chat_server_secret().
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "OPENCODE_SERVER_PASSWORD is empty — refusing to derive a chat "
+            "container credential from an empty key (it would be public)",
+        )
 
 
 _lock = threading.Lock()
@@ -522,7 +599,7 @@ def pending_permissions(
     def ask(chat: Chat) -> None:
         try:
             conn = http.client.HTTPConnection("127.0.0.1", chat.port, timeout=3)
-            conn.request("GET", "/permission", headers={"Authorization": basic_auth_header()})
+            conn.request("GET", "/permission", headers={"Authorization": chat_auth_header(chat)})
             resp = conn.getresponse()
             raw = resp.read().decode("utf-8", "replace")
             status = resp.status
@@ -1016,7 +1093,15 @@ def admission_count(index: Index) -> int:
 
 
 def run_container(chat: Chat) -> None:
-    """Create + start the chat's container (state lives in the volume)."""
+    """Create + start the chat's container (state lives in the volume).
+
+    The container is baked with THIS CHAT'S derived secret, never the gateway
+    PASSWORD (issue #115). Derived first, deliberately: chat_server_secret
+    raises on an empty PASSWORD, and doing it before the argv is built means an
+    unkeyed manager makes zero engine calls rather than creating containers
+    whose credential anyone can compute.
+    """
+    secret = chat_server_secret(chat.id)
     chat_dir = CHATS_DIR / chat.id
     args: list[str] = [
         "run",
@@ -1034,12 +1119,17 @@ def run_container(chat: Chat) -> None:
         "-v",
         f"{chat_dir}:/chat",
         "-e",
-        f"OPENCODE_SERVER_PASSWORD={PASSWORD}",
+        f"OPENCODE_SERVER_PASSWORD={secret}",
         "-e",
         "OPENCODE_DISABLE_AUTOUPDATE=1",
     ]
     if TOGETHER_KEY:
         args += ["-e", f"TOGETHER_API_KEY={TOGETHER_KEY}"]
+    # STILL THE SAME PAT IN EVERY CONTAINER, and #115's mechanism cannot help:
+    # GitHub does not mint a per-chat token, so chat A can push to any repo the
+    # allowlist covers, including chat B's branch. Same class of problem, out of
+    # scope here, and named so #115's closure is not read as "container
+    # credentials are now scoped".
     if GH_PAT and not chat.probe:
         args += ["-e", f"GH_TOKEN={GH_PAT}"]
     # 0.0.0.0 is inside the container's own netns; the host side is published
@@ -1066,26 +1156,79 @@ def oneshot(
     return engine(*args, timeout=timeout)
 
 
-def wait_for_chat(port: int, timeout_s: int = WAIT_FOR_CHAT_SECONDS) -> bool:
-    """Poll the chat's opencode server until it answers (auth'd or 401)."""
+WaitVerdict = Literal["ok", "refused", "down"]
+
+
+def wait_for_chat(chat: Chat, timeout_s: int = WAIT_FOR_CHAT_SECONDS) -> WaitVerdict:
+    """Poll the chat's opencode server until it answers, and say HOW.
+
+    TRI-STATE, and that is the fix for a latent bug. This used to be
+    `if resp.status in (HTTPStatus.OK, HTTPStatus.UNAUTHORIZED): return True`
+    with a docstring that said "auth'd or 401" — a 401 counted as a successful
+    wake. That was harmless while every container held the same credential the
+    manager sent. The moment credentials differ per chat it turns "this
+    container holds the WRONG credential" into "wake succeeded", followed by
+    mysterious 401s from the proxy that name nothing.
+
+    A 401 returns immediately rather than retrying: the container's password is
+    baked at create, so a server that refuses this credential once will refuse
+    it for as long as it lives. Waiting the full budget would only make the
+    misdiagnosis slower.
+    """
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         try:
-            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
-            conn.request("GET", "/session", headers={"Authorization": basic_auth_header()})
+            conn = http.client.HTTPConnection("127.0.0.1", chat.port, timeout=3)
+            conn.request("GET", "/session", headers={"Authorization": chat_auth_header(chat)})
             resp = conn.getresponse()
             resp.read()
             conn.close()
-            if resp.status in (HTTPStatus.OK, HTTPStatus.UNAUTHORIZED):
-                return True
+            if resp.status == HTTPStatus.OK:
+                return "ok"
+            if resp.status == HTTPStatus.UNAUTHORIZED:
+                return "refused"
         except OSError:
             pass
         time.sleep(1.5)
-    return False
+    return "down"
 
 
-def basic_auth_header() -> str:
-    tok = base64.b64encode(f"opencode:{PASSWORD}".encode()).decode()
+def chat_server_secret(chat_id: str) -> str:
+    """Derive this chat's opencode-server password: HMAC-SHA256(PASSWORD, label).
+
+    DERIVED, NEVER STORED. There is no file to create, no mode to get right,
+    nothing to lose on a restart and nothing to leak from index.json — the
+    manager recomputes it whenever it needs it, and the only copy at rest is
+    the one podman baked into the container's own environment.
+
+    The chat id is in the message, so a container's credential opens that chat's
+    server on that chat's loopback port and nothing else. CRED_EPOCH is in it
+    too, so bumping the constant rotates every chat at once.
+
+    THE EMPTY-PASSWORD GUARD IS LOAD BEARING AND A LENGTH CHECK CANNOT REPLACE
+    IT. hmac.new(b"", msg, sha256) does not fail — it happily returns a
+    perfectly normal-looking 64-character hex digest computed under a PUBLICLY
+    KNOWN key, so every chat's secret would be derivable by anyone who knows the
+    chat id. `len(secret) == 64` sails straight past that, which is why this
+    raises on the key instead of asserting on the output. main() already refuses
+    to start without PASSWORD; this is the second, independent refusal, because
+    the first one is a startup check and this is called at container-create time.
+    """
+    if not PASSWORD:
+        raise MissingPasswordError
+    label = f"code-agent/{CRED_EPOCH}/{chat_id}"
+    return hmac.new(PASSWORD.encode(), label.encode(), hashlib.sha256).hexdigest()
+
+
+def chat_auth_header(chat: Chat) -> str:
+    """Build the Basic header for talking TO this chat's own opencode server.
+
+    Replaces basic_auth_header(), which sent the gateway's PASSWORD. Taking a
+    Chat rather than a chat id is the point: every outbound call already has
+    one, so there is no site where the manager can accidentally sign with a
+    credential that belongs to a different chat.
+    """
+    tok = base64.b64encode(f"opencode:{chat_server_secret(chat.id)}".encode()).decode()
     return f"Basic {tok}"
 
 
@@ -1269,10 +1412,19 @@ def create_chat(request: CreateChatRequest) -> Chat | ApiError:
             if setup:
                 oneshot(chat_dir, f"cd /chat/workspace && {setup}", timeout=1800)
         run_container(chat)
-        if not wait_for_chat(chat.port):
+        verdict = wait_for_chat(chat)
+        if verdict != "ok":
             # Deliberate: a launch that never answers takes exactly the same
-            # cleanup path as the exceptions below.
-            raise ChatLaunchError(WAIT_FOR_CHAT_SECONDS)
+            # cleanup path as the exceptions below, and so does one that
+            # refuses. "refused" should be unreachable here — the container was
+            # baked seconds ago from the same derivation this call signs with —
+            # but if it happens it is a launch failure and the volume goes, and
+            # the verdict rides along so the log says which it was.
+            raise ChatLaunchError(WAIT_FOR_CHAT_SECONDS, verdict)
+        # Only NOW: the container has been observed answering to the current
+        # epoch's credential, so recording it is a statement of fact rather
+        # than of intent.
+        mark_epoch(chat)
     except (OSError, subprocess.SubprocessError, RuntimeError, ValueError) as e:
         log(f"create {chat_id} failed: {e}")
         notify_failure(f"chat create failed ({chat_id}): launch/setup error")
@@ -1287,6 +1439,27 @@ def create_chat(request: CreateChatRequest) -> Chat | ApiError:
     return chat
 
 
+def recreate_container(chat: Chat) -> WaitVerdict:
+    """Destroy a chat's container, rebuild it from the volume, wait for it.
+
+    THE ONLY ROUTE BACK from a container holding a credential this manager
+    cannot produce: `podman start` reuses the env baked at create, so no amount
+    of starting will ever hand it the current secret. Cheap and safe — the
+    volume holds the workspace, the opencode home, the config and the
+    transcript DB, which is the same reason wake_chat's "absent" arm already
+    rebuilds without ceremony.
+
+    ONE function for both callers on purpose. wake_chat finds the condition two
+    ways (a cred_epoch below CRED_EPOCH, or a 401 from a container it just
+    started) and proxy() finds it a third (a 401 on the request it was
+    forwarding); all three want exactly this, and a second copy would be the
+    one that drifts.
+    """
+    engine("rm", "-f", container_name(chat.id), check=False)
+    run_container(chat)
+    return wait_for_chat(chat)
+
+
 def wake_chat(chat_id: str) -> tuple[int, str]:
     with _lock:
         index = Index.load()
@@ -1294,7 +1467,18 @@ def wake_chat(chat_id: str) -> tuple[int, str]:
         if chat is None:
             return 404, "unknown chat"
         state = container_state(chat_id)
-        if state == "running":
+        # A container baked under an older CRED_EPOCH holds a credential this
+        # manager will never send again, and `podman start` REUSES BAKED ENV —
+        # so it can never acquire the new one by being started. Rebuilding it is
+        # the only route back, and this is one of the three places that happens
+        # (plus proxy() and the startup sweep).
+        #
+        # This test catches only what the SOURCE knows about: a bumped
+        # CRED_EPOCH. It cannot see a rotated OPENCODE_SERVER_PASSWORD, which
+        # leaves cred_epoch reading "current" over a container baked from the
+        # old root key — that one is caught below, by the 401 it produces.
+        stale = chat.cred_epoch < CRED_EPOCH
+        if state == "running" and not stale:
             # NOT touch(): we already hold `_lock` (:270) and touch() re-acquires
             # it. `threading.Lock` is not reentrant, so that call parks this
             # thread forever WHILE IT STILL OWNS the lock, and `_lock` is never
@@ -1335,17 +1519,118 @@ def wake_chat(chat_id: str) -> tuple[int, str]:
     # reaper stop the container in the middle of this very wake.
     touch(chat_id)
     try:
-        if state == "stopped":
-            engine("start", container_name(chat_id))
-        else:  # absent (e.g. removed after an image upgrade) — volume has it all
+        if state == "absent":
+            # e.g. removed after an image upgrade, or by the startup sweep —
+            # the volume has it all, and there is nothing to remove first.
             run_container(chat)
-        if not wait_for_chat(chat.port):
-            return 502, "chat container started but opencode did not answer"
+            verdict = wait_for_chat(chat)
+        elif stale:
+            log(
+                f"{chat_id}: container predates credential epoch {CRED_EPOCH} "
+                f"(at {chat.cred_epoch}) — rebuilding it from the volume",
+            )
+            verdict = recreate_container(chat)
+        else:
+            engine("start", container_name(chat_id))
+            verdict = wait_for_chat(chat)
+            if verdict == "refused":
+                # THE ROTATION ARM, and `stale` above is blind to it: cred_epoch
+                # tracks CRED_EPOCH, a SOURCE CONSTANT, so rotating
+                # OPENCODE_SERVER_PASSWORD leaves every chat reading "current"
+                # while its container still holds a secret derived from the old
+                # root key. The 401 is the only evidence that exists, and it is
+                # conclusive — the credential is baked at create, so a server
+                # that refuses this one once refuses it for as long as it lives.
+                # Rebuild and ask again, ONCE: a second refusal is a different
+                # fault (see wake_refusal) and retrying it would only be slower.
+                log(
+                    f"{chat_id}: container refused the current credential — "
+                    f"rebuilding it from the volume (rotated password?)",
+                )
+                verdict = recreate_container(chat)
+        if verdict != "ok":
+            return 502, wake_refusal(chat_id, verdict)
     except (OSError, subprocess.SubprocessError) as e:
         notify_failure(f"chat wake failed ({chat_id})")
         return 502, f"wake failed: {e}"
+    # AFTER the container answered, never before. A crash between the recreate
+    # and here leaves the epoch stale, so the next wake recreates redundantly —
+    # which costs one container start and is the direction that cannot strand a
+    # chat behind a credential the manager no longer has.
+    mark_epoch(chat)
     touch(chat_id)
     return 200, "woken"
+
+
+def wake_refusal(chat_id: str, verdict: WaitVerdict) -> str:
+    """Explain a wake that did not end with the chat answering.
+
+    "refused" gets its OWN sentence, naming the remedy, because it is the one
+    the reader cannot diagnose from the outside: the container is up, the port
+    is open, and every request through the proxy would 401 with no clue as to
+    why. It means the container holds a credential this manager does not
+    derive, AND the rebuild that both callers do first did not fix it — every
+    path to this string has already run recreate_container() once and asked
+    again. So it is not "your password rotated" (that heals itself); it is an
+    engine that reported success without replacing the container, a name
+    collision, or a container someone recreated by hand.
+    """
+    if verdict == "refused":
+        return (
+            f"chat container is running but rejected the manager's credential — "
+            f"it was created under a different OPENCODE_SERVER_PASSWORD. "
+            f"Recreate it: `{ENGINE} rm -f {container_name(chat_id)}`, then wake "
+            f"again (the volume keeps every bit of chat state)."
+        )
+    return "chat container started but opencode did not answer"
+
+
+def mark_epoch(chat: Chat) -> None:
+    """Record that this chat's container holds the CURRENT derived credential.
+
+    Called ONLY after the container has answered on that credential, so
+    `cred_epoch == CRED_EPOCH` is an observation and not an intention. The
+    in-memory Chat is updated too, so a create's response body agrees with what
+    was just written rather than reporting the pre-launch 0.
+    """
+    chat.cred_epoch = CRED_EPOCH
+    with _lock:
+        index = Index.load()
+        stored = index.chats.get(chat.id)
+        if stored is not None and stored.cred_epoch != CRED_EPOCH:
+            stored.cred_epoch = CRED_EPOCH
+            index.save()
+
+
+def sweep_stale_credentials() -> None:
+    """At startup, destroy containers baked under an older CRED_EPOCH.
+
+    Nothing is recreated here and nothing is woken: removal is enough, because
+    an absent container is exactly the state wake_chat's oldest arm already
+    knows how to rebuild from the volume, on demand, the way every other
+    spun-down chat is. Recreating them eagerly would start every chat the brain
+    has ever had at boot and walk straight through CODE_AGENT_MAX_ACTIVE.
+
+    ONLY the epoch, and that bound is worth being exact about: this pass sees a
+    bumped CRED_EPOCH and NOTHING ELSE. A deploy that rotated
+    OPENCODE_SERVER_PASSWORD leaves every cred_epoch reading "current", so this
+    is silent about it and correctly so — those containers announce themselves
+    by refusing the new credential, and wake_chat and proxy() rebuild them at
+    the first request. Overlaps the epoch test in wake_chat on purpose: that
+    one is request-time, and this is the pass that happens right after a
+    CRED_EPOCH bump ships, before anybody asks for anything.
+    """
+    index = Index.load()
+    stale = [c for c in index.chats.values() if c.cred_epoch < CRED_EPOCH]
+    for chat in stale:
+        if container_state(chat.id) == "absent":
+            continue
+        log(
+            f"{chat.id}: container predates credential epoch {CRED_EPOCH} "
+            f"(at {chat.cred_epoch}) — removing it; the next wake rebuilds it "
+            f"from the volume",
+        )
+        engine("rm", "-f", container_name(chat.id), check=False)
 
 
 def touch(chat_id: str) -> None:
@@ -1376,7 +1661,7 @@ def session_state(chat: Chat) -> str:
         conn.request(
             "GET",
             "/session/status",
-            headers={"Authorization": basic_auth_header()},
+            headers={"Authorization": chat_auth_header(chat)},
         )
         resp = conn.getresponse()
         body = resp.read().decode("utf-8", "replace")
@@ -2386,7 +2671,15 @@ class Handler(BaseHTTPRequestHandler):
         if chat is None:
             self.send_json(404, {"error": "unknown chat"})
             return
-        if container_state(chat_id) != "running":
+        # The epoch test comes FIRST, and not only to skip a subprocess: a
+        # container from an older epoch can be perfectly "running" and still
+        # refuse every credential this manager has, so "running" is not on its
+        # own a reason to forward. Route through wake_chat, which owns the
+        # rebuild. The 401 arm below would eventually reach the same place, but
+        # only by SENDING A REQUEST THIS BRANCH ALREADY KNOWS WILL BE REFUSED —
+        # one wasted round trip, one wasted upload of the body, and a log line
+        # that blames a refusal for something the manager could see coming.
+        if chat.cred_epoch < CRED_EPOCH or container_state(chat_id) != "running":
             code, msg = wake_chat(chat_id)
             if code != HTTPStatus.OK:
                 self.send_json(code, {"error": f"wake failed: {msg}"})
@@ -2399,18 +2692,28 @@ class Handler(BaseHTTPRequestHandler):
         if body is None:
             return
         headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP_HEADERS}
-        headers["Authorization"] = basic_auth_header()
+        # The caller's own Authorization is dropped by HOP_HEADERS above and
+        # REPLACED with this chat's derived credential — the caller never sees
+        # it and could not use it anywhere else if it did.
+        headers["Authorization"] = chat_auth_header(chat)
         headers["Host"] = f"127.0.0.1:{chat.port}"
         try:
-            conn = http.client.HTTPConnection("127.0.0.1", chat.port, timeout=20)
-            conn.request(self.command, target, body=body or None, headers=headers)
-            # Headers can be slow on blocking endpoints (a synchronous prompt
-            # runs the whole agent turn before answering); the 20s above only
-            # guards the connect.
-            if conn.sock is not None:
-                conn.sock.settimeout(600)
-            resp = conn.getresponse()
-        except OSError as e:
+            conn, resp = self.forward(chat, target, body, headers)
+            if resp.status == HTTPStatus.UNAUTHORIZED:
+                # NOT the caller's 401 — the caller was already authenticated by
+                # authed() to get here, and its Authorization was replaced above.
+                # This is the CHAT'S OWN SERVER refusing the derived credential,
+                # which happens for exactly one reason: the container was baked
+                # from a different root key, i.e. OPENCODE_SERVER_PASSWORD was
+                # rotated under it. cred_epoch cannot see that (see CRED_EPOCH),
+                # so this is where it gets seen.
+                resp.read()
+                conn.close()
+                replay = self.rebuild_and_replay(chat, target, body, headers)
+                if replay is None:
+                    return
+                conn, resp = replay
+        except (OSError, subprocess.SubprocessError) as e:
             self.send_json(502, {"error": f"chat unreachable: {e}"})
             return
 
@@ -2426,6 +2729,67 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = True
         self.end_headers()
         self.relay_body(conn, resp, chat_id)
+
+    def rebuild_and_replay(
+        self,
+        chat: Chat,
+        target: str,
+        body: bytes,
+        headers: dict[str, str],
+    ) -> tuple[http.client.HTTPConnection, http.client.HTTPResponse] | None:
+        """Rebuild a container that refused our credential, then send again.
+
+        Passing that 401 downstream is the worst available answer and is what
+        this used to do: the app shows an auth error, the password in its
+        settings is CORRECT, and nothing anywhere names the container. This is
+        the whole reason wait_for_chat became a tri-state, applied one layer up.
+
+        Returns None when the chat could not be brought back, having already
+        answered the caller with a 502 that names the container and the remedy.
+        """
+        log(
+            f"{chat.id}: the chat's own server refused the manager's "
+            f"credential — rebuilding the container from the volume "
+            f"(rotated password?)",
+        )
+        verdict = recreate_container(chat)
+        if verdict != "ok":
+            self.send_json(502, {"error": wake_refusal(chat.id, verdict)})
+            return None
+        mark_epoch(chat)
+        conn, resp = self.forward(chat, target, body, headers)
+        if resp.status == HTTPStatus.UNAUTHORIZED:
+            # ONCE. A container built seconds ago from the very derivation this
+            # request signs with, still refusing it, is a different fault — and
+            # a 502 that names the container beats a loop that never ends.
+            resp.read()
+            conn.close()
+            self.send_json(502, {"error": wake_refusal(chat.id, "refused")})
+            return None
+        return conn, resp
+
+    def forward(
+        self,
+        chat: Chat,
+        target: str,
+        body: bytes,
+        headers: dict[str, str],
+    ) -> tuple[http.client.HTTPConnection, http.client.HTTPResponse]:
+        """One request to this chat's own opencode server, unsent body in hand.
+
+        Its own method so the request can be SENT TWICE. A 401 is the container
+        telling us its baked credential is wrong; rebuilding it is only a fix if
+        the request that hit the refusal can then be delivered, and a refused
+        request was never acted on, so replaying it is safe by construction.
+        """
+        conn = http.client.HTTPConnection("127.0.0.1", chat.port, timeout=20)
+        conn.request(self.command, target, body=body or None, headers=headers)
+        # Headers can be slow on blocking endpoints (a synchronous prompt
+        # runs the whole agent turn before answering); the 20s above only
+        # guards the connect.
+        if conn.sock is not None:
+            conn.sock.settimeout(600)
+        return conn, conn.getresponse()
 
     def relay_body(
         self,
@@ -2511,6 +2875,12 @@ def main() -> None:
             "agent-side push/PR will fail until it is set.",
         )
     CHATS_DIR.mkdir(parents=True, exist_ok=True)
+    # Before the socket exists: a deploy that bumped CRED_EPOCH leaves
+    # containers holding a credential this process will never send, and podman
+    # start reuses baked env, so they have to go. A rotated
+    # OPENCODE_SERVER_PASSWORD is INVISIBLE here (the epoch does not move) and
+    # is healed per-chat at the first request instead — see wake_chat.
+    sweep_stale_credentials()
     if not REPOS_PATH.exists():
         log(
             f"WARNING: {REPOS_PATH} missing — the allowlist is empty; copy "

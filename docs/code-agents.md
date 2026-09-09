@@ -152,8 +152,9 @@ delivered branch carries no personal name or email (issue #17 C4).
      vectors: the scan subsumes the other two *within its bound*, which is why
      the verdict prints the bound and why the two named paths are still tried
      by name.
-  2. **chat B's published port on the host**, with the server password every
-     container holds.
+  2. **chat B's published port on the host**, with the server password A's own
+     container holds. Since #115 that is A's OWN derived secret and not B's, so
+     a refusal here is now the expected answer even if the port is reachable.
   3. **the manager's own `/chat/<id>/<path>` proxy** — the shortest path of the
      three, needing neither a mount bug nor a port guess (see the proxy note
      below).
@@ -170,12 +171,22 @@ delivered branch carries no personal name or email (issue #17 C4).
   counted as isolation. CI runs the same probes against fixtures
   (`test-verify-checks.sh`), which proves the probes fire — it proves nothing
   about podman.
-- **The gateway proxy is not per-chat authorized** (issue #115). Every
-  container is handed the one gateway password, and `/chat/<id>/<path>`
-  authorizes no ids against callers — so a chat that can route to the gateway
-  can read or drive any other chat, and wake a stopped one to do it. Whether a
-  container *can* route there is what the probe's third arm measures; the fix
-  is a credential-model change and belongs to that issue.
+- **The gateway proxy is still not per-chat authorized** — `/chat/<id>/<path>`
+  authorizes no ids against callers, and `authed()` answers only "do you know
+  the password". Anything holding `OPENCODE_SERVER_PASSWORD` (the app, anyone
+  on the tailnet) reaches every chat.
+  **What issue #115 closed is the narrower half: a chat container is no longer
+  one of those holders.** Each container is baked with
+  `HMAC-SHA256(OPENCODE_SERVER_PASSWORD, "code-agent/<epoch>/<chat-id>")`
+  instead — derived, never stored, and useful only against that chat's own
+  server on its own loopback port. So a code agent that can route to the
+  gateway now gets a 401 there. Whether a container *can* route there is what
+  the probe's third arm measures, and it is now measuring a refusal rather
+  than a breach.
+  Two things it does **not** fix, both deliberate: per-chat authorization in
+  `proxy()` (see the previous paragraph), and `GH_TOKEN` — the same
+  fine-grained PAT still goes into every container, because GitHub does not
+  mint per-chat tokens.
 - **Egress is unrestricted (accepted risk, MVP).** The agent's shell can
   reach the internet — it needs the model APIs and GitHub anyway. Combined
   with repo-content injection this is a data-exfiltration path; the accepted
@@ -251,10 +262,28 @@ it is why the `/share` refusal has to come from the chat's own resolved config
 (`"share": "disabled"`, probed by `check-code-agents.sh --probe`) rather than
 from a blocked route here.
 
-The `<id>` is **not authorized against the caller**, and that is not deliberate
-— it is issue #115. Authentication here answers "do you know the password",
-never "which chat are you", and every chat container is handed that same
-password. Anything that can reach this gateway can therefore drive any chat.
+The `<id>` is **not authorized against the caller**, and that is not deliberate.
+Authentication here answers "do you know the password", never "which chat are
+you", so anything that can reach this gateway with the password can drive any
+chat. That residual is the open half of issue #115.
+
+What #115 closed is the chat containers' part in it: a container no longer
+holds the gateway password. It is baked with
+`HMAC-SHA256(OPENCODE_SERVER_PASSWORD, "code-agent/<epoch>/<chat-id>")`, which
+opens that chat's own opencode server and nothing else — the manager derives it
+per request and stores it nowhere. The epoch is an integer on each index entry
+(`cred_epoch`), never the secret; a container below the current epoch is
+recreated from its volume on wake, on proxy, and in one sweep at startup,
+because `podman start` reuses env baked at create and so can never hand a
+container a new credential.
+
+The epoch only tracks a change to *this repo's source*, though. Rotating
+`OPENCODE_SERVER_PASSWORD` changes every derived secret without moving it, so
+those containers are found the other way: they answer the manager 401, and a
+401 from a chat's own server means exactly one thing — rebuild it from the
+volume and send the request again. That happens once per chat, at its first
+wake or request after the rotation, and the caller sees the answer rather than
+the 401 (`scripts/verify/test-code-agent-manager.sh` section 9f).
 
 ## Operations quick reference
 

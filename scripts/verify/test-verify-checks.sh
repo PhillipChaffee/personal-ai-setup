@@ -600,11 +600,15 @@ export CA_FAKE_HOST_FROM="$WORK/chats" CA_FAKE_HOST_TO=""
 # live (A reaches its own published port), chat B's port is closed, the gateway
 # is up and refuses B's session to A.
 #
-# THAT LAST ONE IS NOT WHAT THE BRAIN DOES TODAY. `proxy()` performs no
-# per-chat authorization (issue #115), so a reachable gateway serves chat B to
-# chat A. The fixture describes the shape the probe must call a PASS; the
-# shapes the brain can actually produce (a 2xx, and an unreachable gateway) are
-# fed in below and must NOT both look like this one.
+# THAT LAST ONE IS STILL NOT WHAT THE BRAIN DOES. `proxy()` performs no
+# per-chat authorization, so a gateway that accepted this credential would
+# serve chat B to chat A — and it is the CONTROL, not the vector, that changed
+# with #115: a container no longer holds a credential the gateway takes, so on
+# a real brain `GWCTL` is now 401 and the arm below (`CA_FAKE_GWCTL=401`) is
+# the live shape. This fixture describes the shape the probe must call a PASS
+# whatever the reason for the refusal; the shapes the brain can produce (a 2xx
+# if run_container ever regresses, and an unreachable gateway) are fed in below
+# and must NOT both look like this one.
 export CA_FAKE_TOOL=ok CA_FAKE_TOOLNEG=401 CA_FAKE_ROUTE=ok CA_FAKE_NET=down
 export CA_FAKE_GWCTL=ok CA_FAKE_GW=403
 
@@ -733,9 +737,10 @@ saw "...naming the host address it got through on" "via host.containers.internal
 CA_FAKE_NET=down
 
 # THE BROKEN SENTENCE (published port): chat B's port ANSWERS chat A and turns
-# the credential away. Not producible on this brain — one password serves every
-# container — but it is the normal answer the day issue #115 is fixed with
-# per-chat tokens, and until now it left no tag at all, so the arm printed
+# the credential away. This is now the NORMAL answer on a brain whose
+# container->host route is open: since #115 chat A holds a secret derived from
+# chat A's id, so chat B's server refuses it. Until this fixture existed it
+# left no tag at all, so the arm printed
 # "chat A reaches the host but NOT chat B's published port" about a port that
 # had just replied. That is the same collapse the proxy arm was fixed for,
 # left in its sibling: "refused" is not "unreachable".
@@ -828,10 +833,11 @@ CA_FAKE_PATH="$WORK/bin:$PATH"
 
 # --- 5c. the manager's own proxy: the shortest cross-chat path (issue #115) --
 # /chat/<id>/<path> takes any chat id, does no per-chat authorization, is gated
-# only by a global password every container is handed, and WAKES a stopped chat
-# to serve it. No mount bug and no port guess is needed. The three outcomes
-# below are the three the probe has to keep apart; collapsing "unreachable"
-# into "protected" is the same false negative 5b just removed.
+# only by a global password, and WAKES a stopped chat to serve it. No mount bug
+# and no port guess is needed. What #115 changed is who holds that password:
+# containers used to, and no longer do. The three outcomes below are the three
+# the probe has to keep apart; collapsing "unreachable" into "protected" is the
+# same false negative 5b just removed.
 
 # THE BROKEN INPUT: the gateway serves chat B's session to chat A.
 CA_FAKE_GW=ok
@@ -856,7 +862,9 @@ CA_FAKE_GWCTL=ok CA_FAKE_GW=403
 
 # The gateway is reachable but will not take the credential the container
 # holds. That IS isolation — a different sentence, because it is a different
-# fact, and it is what fixing #115 by option 2 would look like from here.
+# fact — and since #115 landed it is no longer a hypothetical: it is what a
+# real brain now produces, because the container's password is derived from its
+# own chat id and the gateway only accepts the root key.
 # TOOL is `ok` throughout this file's isolated fixture, which is what makes the
 # sentence true: some server DID take this token.
 CA_FAKE_GWCTL=401 CA_FAKE_GW=401
