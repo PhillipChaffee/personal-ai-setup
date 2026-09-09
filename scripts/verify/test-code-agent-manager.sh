@@ -3689,6 +3689,265 @@ restart_github pendingonly
   || bad "pendingonly: $(checks_for_12)"
 restart_github ""
 
+# ---- the repo the PAT cannot see (NAMED, not numbered -- issue #119) --------
+# The likeliest refusal any "validate this repo URL" route meets is "your token
+# cannot see that repo", and the fake had no way to say it. Nothing above could
+# stand in:
+#
+#   * `denied` is a WHOLE-REQUEST 403. Arming it to refuse one repo takes the
+#     branch sweep and every other GitHub-touching route down with it, so it can
+#     never show one repo refusing while the rest of the stack runs.
+#   * `nodefault` 403s GET /repos/:o/:r alone -- architecturally the right
+#     shape, the WRONG STATUS. Real GitHub answers 404 for a repo a fine-grained
+#     PAT is not scoped to; confirming existence to a token that cannot see it is
+#     exactly what it avoids.
+#
+# And the status is not cosmetic. gh() maps 401/403 onto "GitHub refused the
+# credential - the PAT may have expired", which is the wrong sentence for "your
+# token cannot see that repo" -- so a route built against a 403 fixture ships
+# the wrong one. FAKE_GITHUB_INVISIBLE_REPOS names SLUGS, so one repo is dark
+# while testowner/testrepo is served in the same run.
+
+INVISIBLE_SLUG="secretowner/secretrepo"
+SEAM_GH="http://127.0.0.1:$GH_PORT"
+
+start_github_invisible() { # start_github_invisible <slugs> [whole-request mode]
+  kill "$GITHUB_PID" 2>/dev/null || true
+  sleep 0.4
+  # The branches file for the same reason restart_github carries it: without it
+  # the fake falls back to its five-name built-in list and the branch-count
+  # assertion below fails for a reason that is not the seam's.
+  #
+  # The SECOND argument is the reason this is not just restart_github: it arms
+  # FAKE_GITHUB_MODE and the seam in the SAME server, which is the only way
+  # their documented precedence is observable at all. restart_github passes no
+  # slugs and this helper used to pass no mode, so the two arms never met and
+  # the order between them could be inverted with nothing going red.
+  FAKE_GITHUB_BRANCH="agent/testrepo-fixture" \
+    FAKE_GITHUB_INVISIBLE_REPOS="$1" \
+    FAKE_GITHUB_MODE="${2:-}" \
+    FAKE_GITHUB_BRANCHES_FILE="$WORK/branches.txt" \
+    python3 "$HERE/fake-github.py" --port "$GH_PORT" &
+  GITHUB_PID=$!
+  for _ in $(seq 1 20); do
+    curl -sS -o /dev/null "$SEAM_GH/repos/testowner/testrepo/pulls" && break
+    sleep 0.3
+  done
+}
+
+start_github_invisible "$INVISIBLE_SLUG"
+
+# BOTH halves, in ONE run, in one assertion. A whole-request arm passes the
+# first half and fails the second, and the first half alone would go green for
+# a fake that had simply stopped serving.
+INVIS_CODE="$(curl -sS -o "$WORK/invisible-repo.json" -w '%{http_code}' \
+  "$SEAM_GH/repos/$INVISIBLE_SLUG")"
+VIS_CODE="$(curl -sS -o "$WORK/visible-repo.json" -w '%{http_code}' \
+  "$SEAM_GH/repos/testowner/testrepo")"
+[ "$INVIS_CODE" = "404" ] && [ "$VIS_CODE" = "200" ] \
+  && grep -q '"default_branch"' "$WORK/visible-repo.json" \
+  && ok "an invisible repo 404s while testowner/testrepo is served in the same run" \
+  || bad "invisible/visible: $INVIS_CODE / $VIS_CODE $(cat "$WORK/visible-repo.json")"
+
+# The BODY, separately: a bare 404 with nothing in it would let a caller that
+# reads `message` pass here for the wrong reason and then meet a real GitHub
+# that does send one.
+python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+assert isinstance(d, dict), type(d).__name__
+assert d.get("message") == "Not Found", d
+' "$WORK/invisible-repo.json" \
+  && ok "the invisible 404 carries GitHub own body shape, not an empty one" \
+  || bad "invisible body: $(cat "$WORK/invisible-repo.json")"
+
+# EVERYTHING under the repo, not just the two-segment route -- a validator that
+# gets past GET /repos/:o/:r goes straight on to the branch check, and a
+# two-segment-only arm would hand it a 200 there.
+SEAM_SUB_OK="yes"
+for SEAM_PATH in "" "/branches" "/branches/main" "/pulls" "/pulls/12" \
+  "/commits/sha12/status" "/compare/main...agent/testrepo-fixture"; do
+  SEAM_CODE="$(curl -sS -o /dev/null -w '%{http_code}' \
+    "$SEAM_GH/repos/$INVISIBLE_SLUG$SEAM_PATH")"
+  [ "$SEAM_CODE" = "404" ] \
+    || { SEAM_SUB_OK="no"; echo "  (/repos/$INVISIBLE_SLUG$SEAM_PATH -> $SEAM_CODE)"; }
+done
+[ "$SEAM_SUB_OK" = "yes" ] \
+  && ok "every route under an invisible repo 404s, not only /repos/:o/:r" \
+  || bad "a route under the invisible repo still answered (see above)"
+
+# EVERY VERB, not just GET. The sweep above is seven curls with no -X, so it
+# says nothing about the one WRITE the manager makes; the arm sits in route(),
+# which do_GET and do_PUT share, and "cannot be reached by any verb" was a
+# claim about reading the code until this line. Both halves in one assertion:
+# an arm that skipped PUT would merge a pull request in a repo the PAT cannot
+# even see, and a fake that had stopped serving PUT entirely would pass the
+# first half alone.
+PUT_INVIS_CODE="$(curl -sS -X PUT -o /dev/null -w '%{http_code}' \
+  "$SEAM_GH/repos/$INVISIBLE_SLUG/pulls/12/merge")"
+PUT_VIS_CODE="$(curl -sS -X PUT -o "$WORK/visible-merge.json" -w '%{http_code}' \
+  "$SEAM_GH/repos/testowner/testrepo/pulls/12/merge")"
+[ "$PUT_INVIS_CODE" = "404" ] && [ "$PUT_VIS_CODE" = "200" ] \
+  && grep -q '"merged": true' "$WORK/visible-merge.json" \
+  && ok "PUT at an invisible repo 404s too, while the visible repo still merges" \
+  || bad "PUT merge: invisible $PUT_INVIS_CODE / visible $PUT_VIS_CODE \
+$(cat "$WORK/visible-merge.json")"
+
+# The counter must stay readable and stay COUNTING while the seam is armed --
+# it is answered ahead of every failure mode precisely so a call-count
+# assertion is never measuring the failure mode instead.
+#
+# EXACTLY two calls per window, and the window's 404 checked with it. Both
+# clauses are load bearing and the previous shape had neither: `CALLS_A >
+# CALLS_B` cannot fail, because counter_route() counts the two /__calls reads
+# THEMSELVES -- two consecutive reads with nothing between them go 1 -> 2 --
+# and a delta that ignores the status code stays green with the whole seam
+# deleted. Two is one for the 404'd repo read and one for the closing counter
+# read. A delta of one is the arm hoisted ahead of the counter, i.e. an
+# invisible request that was never counted.
+#
+# The MINIMUM of five windows, SPACED, because the manager's own github_loop is
+# sweeping this same fake every CODE_AGENT_GITHUB_INTERVAL seconds and can only
+# ADD calls to a window it lands in. The smallest window is the uncontended one;
+# asserting a single window would be the timing flake of issue #122. The spacing
+# is the other half of that: five back-to-back windows span ~150ms and a sweep
+# burst is longer than that, so unspaced they can ALL be contended (measured:
+# under saturating background traffic the minimum came back 7, and this
+# assertion would have failed for a reason that is not the seam's). At 0.4s
+# apart they straddle a whole sweep period instead.
+SEAM_MIN_DELTA=""
+SEAM_MID_CODES=""
+SEAM_COUNT_OK="yes"
+for _ in $(seq 1 5); do
+  sleep 0.4
+  CALLS_B="$(curl -sS "$SEAM_GH/__calls" | jget "d['calls']" 2>/dev/null || echo "-1")"
+  SEAM_MID_CODE="$(curl -sS -o /dev/null -w '%{http_code}' "$SEAM_GH/repos/$INVISIBLE_SLUG")"
+  CALLS_A="$(curl -sS "$SEAM_GH/__calls" | jget "d['calls']" 2>/dev/null || echo "-1")"
+  SEAM_MID_CODES="$SEAM_MID_CODES$SEAM_MID_CODE "
+  [ "$SEAM_MID_CODE" = "404" ] || SEAM_COUNT_OK="no"
+  if [ "$CALLS_B" = "-1" ] || [ "$CALLS_A" = "-1" ]; then
+    SEAM_COUNT_OK="no"; SEAM_MIN_DELTA="unreadable"; break
+  fi
+  SEAM_DELTA=$(( CALLS_A - CALLS_B ))
+  if [ -z "$SEAM_MIN_DELTA" ] || [ "$SEAM_DELTA" -lt "$SEAM_MIN_DELTA" ]; then
+    SEAM_MIN_DELTA="$SEAM_DELTA"
+  fi
+done
+[ "$SEAM_COUNT_OK" = "yes" ] && [ "$SEAM_MIN_DELTA" = "2" ] \
+  && ok "GET /__calls still answers, and the seam's own 404 is still counted" \
+  || bad "__calls under the seam: cheapest window cost $SEAM_MIN_DELTA calls (wanted 2), \
+the counted requests answered [ $SEAM_MID_CODES] (wanted 404)"
+
+# Through the LIVE manager, on the slug that really is testowner/testrepo
+# (ghrepo is the one allowlist entry with a real GitHub URL): another repo
+# going dark must cost this one nothing.
+# shellcheck disable=SC2086
+[ "$($CURL "$BASE/api/repos/ghrepo/branches" | jget "len(d['branches'])")" = "$EXPECTED" ] \
+  && ok "the manager still reads testowner/testrepo while another repo is dark" \
+  || bad "ghrepo branches under the seam: $($CURL "$BASE/api/repos/ghrepo/branches")"
+
+# The property #98's route will be built on, and validate_base's doctrine
+# already states: unverifiable is not the same as absent, and both are the
+# caller's to see. Run twice because the two answers come from two different
+# server states, and asserting one of them proves nothing about the pair -- so
+# the second run RECORDS the first one's answer and requires them to differ.
+# Without that cross-check the two runs are two independent assertions and
+# neither is about the pair the section is named for.
+cat >"$WORK/preflight-invisible.py" <<'PY'
+import importlib.util, json, sys
+
+spec = importlib.util.spec_from_file_location("cam", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+sys.modules["cam"] = mod
+spec.loader.exec_module(mod)
+
+# Set explicitly: this fixture does not run under `env -i`, so an inherited
+# GITHUB_API_BASE would let the developer's environment pick the server.
+mod.GH_API = sys.argv[2]
+mod.GH_PAT = "pat-fixture"
+want, slug, record = sys.argv[3], sys.argv[4], sys.argv[5]
+
+entry = mod.RepoEntry(name="dark", url="https://github.com/" + slug + ".git")
+err = mod.validate_base("dark", entry, "main")
+# Recorded BEFORE the asserts below, and recorded even when there was no error
+# at all, so the pair check in the other arm reports what this run really said
+# instead of dying on a missing file.
+if want == "absent":
+    answer = {"status": None} if err is None else {"status": err.status, "message": err.message}
+    with open(record, "w", encoding="utf-8") as fh:
+        json.dump(answer, fh)
+assert err is not None, "validate_base accepted a base it could not read"
+
+if want == "absent":
+    # A 404 is an ANSWER: the picker gets a 400 it can print beside the field.
+    assert err.status == 400, (err.status, err.message)
+    assert err.message == "base branch 'main' does not exist in " + slug, err.message
+    # And NOT the credential sentence, which is what gh()'s 401/403 arm would
+    # have produced from a 403 fixture.
+    assert "PAT" not in err.message, err.message
+else:
+    # Unverifiable: nothing may be built on it, and it must not read as absent.
+    assert err.status == 502, (err.status, err.message)
+    assert err.message.startswith("could not check base branch 'main'"), err.message
+    assert "does not exist" not in err.message, err.message
+    # THE PAIR, which is the only thing either run proves on its own: the same
+    # slug against the same armed seam, answered twice, and the two answers
+    # must not collapse into one. Reading the first run back is what makes this
+    # an assertion about the seam rather than about `serverfail` alone.
+    with open(record, encoding="utf-8") as fh:
+        first = json.load(fh)
+    assert first["status"] == 400, ("the 404 run did not answer 400", first)
+    assert first["status"] != err.status, (first, err.status)
+PY
+if "${MANAGER_PY[@]}" "$WORK/preflight-invisible.py" \
+    "$REPO_ROOT/scripts/vps/code-agent-manager.py" "$SEAM_GH" absent "$INVISIBLE_SLUG" \
+    "$WORK/base-absent.json"
+then
+  ok "a validate_base-shaped caller reads an invisible repo as an ABSENT base"
+else
+  bad "invisible base: the 404 did not read as absent (see the assertion above)"
+fi
+
+# The SAME slug, on a server where the seam is STILL ARMED for it -- the
+# previous shape restarted the fake with FAKE_GITHUB_INVISIBLE_REPOS unset, so
+# the second half talked to a server with the feature disarmed and any slug at
+# all would have produced the same 500. Arming both is also the only way the
+# documented order is observable: whole_request_mode() runs first, so the 500
+# must win. Invert those two lines in route() and this goes red, where before
+# it could not.
+start_github_invisible "$INVISIBLE_SLUG" serverfail
+SEAM_VS_MODE_CODE="$(curl -sS -o "$WORK/seam-vs-mode.json" -w '%{http_code}' \
+  "$SEAM_GH/repos/$INVISIBLE_SLUG")"
+SEAM_VS_MODE_CALLS="$(curl -sS "$SEAM_GH/__calls" | jget "d['calls']" 2>/dev/null || echo "-1")"
+# $INVIS_CODE is the COUNTERFACTUAL, and it is why this is an assertion about
+# the seam rather than about `serverfail`: it is the same slug on the same
+# armed seam with the mode CLEAR, measured at the top of this section, and it
+# was 404. Precedence with nothing to outrank is not precedence -- without this
+# clause the line would still pass with invisible_repo() stubbed out entirely.
+[ "$SEAM_VS_MODE_CODE" = "500" ] && [ "$INVIS_CODE" = "404" ] \
+  && [ "$SEAM_VS_MODE_CALLS" != "-1" ] \
+  && ok "a whole-request 5xx outranks the seam on the same slug, counter still readable" \
+  || bad "seam vs serverfail: mode armed $SEAM_VS_MODE_CODE (wanted 500), mode clear \
+$INVIS_CODE (wanted 404), calls $SEAM_VS_MODE_CALLS: $(cat "$WORK/seam-vs-mode.json")"
+
+if "${MANAGER_PY[@]}" "$WORK/preflight-invisible.py" \
+    "$REPO_ROOT/scripts/vps/code-agent-manager.py" "$SEAM_GH" unverifiable "$INVISIBLE_SLUG" \
+    "$WORK/base-absent.json"
+then
+  ok "and a 5xx on the same slug is UNVERIFIABLE, which is a different answer"
+else
+  bad "serverfail base: the 5xx did not read as unverifiable, or did not differ from the 404"
+fi
+
+# The regression guard: with the seam UNSET the named slug is served exactly
+# like any other, so nothing above this section can have changed meaning.
+restart_github ""
+SEAM_OFF_CODE="$(curl -sS -o "$WORK/invisible-off.json" -w '%{http_code}' \
+  "$SEAM_GH/repos/$INVISIBLE_SLUG")"
+[ "$SEAM_OFF_CODE" = "200" ] && grep -q '"default_branch"' "$WORK/invisible-off.json" \
+  && ok "with the seam unset the same slug is served like any other repo" \
+  || bad "seam unset: $SEAM_OFF_CODE $(cat "$WORK/invisible-off.json")"
+
 # ---- 6. idle spin-down + wake with state intact -----------------------------
 STOPPED="no"
 for _ in $(seq 1 15); do
