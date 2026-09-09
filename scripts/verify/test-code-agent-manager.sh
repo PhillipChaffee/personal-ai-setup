@@ -66,6 +66,15 @@ ok()  { echo "PASS  $1"; PASS_COUNT=$((PASS_COUNT + 1)); }
 bad() { echo "FAIL  $1"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
 jget() { python3 -c "import json,sys; d=json.load(sys.stdin); print(eval(sys.argv[1]))" "$1"; }
 cstate() { STUB_ENGINE_STATE="$WORK/stub" "$HERE/stub-engine.sh" container inspect --format '{{.State.Status}}' "code-agent-$1" 2>/dev/null || echo absent; }
+# What the ENGINE was actually handed for a chat's container, read back out of
+# the stub's state dir. This is the harness's `podman inspect`: it reports what
+# was baked in at create, which is the only thing a later `start` will reuse.
+# The value is never derived here from the manager's own code -- the point is to
+# see what crossed the process boundary.
+cfield() { python3 -c '
+import json, sys
+print(json.load(open(sys.argv[1], encoding="utf-8"))[sys.argv[2]])' \
+  "$WORK/stub/code-agent-$1.json" "$2"; }
 
 # Poll until the github sweep has published a pass that STARTED after now, using
 # /api/health's github_at as the predicate.
@@ -98,10 +107,16 @@ wait_sweeps() { # wait_sweeps <advances>
 MANAGER_PID=""
 GITHUB_PID=""
 NTFY_PID=""
+# A standalone mock-opencode-server used by section 4b. Declared here, with the
+# others, because a fixture that outlives a failed run holds a port and turns
+# the NEXT run's unrelated assertions red -- the confusion this file's PORT
+# comment already warns about.
+WF_PID=""
 cleanup() {
   [ -n "$MANAGER_PID" ] && kill "$MANAGER_PID" 2>/dev/null || true
   [ -n "$GITHUB_PID" ] && kill "$GITHUB_PID" 2>/dev/null || true
   [ -n "$NTFY_PID" ] && kill "$NTFY_PID" 2>/dev/null || true
+  [ -n "$WF_PID" ] && kill "$WF_PID" 2>/dev/null || true
   for pid in "$WORK"/stub/*.pid; do
     [ -f "$pid" ] && kill "$(cat "$pid")" 2>/dev/null || true
   done
@@ -934,6 +949,12 @@ mod = importlib.util.module_from_spec(spec)
 sys.modules["cam"] = mod
 spec.loader.exec_module(mod)
 
+# The module was imported with no environment, so PASSWORD is "". The probes
+# below sign with a DERIVED per-chat credential, and deriving one from an empty
+# key is refused (chat_server_secret) -- so without a key here these arms would
+# raise before they ever reached the socket they exist to test.
+mod.PASSWORD = "root-key-for-the-probe-fixture"  # noqa: S105
+
 # A port that is bound and immediately closed: connect() gets ECONNREFUSED
 # right away rather than hanging, so this costs no wall clock.
 s = socket.socket()
@@ -986,11 +1007,14 @@ mod = importlib.util.module_from_spec(spec)
 sys.modules["cam"] = mod
 spec.loader.exec_module(mod)
 
-# Set BOTH explicitly. This fixture does NOT run under `env -i`, so leaving
+# Set these explicitly. This fixture does NOT run under `env -i`, so leaving
 # them inherited would let the developer's real environment decide the outcome
 # instead of the guard under test.
 mod.GH_PAT = "pat-fixture"
 mod.TOGETHER_KEY = "together-fixture"
+# The gateway's root key. run_container derives from it and refuses an empty
+# one, so this is a precondition of reaching the argv at all.
+mod.PASSWORD = "gateway-root-key-fixture"  # noqa: S105
 
 recorded = []
 mod.engine = lambda *a, **k: recorded.append(list(a))
@@ -1014,7 +1038,22 @@ assert not any(a.startswith("GH_TOKEN=") for a in probe_argv)
 
 # The PAIRED call is what proves the GUARD decided, not the environment. With
 # GH_PAT empty the "no GH_TOKEN" assertion above passes vacuously.
-assert any(a.startswith("GH_TOKEN=") for a in argv_for(False))
+real_argv = argv_for(False)
+assert any(a.startswith("GH_TOKEN=") for a in real_argv)
+
+# The container's OWN credential, at the argv boundary (issue #115). Exactly one
+# such flag, and its value is not the gateway's key -- which is precisely what
+# `-e OPENCODE_SERVER_PASSWORD={PASSWORD}` used to emit. Values are compared,
+# never printed.
+baked = [a.split("=", 1)[1] for a in real_argv if a.startswith("OPENCODE_SERVER_PASSWORD=")]
+assert len(baked) == 1, len(baked)
+assert baked[0] != mod.PASSWORD, "the container was handed the gateway password"
+assert len(baked[0]) == 64, len(baked[0])
+# Two chats, two values -- at the argv boundary, where the id is the only input
+# that differs.
+mod.run_container(mod.Chat(id="otherchat", repo="testrepo", title="t", port=9002, branch="b"))
+other = [a.split("=", 1)[1] for a in recorded[-1] if a.startswith("OPENCODE_SERVER_PASSWORD=")]
+assert other and other[0] != baked[0], "two chats were handed the same credential"
 
 # validate_base's two refusals that happen BEFORE anything is cloned.
 err = mod.validate_base("_probe", mod.PROBE_REPO, "main")
@@ -1049,6 +1088,7 @@ PY
 if "${MANAGER_PY[@]}" "$WORK/preflight-argv.py" "$REPO_ROOT/scripts/vps/code-agent-manager.py"
 then
   ok "a probe chat gets TOGETHER_API_KEY but never GH_TOKEN (paired against a real chat)"
+  ok "run_container bakes a per-chat 64-hex secret, never the gateway password"
   ok "validate_base refuses _probe and a remote-less repo before any clone"
   ok "list_branches reports truncated when the pager exhausts"
 else
@@ -1175,9 +1215,14 @@ assert any("JSONDecodeError" in m for m in logged), logged
 # ChatLaunchError's only construction site sits behind a real 90s wait, so its
 # message body is unreachable in an end-to-end run. Assert that it HAS one
 # rather than re-deriving the f-string, which would only restate the class.
-err = mod.ChatLaunchError(mod.WAIT_FOR_CHAT_SECONDS)
+# The verdict is IN the message, though, and that is worth naming: a "refused"
+# reported as "did not come up in 90s" sends the reader to boot times when the
+# container is up and holding the wrong credential.
+err = mod.ChatLaunchError(mod.WAIT_FOR_CHAT_SECONDS, "refused")
 assert isinstance(err, RuntimeError)
 assert str(err)
+assert "refused" in str(err), str(err)
+assert "down" in str(mod.ChatLaunchError(mod.WAIT_FOR_CHAT_SECONDS, "down"))
 PY
 if "${MANAGER_PY[@]}" "$WORK/preflight-corrupt.py" "$REPO_ROOT/scripts/vps/code-agent-manager.py"
 then
@@ -1577,6 +1622,173 @@ CODE="$($CURL -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: applicati
   -d '{"repo":"testrepo","task":"third"}' "$BASE/api/chats")"
 [ "$CODE" = "409" ] && ok "max-active refusal (409) at the cap" \
   || bad "cap: got $CODE (both chats must be running for this to mean anything; states were $CAP_STATES)"
+
+# ---- 4b. per-chat container credentials (issue #115) ------------------------
+# Two chats are up, which is the only moment in this file where a credential
+# minted for one can be pointed at the other. Everything here is asserted over
+# HTTP against the real servers, never in-process: the claim is about what a
+# process holding chat A's environment can reach, and an in-process check of
+# the derivation would be a check that the manager agrees with itself.
+#
+# The whole section is only meaningful because stub-engine.sh now records the
+# `-e OPENCODE_SERVER_PASSWORD` it is handed and launches each mock from that
+# recorded value. Before that it discarded `-e` and inherited the manager's own
+# password, so every assertion below passed while covering nothing at all.
+#
+# Reaper-proofing, and it has to be tighter than the cap check's above. This
+# section talks to the chats' ports DIRECTLY, so a chat the reaper took answers
+# nothing at all -- which would read as "the credential was refused" when it is
+# really "there was nobody there". A conditional wake is not enough: a chat that
+# is running but was last touched 3.5s ago passes the condition and is gone a
+# heartbeat later (IDLE_SECONDS=4, REAPER_INTERVAL=2). Observed exactly that.
+# So: one proxy request per chat, which wakes it AND touches it, issued
+# immediately before the direct-port calls with nothing slow in between.
+wake_and_touch() {
+  for _cred_id in "$CID" "$BID"; do
+    # shellcheck disable=SC2086
+    $CURL --max-time 120 -o /dev/null "$BASE/chat/$_cred_id/session" || true
+  done
+}
+SEC_A="$(cfield "$CID" password)"; PORT_A="$(cfield "$CID" port)"
+SEC_B="$(cfield "$BID" password)"; PORT_B="$(cfield "$BID" port)"
+
+[ -n "$SEC_A" ] && [ "$SEC_A" != "$SEC_B" ] \
+  && ok "two chats get two different container credentials" \
+  || bad "container credentials are not per-chat (A=$SEC_A B=$SEC_B)"
+[ "$SEC_A" != "$PASS" ] && [ "$SEC_B" != "$PASS" ] \
+  && ok "no container is handed the gateway password" \
+  || bad "a container holds the gateway password (#115)"
+printf '%s' "$SEC_A" | grep -qE '^[0-9a-f]{64}$' \
+  && printf '%s' "$SEC_B" | grep -qE '^[0-9a-f]{64}$' \
+  && ok "each container credential is a 64-hex digest" \
+  || bad "container credential is not 64 hex (A=$SEC_A B=$SEC_B)"
+
+# The derivation itself, recomputed here rather than imported, so a change to
+# the HMAC message is a deliberate edit in two places. The epoch is read out of
+# the source for the same reason cred_epoch exists at all: bumping it must
+# rotate the value, and a hardcoded 1 here would hide that.
+CRED_EPOCH="$(sed -n 's/^CRED_EPOCH = \([0-9][0-9]*\).*/\1/p' \
+  "$REPO_ROOT/scripts/vps/code-agent-manager.py")"
+EXPECT_A="$(python3 -c '
+import hashlib, hmac, sys
+key, epoch, cid = sys.argv[1], sys.argv[2], sys.argv[3]
+print(hmac.new(key.encode(), f"code-agent/{epoch}/{cid}".encode(), hashlib.sha256).hexdigest())
+' "$PASS" "$CRED_EPOCH" "$CID")"
+[ -n "$CRED_EPOCH" ] && [ "$SEC_A" = "$EXPECT_A" ] \
+  && ok "the container credential is HMAC(password, code-agent/<epoch>/<id>)" \
+  || bad "credential is not the documented derivation (epoch='$CRED_EPOCH')"
+
+# THE ASSERTION FOR #115, and it needs its control first: a credential that
+# opens nothing at all would 401 everywhere and prove nothing. So chat A's
+# secret must work at chat A's own port BEFORE the two refusals mean anything.
+# All three calls back to back, right after the touch, for the reason above.
+# `|| true`, not `|| echo 000`: -w already prints 000 on a failed transfer, and
+# the extra echo made the two run together into an unreadable "000000".
+code_at() { curl -sS --max-time 10 -o /dev/null -w '%{http_code}' -u "opencode:$1" "$2" || true; }
+wake_and_touch
+CTL="$(code_at "$SEC_A" "http://127.0.0.1:$PORT_A/session")"
+X_CHAT="$(code_at "$SEC_A" "http://127.0.0.1:$PORT_B/session")"
+GW="$(code_at "$SEC_A" "$BASE/api/chats")"
+GWOK="$(code_at "$PASS" "$BASE/api/chats")"
+[ "$CTL" = "200" ] && ok "control: chat A's credential opens chat A's own server" \
+  || { bad "control failed: chat A's credential got $CTL at its own port $PORT_A"
+       echo "      (chat A is $(cstate "$CID"), chat B is $(cstate "$BID"))"; }
+[ "$X_CHAT" = "401" ] && ok "chat A's credential is refused 401 at chat B's port" \
+  || bad "cross-chat: chat A's credential got $X_CHAT at chat B's port $PORT_B"
+[ "$GW" = "401" ] && ok "chat A's credential is refused 401 at the gateway (#115)" \
+  || bad "#115: a container credential got $GW from the gateway"
+# The gateway's own control, beside the refusal it is paired with: a gateway
+# answering 401 to everything would satisfy the line above.
+[ "$GWOK" = "200" ] && ok "control: the gateway password still opens the gateway" \
+  || bad "control failed: the gateway password got $GWOK"
+
+# No response body carries a secret. Substring of the RAW bytes, not a key
+# lookup: a field that gets renamed, nested, or spliced in beside the chat (the
+# way `stat`, `status` and `url` already are) would slip past a key check.
+# $CHAT is the POST /api/chats body captured at create; $LIST is a fresh GET.
+# shellcheck disable=SC2086
+LIST="$($CURL "$BASE/api/chats")"
+LEAK=""
+for _s in "$SEC_A" "$SEC_B" "$PASS"; do
+  case "$CHAT" in *"$_s"*) LEAK="$LEAK POST" ;; esac
+  case "$LIST" in *"$_s"*) LEAK="$LEAK GET" ;; esac
+done
+# The matcher's own control: $CID really is in both bodies, so an empty body or
+# a broken `case` cannot report "no secrets found".
+CTL_HIT="no"
+case "$CHAT" in *"$CID"*) case "$LIST" in *"$CID"*) CTL_HIT="yes" ;; esac ;; esac
+[ "$CTL_HIT" = "yes" ] && ok "control: the substring test can find a chat id in both bodies" \
+  || bad "the leak matcher is inert -- \$CID is not in the bodies it searches"
+[ -z "$LEAK" ] && ok "no secret appears in the POST or GET /api/chats body" \
+  || bad "a secret appears in the response body of:$LEAK"
+
+# cred_epoch survives the save/load round-trip. Asserted through the API, which
+# is Index.load() off disk, so a from_wire that forgot the field reports 0 here
+# and the manager would recreate every container on every wake forever.
+EPOCH_SEEN="$($CURL "$BASE/api/chats" | CID="$CID" python3 -c '
+import json, os, sys
+row = next(c for c in json.load(sys.stdin)["chats"] if c["id"] == os.environ["CID"])
+print(row.get("cred_epoch", "MISSING"))')"
+[ "$EPOCH_SEEN" = "$CRED_EPOCH" ] \
+  && ok "cred_epoch survives a save/load round-trip (reads $EPOCH_SEEN)" \
+  || bad "cred_epoch round-trip: index reports '$EPOCH_SEEN', source says '$CRED_EPOCH'"
+
+# wait_for_chat's three verdicts, over real sockets. Its own mock rather than a
+# live chat's: the idle reaper would otherwise be free to spin the chat down
+# mid-check, and "the container went away" would print as "the credential was
+# refused" -- the exact confusion this tri-state exists to end.
+#
+# The fixture's password is the derivation for id `waitfor-fixture`, recomputed
+# here, so the "ok" case is a genuine control: it hits the SAME port over the
+# SAME code path as the "refused" case and differs only in the chat id the
+# credential is derived from. Before #115 both returned True, and the docstring
+# said "auth'd or 401" out loud.
+WF_PORT=$((PORT + 18))
+WF_PASS="$(python3 -c '
+import hashlib, hmac, sys
+key, epoch, cid = sys.argv[1], sys.argv[2], sys.argv[3]
+print(hmac.new(key.encode(), f"code-agent/{epoch}/{cid}".encode(), hashlib.sha256).hexdigest())
+' "$PASS" "$CRED_EPOCH" "waitfor-fixture")"
+mkdir -p "$WORK/waitfor/home"
+python3 "$HERE/mock-opencode-server.py" --port "$WF_PORT" --dir "$WORK/waitfor" \
+  --password "$WF_PASS" >"$WORK/waitfor.log" 2>&1 &
+WF_PID=$!
+for _ in $(seq 1 40); do
+  curl -sS --max-time 2 -o /dev/null "http://127.0.0.1:$WF_PORT/session" && break
+  sleep 0.25
+done
+cat >"$WORK/preflight-waitfor.py" <<'PY'
+import importlib.util, sys
+
+spec = importlib.util.spec_from_file_location("cam", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+sys.modules["cam"] = mod
+spec.loader.exec_module(mod)
+
+port, pw, dead = int(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+mod.PASSWORD = pw          # the module read an empty env; this is the root key
+
+
+def chat(cid, port):
+    return mod.Chat(id=cid, repo="r", title="t", port=port, branch="b")
+
+
+verdict = mod.wait_for_chat(chat("waitfor-fixture", port), timeout_s=8)
+assert verdict == "ok", f"control: the fixture answered {verdict!r}, not 'ok'"
+verdict = mod.wait_for_chat(chat("some-other-chat", port), timeout_s=8)
+assert verdict == "refused", f"a 401 read as {verdict!r}, not 'refused'"
+verdict = mod.wait_for_chat(chat("waitfor-fixture", dead), timeout_s=1)
+assert verdict == "down", f"a closed port read as {verdict!r}, not 'down'"
+PY
+if "${MANAGER_PY[@]}" "$WORK/preflight-waitfor.py" \
+     "$REPO_ROOT/scripts/vps/code-agent-manager.py" "$WF_PORT" "$PASS" "$((PORT + 19))"
+then
+  ok "wait_for_chat: answering is ok, 401 is refused, a closed port is down"
+else
+  bad "wait_for_chat's verdicts (see the assertion above)"
+fi
+kill "$WF_PID" 2>/dev/null || true
+
 # shellcheck disable=SC2086
 $CURL -X POST "$BASE/api/chats/$BID/stop" >/dev/null
 [ "$(cstate "$BID")" = "exited" ] && ok "explicit stop" || bad "stop did not stop ($(cstate "$BID"))"
@@ -2641,6 +2853,60 @@ CODE="$($CURL --max-time 10 -o /dev/null -w '%{http_code}' "$BASE/chat/$CID/sess
   && ok "gateway still serving after a redundant wake" \
   || bad "gateway wedged after redundant wake: HTTP $CODE"
 
+# ---- 7a. migrating a container baked before #115 ---------------------------
+# THE NAMED BROKEN INPUT, staged exactly: a container whose baked
+# OPENCODE_SERVER_PASSWORD *is the gateway password*, which is what every chat
+# on the brain holds today, plus the cred_epoch 0 that says so. `podman start`
+# reuses baked env, so such a container can NEVER acquire the new credential by
+# being started — recreating it from the volume is the only way back, and this
+# is the assertion that the manager does it.
+#
+# shellcheck disable=SC2086
+$CURL -X POST "$BASE/api/chats/$CID/stop" >/dev/null
+python3 -c '
+import json, sys
+path, pw = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as f:
+    state = json.load(f)
+state["password"] = pw          # the pre-#115 world, verbatim
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(state, f)
+' "$WORK/stub/code-agent-$CID.json" "$PASS"
+python3 -c '
+import json, sys
+path, cid = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as f:
+    index = json.load(f)
+index["chats"][cid]["cred_epoch"] = 0
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(index, f)
+' "$WORK/root/index.json" "$CID"
+[ "$(cfield "$CID" password)" = "$PASS" ] \
+  && ok "staged a legacy container holding the gateway password" \
+  || bad "could not stage the legacy container (staging failed, so what follows is vacuous)"
+# shellcheck disable=SC2086
+CODE="$($CURL --max-time 120 -o /dev/null -w '%{http_code}' -X POST "$BASE/api/chats/$CID/wake")"
+MIGRATED="$(cfield "$CID" password)"
+[ "$CODE" = "200" ] && ok "a legacy chat still wakes" \
+  || bad "legacy wake returned $CODE (a 502 here is the recreate not happening)"
+[ "$MIGRATED" != "$PASS" ] \
+  && ok "the recreated container no longer holds the gateway password" \
+  || bad "the recreated container was handed the gateway password again"
+[ "$MIGRATED" = "$EXPECT_A" ] \
+  && ok "the recreated container holds this chat's derived secret" \
+  || bad "recreated credential is '$MIGRATED', expected the derivation"
+# shellcheck disable=SC2086
+CODE="$($CURL --max-time 30 -o /dev/null -w '%{http_code}' "$BASE/chat/$CID/session" || echo 000)"
+[ "$CODE" = "200" ] && ok "the migrated chat is reachable through the proxy" \
+  || bad "proxy to the migrated chat: HTTP $CODE"
+EPOCH_SEEN="$($CURL "$BASE/api/chats" | CID="$CID" python3 -c '
+import json, os, sys
+row = next(c for c in json.load(sys.stdin)["chats"] if c["id"] == os.environ["CID"])
+print(row.get("cred_epoch", "MISSING"))')"
+[ "$EPOCH_SEEN" = "$CRED_EPOCH" ] \
+  && ok "the epoch is bumped only after the recreated container answered" \
+  || bad "cred_epoch after migration is '$EPOCH_SEEN', wanted '$CRED_EPOCH'"
+
 # shellcheck disable=SC2086
 $CURL -X DELETE "$BASE/api/chats/$CID?purge=1" >/dev/null
 [ ! -d "$WORK/root/chats/$CID" ] && ok "final delete purges" || bad "final purge failed"
@@ -2652,7 +2918,7 @@ $CURL -X DELETE "$BASE/api/chats/$CID?purge=1" >/dev/null
 # WAIT_FOR_CHAT_SECONDS (90s, not env-tunable) end to end. In-process they cost
 # nothing.
 cat >"$WORK/preflight-wake.py" <<'PY'
-import importlib.util, sys, tempfile, time
+import hashlib, hmac, importlib.util, sys, tempfile, time
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location("cam", sys.argv[1])
@@ -2663,6 +2929,7 @@ spec.loader.exec_module(mod)
 tmp = Path(tempfile.mkdtemp())
 mod.INDEX_PATH = tmp / "index.json"
 mod._reaper_memory.blocked = frozenset()
+REAL_RUN_CONTAINER = mod.run_container      # block 5 needs the real one
 
 started = []
 mod.engine = lambda *a, **k: started.append(list(a))
@@ -2670,8 +2937,13 @@ mod.run_container = lambda c: started.append(["run", c.id])
 mod.notify_failure = lambda m: None
 
 
-def chat(cid):
-    return mod.Chat(id=cid, repo="r", title="t", port=1, branch="b", last_active=time.time())
+def chat(cid, epoch=None):
+    # cred_epoch defaults to the CURRENT one: a chat left at 0 is "baked under
+    # an older credential", which sends wake_chat down the recreate path and
+    # would silently change what blocks 1-3 are testing.
+    return mod.Chat(id=cid, repo="r", title="t", port=1, branch="b",
+                    cred_epoch=mod.CRED_EPOCH if epoch is None else epoch,
+                    last_active=time.time())
 
 
 # 1. the cap is full. wait_for_chat MUST be stubbed even though this arm should
@@ -2679,7 +2951,7 @@ def chat(cid):
 #    dead port for a real 90s and turn a clear failure into a hang.
 mod.Index(chats={c: chat(c) for c in ("sleeper", "busy1", "busy2")}).save()
 mod.container_state = lambda cid: "stopped" if cid == "sleeper" else "running"
-mod.wait_for_chat = lambda port: True
+mod.wait_for_chat = lambda chat: "ok"
 code, msg = mod.wake_chat("sleeper")
 assert code == 409, (code, msg)
 assert "already active" in msg, msg
@@ -2689,17 +2961,79 @@ assert started == [], started
 # 2. the container starts but opencode never answers.
 mod.Index(chats={"lonely": chat("lonely")}).save()
 mod.container_state = lambda cid: "stopped"
-mod.wait_for_chat = lambda port: False
+mod.wait_for_chat = lambda chat: "down"
 started.clear()
 code, msg = mod.wake_chat("lonely")
 assert code == 502, (code, msg)
 assert msg == "chat container started but opencode did not answer", msg
 assert started == [["start", mod.container_name("lonely")]], started
 
+# 2b. the container is up and REFUSES the credential. Same 502 as block 2, so
+#     the MESSAGE is the discriminator: before the tri-state, wait_for_chat
+#     returned True on a 401 and this case reported "woken", then 401'd from the
+#     proxy with nothing to go on. The fixture starts at epoch 0 so the second
+#     half is a real claim -- a refused wake must not record the epoch, or the
+#     next one would trust a container that has just refused this one.
+mod.Index(chats={"refuser": chat("refuser", epoch=0)}).save()
+mod.container_state = lambda cid: "stopped"
+mod.wait_for_chat = lambda chat: "refused"
+started.clear()
+code, msg = mod.wake_chat("refuser")
+assert code == 502, (code, msg)
+assert "rejected the manager's credential" in msg, msg
+assert "rm -f code-agent-refuser" in msg, msg          # the remedy, by name
+assert msg != "chat container started but opencode did not answer", msg
+assert mod.Index.load().chats["refuser"].cred_epoch == 0, mod.Index.load().chats
+
+# 2c. a container baked under an older epoch is RECREATED, not started, and the
+#     epoch is recorded only after it answers. `podman start` reuses baked env,
+#     so `start` here would hand the chat back with a credential the manager
+#     cannot use -- which is why the discriminator is the engine calls.
+mod.Index(chats={"legacy": chat("legacy", epoch=0)}).save()
+mod.container_state = lambda cid: "stopped"
+mod.wait_for_chat = lambda chat: "ok"
+started.clear()
+code, msg = mod.wake_chat("legacy")
+assert (code, msg) == (200, "woken"), (code, msg)
+assert started == [["rm", "-f", mod.container_name("legacy")], ["run", "legacy"]], started
+assert mod.Index.load().chats["legacy"].cred_epoch == mod.CRED_EPOCH, mod.Index.load().chats
+
+# 2d. ...and a RUNNING container from an older epoch is recreated too. It would
+#     otherwise take the "already running" fast path and keep serving 401s: the
+#     credential is baked, so being up says nothing about being usable.
+mod.Index(chats={"legacy": chat("legacy", epoch=0)}).save()
+mod.container_state = lambda cid: "running"
+started.clear()
+code, msg = mod.wake_chat("legacy")
+assert (code, msg) == (200, "woken"), (code, msg)
+assert started == [["rm", "-f", mod.container_name("legacy")], ["run", "legacy"]], started
+
+# 2e. the control for 2c/2d: a container AT the current epoch is started, never
+#     recreated. Without this, "recreate everything always" would pass both.
+mod.Index(chats={"current": chat("current")}).save()
+mod.container_state = lambda cid: "stopped"
+started.clear()
+code, msg = mod.wake_chat("current")
+assert (code, msg) == (200, "woken"), (code, msg)
+assert started == [["start", mod.container_name("current")]], started
+
+# 2f. the oldest arm, unchanged by any of this: a container that is simply GONE
+#     (removed by an image upgrade, or by the startup sweep) is rebuilt from the
+#     volume -- and NOT preceded by an rm, which would be an engine call about a
+#     container that does not exist.
+mod.Index(chats={"vanished": chat("vanished")}).save()
+mod.container_state = lambda cid: "absent"
+started.clear()
+code, msg = mod.wake_chat("vanished")
+assert (code, msg) == (200, "woken"), (code, msg)
+assert started == [["run", "vanished"]], started
+
 # 3. the engine itself raises. RESET wait_for_chat first -- block 2 left it
-#    returning False, and without the reset this takes block 2's arm instead and
-#    silently stops testing the exception net.
-mod.wait_for_chat = lambda port: True
+#    returning "down", and without the reset this takes block 2's arm instead
+#    and silently stops testing the exception net.
+mod.Index(chats={"lonely": chat("lonely")}).save()
+mod.container_state = lambda cid: "stopped"
+mod.wait_for_chat = lambda chat: "ok"
 told = []
 mod.notify_failure = lambda m: told.append(m)
 
@@ -2726,13 +3060,52 @@ before = mod.Index.load().chats["present"].last_active
 time.sleep(0.01)
 mod.touch("present")
 assert mod.Index.load().chats["present"].last_active > before
+
+# 5. an EMPTY OPENCODE_SERVER_PASSWORD. This is the case a length assertion
+#    cannot catch, so establish that first: hmac with an empty key does not
+#    raise, it returns a perfectly ordinary 64-hex digest -- computed under a
+#    key everybody knows, which makes every chat's secret public. So the guard
+#    has to refuse the KEY, and this block asserts on the refusal rather than
+#    on the shape of what comes out.
+public = hmac.new(b"", b"code-agent/1/anychat", hashlib.sha256).hexdigest()
+assert len(public) == 64 and all(c in "0123456789abcdef" for c in public), public
+
+saved_password = mod.PASSWORD
+mod.PASSWORD = ""
+try:
+    mod.chat_server_secret("anychat")
+except mod.MissingPasswordError:
+    pass
+else:
+    raise AssertionError("chat_server_secret derived a secret from an empty key")
+
+# ...and nothing gets created with it. `calls` is the discriminator: a guard
+# placed after the argv was assembled, or after engine() ran, would still raise
+# and still leave a container holding a computable credential.
+calls = []
+mod.engine = lambda *a, **k: calls.append(list(a))
+mod.run_container = REAL_RUN_CONTAINER
+try:
+    mod.run_container(chat("nokey"))
+except mod.MissingPasswordError:
+    pass
+else:
+    raise AssertionError("run_container created a container with no password")
+assert calls == [], calls
+mod.PASSWORD = saved_password
 PY
 if "${MANAGER_PY[@]}" "$WORK/preflight-wake.py" "$REPO_ROOT/scripts/vps/code-agent-manager.py"
 then
   ok "a full cap refuses the wake with 409 and starts nothing"
   ok "a container that starts but never answers is a 502, not a hang"
+  ok "a container that refuses the credential is a 502 that names the remedy"
+  ok "a refused wake does not record the credential epoch"
+  ok "a container below the credential epoch is recreated, stopped or running"
+  ok "a container at the current epoch is started, not recreated"
+  ok "a container that is gone is rebuilt from the volume, with no pointless rm"
   ok "an engine that raises is a 502 and buzzes a failure"
   ok "touch() on a deleted chat writes nothing, and still writes for a live one"
+  ok "an empty password refuses to derive a secret, and creates no container"
 else
   bad "wake_chat refusal arms (see the assertion above)"
 fi
@@ -3055,6 +3428,74 @@ if openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
 else
   echo "SKIP  TLS launch — openssl unavailable"
 fi
+
+# 9e. the startup sweep. A deploy that rotates OPENCODE_SERVER_PASSWORD leaves
+# every container holding a credential the new process cannot use, and the
+# containers are still RUNNING, so nothing else in the manager would look at
+# them until somebody made a request. This is the pass that happens first.
+#
+# Its own root and its own stub state dir, because it plants containers that
+# must survive into the manager's startup -- launch_aux wipes its root, and the
+# main instance's stub dir is still live.
+#
+# Three chats: one legacy WITH a container, one already current, and one legacy
+# whose container is already gone -- a spun-down chat that was purged by an
+# earlier sweep, which is the steady state after the first restart and must not
+# make the pass say anything or do anything.
+SWEEP_ROOT="$WORK/sweep"; SWEEP_STUB="$WORK/sweep-stub"
+mkdir -p "$SWEEP_ROOT/chats/legacy" "$SWEEP_ROOT/chats/fresh" "$SWEEP_STUB"
+_sweep_port=$((PORT + 12))
+for _n in legacy fresh; do
+  STUB_ENGINE_STATE="$SWEEP_STUB" STUB_ENGINE_MOCK="$HERE/mock-opencode-server.py" \
+    "$HERE/stub-engine.sh" run -d --name "code-agent-$_n" \
+    -p "127.0.0.1:$_sweep_port:4096" -v "$SWEEP_ROOT/chats/$_n:/chat" \
+    -e "OPENCODE_SERVER_PASSWORD=baked-$_n" mock serve
+  # Stopped, not running: the sweep's claim is about a container EXISTING at an
+  # old epoch, and leaving two mock servers bound would fight the ports above.
+  STUB_ENGINE_STATE="$SWEEP_STUB" "$HERE/stub-engine.sh" stop "code-agent-$_n"
+  _sweep_port=$((_sweep_port + 1))
+done
+python3 -c '
+import json, sys, time
+path, epoch = sys.argv[1], int(sys.argv[2])
+now = time.time()
+def row(cid, e, port):
+    return {"id": cid, "repo": "r", "title": cid, "port": port, "branch": "b",
+            "base": "", "model": None, "probe": False, "cred_epoch": e,
+            "created": now, "last_active": now}
+with open(path, "w", encoding="utf-8") as f:
+    json.dump({"chats": {"legacy": row("legacy", 0, 4001),
+                         "fresh": row("fresh", epoch, 4002),
+                         "containerless": row("containerless", 0, 4003)}}, f)
+' "$SWEEP_ROOT/index.json" "$CRED_EPOCH"
+printf '#!/bin/sh\nexit 1\n' > "$SHIMS/tailscale"; chmod +x "$SHIMS/tailscale"
+# Exits 1 on "no tailnet", which happens AFTER the sweep -- so the sweep is
+# what this run is for, and the exit is just how it ends.
+env -i PATH="$SHIMS:$PATH" HOME="$HOME" CODE_AGENT_ROOT="$SWEEP_ROOT" \
+  OPENCODE_SERVER_PASSWORD="$PASS" CODE_AGENT_ENGINE="$HERE/stub-engine.sh" \
+  STUB_ENGINE_STATE="$SWEEP_STUB" STUB_ENGINE_MOCK="$HERE/mock-opencode-server.py" \
+  "${MANAGER_PY[@]}" "$REPO_ROOT/scripts/vps/code-agent-manager.py" \
+  >"$WORK/aux-sweep.log" 2>&1 || true
+rm -f "$SHIMS/tailscale"
+sweep_exists() { STUB_ENGINE_STATE="$SWEEP_STUB" "$HERE/stub-engine.sh" \
+  container exists "code-agent-$1" 2>/dev/null && echo yes || echo no; }
+[ "$(sweep_exists legacy)" = "no" ] \
+  && ok "startup removes a container baked below the credential epoch" \
+  || bad "the startup sweep left the legacy container in place"
+# THE DISCRIMINATOR: a sweep with no epoch test would remove this one too, and
+# every chat on the brain would be recreated on the next deploy.
+[ "$(sweep_exists fresh)" = "yes" ] \
+  && ok "startup leaves a container at the current epoch alone" \
+  || bad "the startup sweep removed a container that was already current"
+grep -q "legacy: container predates credential epoch" "$WORK/aux-sweep.log" \
+  && ok "the startup sweep names the chat it recreated" \
+  || bad "the sweep said nothing about legacy (log: $WORK/aux-sweep.log)"
+# A legacy chat with NO container is already in the state the sweep is trying to
+# reach, so it must be silent about it -- otherwise every restart after the
+# first re-announces every chat the brain has ever had.
+grep -q "containerless: container predates" "$WORK/aux-sweep.log" \
+  && bad "the sweep announced a chat that had no container to remove" \
+  || ok "a legacy chat with no container is passed over in silence"
 
 echo
 echo "== summary: $PASS_COUNT passed, $FAIL_COUNT failed =="

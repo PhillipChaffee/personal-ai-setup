@@ -237,11 +237,14 @@ else:
 #   3. THE MANAGER'S OWN PROXY — the shortest path of the three and the one
 #      that needs neither a mount bug nor a port guess. `/chat/<id>/<path>` is
 #      a wildcard with NO per-chat authorization: Handler.proxy() looks the id
-#      up and serves it, Handler.authed() compares one global PASSWORD, and
-#      run_container() hands that same value to every chat container as
-#      OPENCODE_SERVER_PASSWORD. Cited by symbol and not by line on purpose —
-#      issue #115 carries the line numbers and owns the credential model; this
-#      arm owns finding out whether the gateway is reachable from in here.
+#      up and serves it, and Handler.authed() compares one global PASSWORD.
+#      What issue #115 changed is the KEY, not the lock: run_container() no
+#      longer hands that PASSWORD to the containers — each gets
+#      chat_server_secret(), an HMAC over its own chat id — so the expected
+#      answer here is now a 401 from a REACHABLE gateway rather than a served
+#      session. Cited by symbol and not by line on purpose; this arm owns
+#      finding out whether the gateway is reachable from in here, and a 2xx
+#      would mean the container is holding a gateway credential again.
 #
 # THE CREDENTIAL IS NEVER PASSED IN. The script reads OPENCODE_SERVER_PASSWORD
 # out of the container's OWN environment, which is both the repo's standing
@@ -572,7 +575,9 @@ ca_published_port_verdict() {
   if [ -n "$net_ok" ]; then
     fail "chat A reached chat B's opencode server over the network:"
     printf '%s\n' "$net_ok" | while IFS= read -r h; do printf '  via %s\n' "$h"; done
-    note "Every container holds OPENCODE_SERVER_PASSWORD, so reachability is access."
+    note "Since #115 chat A holds only its OWN derived secret, so a 2xx from B's"
+    note "server means B accepted a credential minted for A — the derivation or"
+    note "run_container has regressed, on top of the route being open."
     return 0
   fi
 
@@ -587,7 +592,8 @@ ca_published_port_verdict() {
     note "The container->host route is live, but chat A's OWN published port"
     note "rejected the OPENCODE_SERVER_PASSWORD chat A's environment holds. Every"
     note "answer from chat B's port is then about the credential, not about the"
-    note "sandbox. Check that run_container() injected the manager's password."
+    note "sandbox. Check that run_container() baked chat_server_secret(A) in, and"
+    note "that A's container was not created under an older credential epoch."
     return 0
   fi
   if [ -n "$route_other" ] && [ -z "$route_ok" ]; then
@@ -660,9 +666,9 @@ ca_manager_proxy_verdict() {
       fail "chat A DROVE chat B through the manager's proxy (/chat/<B-id>/session)"
       note "The gateway answered 2xx for another chat's session with the credential"
       note "chat A already holds. No mount bug and no port guess is needed for this."
-      note "This is issue #115: proxy() does no per-chat authorization and every"
-      note "container gets the one global gateway password. Fix the credential"
-      note "model there; this probe only reports it."
+      note "proxy() does no per-chat authorization, so this means chat A is holding"
+      note "a credential the GATEWAY accepts — which issue #115 removed. Check that"
+      note "run_container() bakes chat_server_secret() and not PASSWORD."
       return 0
       ;;
   esac
@@ -683,10 +689,17 @@ ca_manager_proxy_verdict() {
   # shape and proves nothing at all.
   #
   # NEITHER SHAPE IS PRODUCIBLE ON A BRAIN TODAY: main() refuses to serve on an
-  # empty PASSWORD and run_container() injects that same value into every
-  # container, so the only place the distinction can be exercised is a fixture
-  # (test-verify-checks.sh drives both). Cited by symbol, not by line — these
-  # lines have moved twice in this PR alone.
+  # empty PASSWORD, and chat_server_secret() refuses to derive a container
+  # credential from an empty key rather than returning the perfectly ordinary
+  # 64-hex digest hmac would hand back — so a container never gets an empty
+  # password from this manager. The only place the distinction can be exercised
+  # is a fixture (test-verify-checks.sh drives both). Cited by symbol, not by
+  # line — these lines have moved twice in this PR alone.
+  #
+  # `gwctl:http:401` IS the expected shape since #115: chat A's credential is
+  # derived from its own chat id and the gateway does not accept it. It stays
+  # the ambiguous one all the same — "the gateway refused me" and "I have no
+  # key" produce the identical answer — which is why TOOL/TOOLNEG still gate it.
   case "$gwctl" in
     http:401|http:403)
       case "$tool" in
@@ -732,9 +745,16 @@ ca_manager_proxy_verdict() {
   case "$gwctl:$gw" in
     ok:http:401|ok:http:403)
       pass "the gateway refused chat A's request for chat B's session ($gw)"
+      note "Note the CONTROL, not just the verdict: /api/health answered ok, so"
+      note "chat A is holding a credential the GATEWAY accepts. Since #115 it"
+      note "should not be — every container gets its own derived secret — so this"
+      note "shape means the refusal came from a per-chat check that does not exist"
+      note "in proxy(), or run_container() has regressed to baking PASSWORD."
       ;;
     http:401:*|http:403:*)
       pass "the gateway is reachable from chat A but refuses the credential it holds"
+      note "This is the expected shape since #115: chat A holds only its own"
+      note "derived secret, so the gateway has nothing to accept."
       note "Control: /api/health answered $gwctl to the container's own password."
       note "Chat A's own server answered $tool to that password and $toolneg to a"
       note "deliberately wrong one — so it does check, and it took this key. The"
@@ -750,8 +770,9 @@ ca_manager_proxy_verdict() {
       note "The gateway was unreachable from inside chat A, so 'B was not served'"
       note "measures nothing. nogateway = no address was passed to the probe;"
       note "nowget = the image has no wget; down:… is what wget said."
-      note "Issue #115 stays open either way: the authorization gap is certain,"
-      note "reachability only decides whether it is exploitable today."
+      note "proxy()'s missing per-chat authorization is certain either way; what"
+      note "#115 removed is the container's ability to exploit it, and this arm"
+      note "cannot confirm that from here without reaching the gateway."
       ;;
   esac
   return 0
