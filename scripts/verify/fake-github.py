@@ -372,6 +372,13 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         # Ahead of every repo route and behind counter_route(), so an invisible
         # repo cannot be reached by any verb and GET /__calls still answers.
+        # All three halves of that sentence are pinned in
+        # test-code-agent-manager.sh's "the repo the PAT cannot see" section --
+        # "PUT at an invisible repo 404s too" for the verb, "the seam's own 404
+        # is still counted" for the counter, and "a whole-request 5xx outranks
+        # the seam" for its order against whole_request_mode() above. All three
+        # were prose until then: no fixture armed a mode and the seam in one
+        # server, so moving this call above that one cost nothing at all.
         if self.invisible_repo(path):
             return
         if m := self.PULLS_LIST.match(path):
