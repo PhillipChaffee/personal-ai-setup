@@ -501,7 +501,7 @@ assert "agent_authored" not in none, none
 
 # --- every route+VERB the dispatcher serves is named in BOTH published lists -
 # Issue #17 C1's "exposes exactly" list named five things; the dispatcher
-# serves twelve API paths plus the proxy — thirteen (verb, path) rows — and the
+# serves thirteen API rows plus the proxy — fourteen (verb, path) rows — and the
 # module docstring had drifted three routes behind. It is derived here so the
 # NEXT route cannot, and derived at VERB granularity, which the first cut was
 # not: it compared PATHS, so deleting only the `GET /api/chats` row left the
@@ -520,7 +520,7 @@ assert "agent_authored" not in none, none
 # and the oracle's own control, fed in as fixtures.
 #
 # TWO LISTS, ONE GATE. The docstring is not the only place this surface is
-# published: docs/code-agents.md carries the same thirteen rows in a table that
+# published: docs/code-agents.md carries the same fourteen rows in a table that
 # reads as generated. A hand-maintained copy that looks derived is worse than
 # one that looks hand-maintained, so both are checked against the dispatcher
 # and against each other, in both directions — a row served and not listed is
@@ -764,7 +764,7 @@ for name, listed in (("module docstring", doc_rows(mod.__doc__)),
 # LAST, so the two assertions above get to name the drift first — this one only
 # has a count to report. It is the floor against a served() that quietly
 # stopped deriving anything, and the reason adding a route means editing a test.
-assert len(rows) == 13, f"expected thirteen (verb, route) rows, derived {sorted(rows)}"
+assert len(rows) == 14, f"expected fourteen (verb, route) rows, derived {sorted(rows)}"
 
 # THE GATE'S OWN FALSIFIABILITY, fed in once per row rather than once — for
 # both lists, because a gate that covers one copy of a list and not the other
@@ -782,12 +782,20 @@ for verb, path in sorted(rows):
 # claim in a comment. `/api/chats` is served under two verbs, so deleting
 # either row leaves the PATH documented by the other and the previous revision
 # of this gate swept clean — the literal acceptance test it was asked to fail.
+#
+# `/api/repos` JOINED IT with #98's write route, and nothing here warned: this
+# list is the ONLY place a second two-verb path shows up, so adding POST
+# /api/repos turned a passing assertion red with a message about `blind` rather
+# than about the route. That is the intended failure — the list is a census of
+# the paths the weaker gate would miss, and it has to be re-counted by hand
+# every time one is added, or it stops being a census.
 def path_only_undocumented(text, table=False):
     listed = {p for _, p in doc_rows(text, table)}
     return sorted({p for _, p in rows} - listed)
 
 blind = sorted(r for r in rows if not path_only_undocumented(drop_row(mod.__doc__, *r)))
-assert blind == [("GET", "/api/chats"), ("POST", "/api/chats")], blind
+assert blind == [("GET", "/api/chats"), ("GET", "/api/repos"),
+                 ("POST", "/api/chats"), ("POST", "/api/repos")], blind
 
 # ...and the other half of the same blindness: a verb the dispatcher GROWS on a
 # path that is already documented. `PUT /api/chats` is served by this subclass
@@ -1543,11 +1551,15 @@ else
   bad "github sweep dispositions / loop net (see the assertion above)"
 fi
 
-# ---- 0f. the repos.json writer, which no route calls yet -------------------
-# add_repo() is the artefact that makes POST /api/repos (#98) safe to build,
-# and it is fully testable without one -- so it is tested without one. Every
-# assertion below was run against a named broken writer and watched to fail;
-# the PR description lists which mutation produces which message.
+# ---- 0f. the repos.json writer, in process and off the wire ----------------
+# add_repo() is the artefact that makes POST /api/repos (#98) safe, and it is
+# fully testable without the route -- so it is tested without one, and stayed
+# that way after the route landed. This section owns the file-integrity claims
+# (torn writes, fsync, the lock, the corrupt-file refusal); the "adding a repo
+# over HTTP" section near the end of this file owns the route's own surface,
+# and neither duplicates the other. Every assertion below was run against a
+# named broken writer and watched to fail; the PR description lists which
+# mutation produces which message.
 #
 # THE MUTATION HAS TO BE THE ADJACENT ONE, not the easy one. Seven of these
 # assertions shipped in the first draft passing against the writer they were
@@ -4606,6 +4618,305 @@ then
 else
   bad "oversized Content-Length was not refused with 413"
 fi
+
+# ---- adding a repo over HTTP (NAMED, not numbered -- issue #119) ------------
+# POST /api/repos (#98): the manager's first WRITE to its own trust boundary.
+# Every assertion below goes through the REAL route on the live manager -- curl
+# at $BASE, the process that has been answering since the top of this file --
+# because add_repo itself is already covered in process by section 0f and what
+# is new here is the HTTP surface: the body preamble, the GitHub pre-check that
+# has to happen BEFORE the write, and the status each refusal comes back as.
+#
+# WHY THIS ROUTE IS SAFE ON THE EXISTING AUTH MODEL, since it was #98's central
+# open question and the issue text still asks it: since #115 (section 4b) a
+# chat container no longer holds PASSWORD, so a prompt-injected code agent is
+# not one of the callers that can reach this verb. There is no second secret
+# and no out-of-band confirmation to exercise here, because the change that
+# made both unnecessary is a different PR -- and 4b, not this section, is what
+# proves it.
+#
+# ITS OWN repos.json, planted here: section 8i above deliberately left the
+# live one holding "this is not json". The fixture is the SHIPPED example's own
+# `_readme` -- the 21-line block that is the only documentation `tier` has --
+# plus two entries at two DIFFERENT tiers. Both halves are load bearing: a
+# writer that round-trips through RepoEntry loses the block and both tiers, and
+# a writer that stamps one tier on everything passes an assertion that only
+# ever sees one value.
+python3 - "$WORK/root/repos.json" "$REPO_ROOT/config/code-agents/repos.example.json" <<'PY'
+import json, sys
+
+doc = json.load(open(sys.argv[2], encoding="utf-8"))
+first = doc["repos"][0]
+first.update(name="keeper-one", url="https://github.com/testowner/testrepo.git", tier=1)
+# Tier 2 AND both consequential flags true: a writer that rewrote entries from
+# RepoEntry defaults would silently turn these off, which is the direction that
+# fails safe and is therefore the one nothing would notice.
+doc["repos"].append({"name": "keeper-two",
+                     "url": "https://github.com/testowner/testrepo.git", "tier": 2,
+                     "setup": "", "edit_only": True, "allow_push": True,
+                     "public_throwaway": True})
+with open(sys.argv[1], "w", encoding="utf-8") as fh:
+    json.dump(doc, fh, indent=2, ensure_ascii=False)
+    fh.write("\n")
+PY
+cp "$WORK/root/repos.json" "$WORK/repos-before-post.json"
+
+ADD_BODY="$WORK/add-repo-body.json"
+ADD_OUT="$WORK/add-repo-out.json"
+ADD_URL="https://github.com/testowner/testrepo.git"
+# --data-binary @file, never inline -d: this file's own rule, and the reason is
+# in section 8's header -- an inline body word-splits under the unquoted $CURL
+# idiom and sends garbage, which reads as a passing 400 for the wrong reason.
+post_repo() { # post_repo <json-body> -> prints the status; body lands in $ADD_OUT
+  printf '%s' "$1" > "$ADD_BODY"
+  # shellcheck disable=SC2086
+  $CURL -o "$ADD_OUT" -w '%{http_code}' -X POST --data-binary @"$ADD_BODY" \
+    "$BASE/api/repos" || echo 000
+}
+# Asked of the LIVE GET route, never of the file: "was it written" and "is it
+# served" are the same question only because load_repos is read per request,
+# and that is one of the things under test.
+repo_listed() { # repo_listed <name> -> True / False / error
+  # shellcheck disable=SC2086
+  $CURL "$BASE/api/repos" | jget "'$1' in [r['name'] for r in d['repos']]" 2>/dev/null \
+    || echo error
+}
+
+# The preamble, which is route_create_chat's character for character. Both arms,
+# distinguished by their messages -- a status alone cannot tell "not JSON" from
+# "JSON, but not an object", and the caller has to be able to.
+CODE="$(post_repo 'not json at all')"
+[ "$CODE" = "400" ] && grep -q "invalid JSON body" "$ADD_OUT" \
+  && ok "POST /api/repos rejects a body that is not JSON" \
+  || bad "add-repo invalid JSON: HTTP $CODE $(cat "$ADD_OUT")"
+CODE="$(post_repo '[]')"
+[ "$CODE" = "400" ] && grep -q "must be a JSON object" "$ADD_OUT" \
+  && ok "POST /api/repos rejects a non-object body" \
+  || bad "add-repo non-object body: HTTP $CODE $(cat "$ADD_OUT")"
+
+# The other half of that preamble: read_body answers 413 ITSELF and returns
+# None, so a route that kept going would write a second response onto one
+# request. 8k proves it for POST /api/chats; the same claim on a route that
+# MUTATES the trust boundary is worth its own line, and only a raw socket can
+# make it (curl would have to really send 64 MB).
+if python3 - "$PORT" "$PASS" <<'PY'
+import base64, socket, sys
+
+port, pw = int(sys.argv[1]), sys.argv[2]
+auth = base64.b64encode(f"opencode:{pw}".encode()).decode()
+s = socket.create_connection(("127.0.0.1", port), timeout=10)
+s.sendall(
+    b"POST /api/repos HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+    + f"Authorization: Basic {auth}\r\n".encode()
+    + b"Content-Length: 67108864\r\nConnection: close\r\n\r\n"
+)
+buf = b""
+while True:
+    chunk = s.recv(8192)
+    if not chunk:
+        break
+    buf += chunk
+s.close()
+assert buf.startswith(b"HTTP/1.1 413"), buf[:120]
+assert b"request body is larger than" in buf, buf[:400]
+# EXACTLY ONE response on the connection, which is the half 8k does not check
+# and the only half that can see the guard. read_body has ALREADY answered 413
+# by the time it returns None, so a route that carries on writes a second
+# status onto the same request -- and `startswith` stays true while it does.
+assert buf.count(b"HTTP/1.1 ") == 1, buf[:400]
+PY
+then
+  ok "an oversized declared body on the WRITE route is 413, and only 413"
+else
+  bad "add-repo oversized Content-Length was not refused with exactly one 413"
+fi
+
+# tier: required, never defaulted, and 3 is refused. docs/privacy.md classifies
+# a code chat AT this gate, and that judgment is the owner's -- a default would
+# be the manager making it.
+CODE="$(post_repo "{\"name\":\"no-tier\",\"url\":\"$ADD_URL\"}")"
+[ "$CODE" = "400" ] && grep -q "tier is required" "$ADD_OUT" \
+  && ok "a body with no tier is refused, not defaulted" \
+  || bad "add-repo missing tier: HTTP $CODE $(cat "$ADD_OUT")"
+CODE="$(post_repo "{\"name\":\"tier-three\",\"url\":\"$ADD_URL\",\"tier\":3}")"
+[ "$CODE" = "400" ] && grep -q "Tier 3 never enters" "$ADD_OUT" \
+  && ok "tier 3 is refused by name -- the life vault never enters the allowlist" \
+  || bad "add-repo tier 3: HTTP $CODE $(cat "$ADD_OUT")"
+# "1" is the shape a form field sends. `1 in (1, 2)` would be True for the int
+# and a lenient parser would int() the string; both halves here say it was not
+# coerced -- the refusal, and the name still being absent from the served list.
+CODE="$(post_repo "{\"name\":\"tier-string\",\"url\":\"$ADD_URL\",\"tier\":\"1\"}")"
+[ "$CODE" = "400" ] && grep -q "tier is required" "$ADD_OUT" \
+  && [ "$(repo_listed tier-string)" = "False" ] \
+  && ok "tier \"1\" as a STRING is refused, not coerced to 1" \
+  || bad "add-repo tier as a string: HTTP $CODE, listed $(repo_listed tier-string): $(cat "$ADD_OUT")"
+
+# THE ONE THIS ROUTE EXISTS TO GET RIGHT. `_bool` is truthiness, so
+# `bool("false")` is True: a route that reached it would answer 201 and write
+# `allow_push: true` for a caller that plainly meant false, and every push from
+# every chat on that repo would then skip the permission ask. `_strict_bool` is
+# the parser that refuses instead, and the second conjunct is what says it was
+# refused rather than silently written.
+CODE="$(post_repo "{\"name\":\"coerced-flag\",\"url\":\"$ADD_URL\",\"tier\":1,\"allow_push\":\"false\"}")"
+[ "$CODE" = "400" ] && grep -q "allow_push must be true or false" "$ADD_OUT" \
+  && [ "$(repo_listed coerced-flag)" = "False" ] \
+  && ok "\"allow_push\": \"false\" is REFUSED, never read as truthy and written true" \
+  || bad "add-repo allow_push string: HTTP $CODE, listed $(repo_listed coerced-flag): $(cat "$ADD_OUT")"
+
+# A URL that parses to no owner/name at all never reaches GitHub: slug_of
+# raises 409 and validate_repo_url turns it into the status, which is the arm
+# that would otherwise send `/repos/justowner` to GitHub and read its 404 as
+# "the PAT cannot see it".
+CODE="$(post_repo '{"name":"one-part","url":"https://github.com/justowner","tier":1}')"
+[ "$CODE" = "409" ] && grep -q "no GitHub remote to read" "$ADD_OUT" \
+  && ok "a URL with no owner/name is refused before any GitHub call" \
+  || bad "add-repo one-part URL: HTTP $CODE $(cat "$ADD_OUT")"
+
+# EIGHT refused POSTs (not JSON, not an object, over the cap, no tier, tier 3,
+# tier "1", a string flag, an unparseable URL) and the file has not moved a
+# byte. This is the assertion the whole ordering exists for: validation and the
+# GitHub check both happen with repos.json untouched, so nothing above can have
+# half-written the boundary.
+if cmp -s "$WORK/root/repos.json" "$WORK/repos-before-post.json"; then
+  ok "eight refused POSTs left repos.json byte-identical"
+else
+  bad "a refused POST modified repos.json: $(diff "$WORK/repos-before-post.json" \
+    "$WORK/root/repos.json" | head -20)"
+fi
+
+# --- the success, and what it must and must not put on the wire --------------
+CODE="$(post_repo "{\"name\":\"added-over-http\",\"url\":\"$ADD_URL\",\"tier\":2,\
+\"setup\":\"echo hi\",\"edit_only\":true}")"
+[ "$CODE" = "201" ] && ok "a valid POST /api/repos answers 201" \
+  || bad "add-repo success: HTTP $CODE $(cat "$ADD_OUT")"
+# The RESPONSE is the six-field row GET already serves, and `tier` is not on
+# it: the app's own RepoEntry (crates/opencode-client/src/lib.rs) mirrors those
+# six and has no tier, so a seventh key here is a wire-shape change the app did
+# not ask for. Asserted as an EXACT key set, not `"tier" not in d` -- the
+# second would pass for a response that had grown some other field.
+if python3 - "$ADD_OUT" <<'PY'
+import json, sys
+
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+six = ["allow_push", "edit_only", "name", "public_throwaway", "setup", "url"]
+assert sorted(d) == six, sorted(d)
+assert d["name"] == "added-over-http" and d["setup"] == "echo hi", d
+assert d["edit_only"] is True, d
+# Absent means False, and it has to be FALSE rather than missing: the app reads
+# a missing flag as unknown, and "unknown" is not what "you did not ask for a
+# push grant" means.
+assert d["allow_push"] is False and d["public_throwaway"] is False, d
+PY
+then
+  ok "...carrying exactly RepoEntry's six fields, with tier withheld"
+else
+  bad "add-repo 201 body: $(cat "$ADD_OUT")"
+fi
+
+# VISIBLE IMMEDIATELY, with NO restart -- load_repos has no cache and is read
+# per request. `kill -0` is the no-restart half made checkable: this is the same
+# process that has answered every assertion since the top of the file, so a
+# manager that had cached the allowlist at startup could not be serving this.
+# shellcheck disable=SC2086
+$CURL "$BASE/api/repos" > "$WORK/repos-after-post.json"
+if kill -0 "$MANAGER_PID" 2>/dev/null && python3 - "$WORK/repos-after-post.json" <<'PY'
+import json, sys
+
+rows = json.load(open(sys.argv[1], encoding="utf-8"))["repos"]
+names = [r["name"] for r in rows]
+assert names == ["keeper-one", "keeper-two", "added-over-http"], names
+new = rows[-1]
+assert sorted(new) == ["allow_push", "edit_only", "name", "public_throwaway",
+                       "setup", "url"], sorted(new)
+# Every row, not just the new one: adding tier to the GET response would be a
+# change to the shape the app already parses, whichever entry it appeared on.
+assert not any("tier" in r for r in rows), rows
+PY
+then
+  ok "the new repo is on GET /api/repos immediately, from the same process"
+else
+  bad "add-repo GET after write: $(cat "$WORK/repos-after-post.json")"
+fi
+
+# WHAT THE FILE KEPT. The byte prefix covers `_readme` AND both pre-existing
+# entries AND their tiers in one comparison; the parsed checks below it are
+# there to NAME what changed when it fails, because a prefix mismatch on its
+# own reports only an offset.
+if python3 - "$WORK/repos-before-post.json" "$WORK/root/repos.json" <<'PY'
+import json, sys
+
+before = open(sys.argv[1], encoding="utf-8").read()
+after = open(sys.argv[2], encoding="utf-8").read()
+readme = before[before.index('"_readme"'): before.index('"repos"')]
+assert len(readme) > 800, f"the _readme block is only {len(readme)} bytes; weak assertion"
+# Everything up to the repos list's own closing bracket. An append changes the
+# file ONLY after that point, so a byte-for-byte prefix match is the strongest
+# form "nothing else moved" can take.
+head = before[: before.rindex("\n  ]")]
+assert readme in head, "the fixture no longer has _readme ahead of the entries"
+assert after.startswith(head), (
+    "the write did not preserve the file byte-for-byte up to the append; "
+    f"first difference at offset {next((i for i, (a, b) in enumerate(zip(head, after)) if a != b), len(head))}"
+)
+b, a = json.loads(before), json.loads(after)
+assert a["_readme"] == b["_readme"], "the _readme value changed"
+assert a["repos"][: len(b["repos"])] == b["repos"], (b["repos"], a["repos"])
+# Three DIFFERENT tiers on the wire is what makes this more than "tier exists":
+# a writer that stamped one value on every entry passes a same-value check.
+assert [r["tier"] for r in a["repos"]] == [1, 2, 2], [r.get("tier") for r in a["repos"]]
+assert a["repos"][-1]["name"] == "added-over-http", a["repos"][-1]
+PY
+then
+  ok "...and _readme, both pre-existing entries and every tier survive byte-for-byte"
+else
+  bad "add-repo file preservation (see the assertion above)"
+fi
+cp "$WORK/root/repos.json" "$WORK/repos-after-success.json"
+
+# A duplicate NAME is the id the app's picker and every chat name uses, and
+# load_repos is last-wins -- so an appended twin would silently take over the
+# original's flags. Both conjuncts: the 409, and the file still holding exactly
+# one entry under that name.
+CODE="$(post_repo "{\"name\":\"added-over-http\",\"url\":\"$ADD_URL\",\"tier\":1}")"
+DUPES="$(python3 -c '
+import json, sys
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+print(sum(1 for r in doc["repos"] if r.get("name") == "added-over-http"))' \
+  "$WORK/root/repos.json")"
+[ "$CODE" = "409" ] && grep -q "already in the allowlist" "$ADD_OUT" && [ "$DUPES" = "1" ] \
+  && ok "a duplicate name is 409, and the file still holds exactly one of it" \
+  || bad "add-repo duplicate: HTTP $CODE, copies in the file $DUPES: $(cat "$ADD_OUT")"
+
+# --- the repo the PAT cannot see, which is this route's likeliest refusal ----
+# Armed with the #124 seam, so ONE slug is dark while testowner/testrepo above
+# kept working in the same run.
+start_github_invisible "$INVISIBLE_SLUG"
+CODE="$(post_repo "{\"name\":\"cannot-see\",\"url\":\"https://github.com/$INVISIBLE_SLUG.git\",\"tier\":1}")"
+# BOTH sentences, because from a 404 the two really are indistinguishable and a
+# message naming only "does not exist" sends the reader to fix a URL that was
+# right. The negative conjunct is the #124 point: gh() maps 401/403 onto "the
+# PAT may have expired", which is the wrong sentence and the one a route built
+# against a 403 fixture would ship.
+[ "$CODE" = "400" ] \
+  && grep -q "does not exist" "$ADD_OUT" && grep -q "not scoped to it" "$ADD_OUT" \
+  && ! grep -q "may have expired" "$ADD_OUT" \
+  && [ "$(repo_listed cannot-see)" = "False" ] \
+  && ok "a repo the PAT cannot see is refused naming BOTH possibilities" \
+  || bad "add-repo invisible: HTTP $CODE, listed $(repo_listed cannot-see): $(cat "$ADD_OUT")"
+
+# ...and the other arm of validate_base's doctrine, which is a DIFFERENT claim:
+# unverifiable is not absent. A route that read a GitHub outage as "fine, write
+# it" is exactly what default_branch() would have produced -- it swallows every
+# GitHubError and answers "".
+restart_github serverfail
+CODE="$(post_repo "{\"name\":\"unverifiable\",\"url\":\"$ADD_URL\",\"tier\":1}")"
+[ "$CODE" = "502" ] && grep -q "could not check" "$ADD_OUT" \
+  && ! grep -q "does not exist" "$ADD_OUT" \
+  && cmp -s "$WORK/root/repos.json" "$WORK/repos-after-success.json" \
+  && ok "a GitHub 5xx is \"could not check\", not a proceed, and writes nothing" \
+  || bad "add-repo GitHub 5xx: HTTP $CODE, file changed=$(cmp -s "$WORK/root/repos.json" \
+"$WORK/repos-after-success.json" && echo no || echo yes): $(cat "$ADD_OUT")"
+restart_github ""
 
 # ---- 9. startup, which the long-lived instance cannot reach ----------------
 # Everything above runs against ONE manager, started once with a good

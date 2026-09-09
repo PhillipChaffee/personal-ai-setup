@@ -226,8 +226,10 @@ delivered branch carries no personal name or email (issue #17 C4).
 ## The manager's whole HTTP surface
 
 Every route below is authenticated (HTTP Basic, or `?auth_token=` for
-EventSource); there is no unauthenticated path. Twelve API paths plus the proxy
-— **not** the five that issue #17 C1's "exposes exactly" sentence names.
+EventSource); there is no unauthenticated path. Thirteen API rows plus the proxy
+— **not** the five that issue #17 C1's "exposes exactly" sentence names. Rows,
+not paths: `/api/chats` and `/api/repos` are each served under two verbs, and
+the gate below is derived at verb granularity for exactly that reason.
 
 **This table is generated-equivalent, not hand-maintained.**
 `test-code-agent-manager.sh` derives the surface by driving the dispatcher —
@@ -243,6 +245,7 @@ is prose and cannot stand in for a row.
 |---|---|
 | `GET /api/health` | liveness, engine/image, chat counts, `active`/`blocked`, sweep stamp |
 | `GET /api/repos` | the allowlist (names + flags) |
+| `POST /api/repos` | add one entry: `{"name","url","tier"}` + optional `setup`/`edit_only`/`allow_push`/`public_throwaway`. Checks the PAT can read the repo **before** writing |
 | `GET /api/repos/<name>/branches` | one allowlisted repo's branches, default marked |
 | `GET /api/chats` | the metadata index merged with live container state (+ per-tree change stat) |
 | `GET /api/permissions` | permission asks parked on every running chat |

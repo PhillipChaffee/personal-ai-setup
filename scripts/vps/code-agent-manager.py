@@ -20,17 +20,23 @@ EventSource/browser contexts; TLS via the brain's tailnet cert when present):
 
 THE COMPLETE LIST, VERB INCLUDED, and it is checked. Issue #17 C1 says the
 manager "exposes exactly" five things (list, create, wake, delete, routing);
-the dispatcher serves twelve API paths plus the proxy — thirteen rows below —
+the dispatcher serves thirteen API rows plus the proxy — FOURTEEN rows below —
 and this docstring was itself missing three of them (/api/permissions and both
-pull-request routes) until the gate existed. test-code-agent-manager.sh derives
-the surface by DRIVING handle_any: every path the tables name, crossed with
-every verb the do_* methods answer, dispatched for real with the leaf handlers
-recorded. Both this table and the copy in docs/code-agents.md must equal that
-set exactly, in both directions, so an added route, a dropped row, and a NEW
-VERB on a path already listed are all failures rather than silent drift.
+pull-request routes) until the gate existed. Rows, not paths: /api/chats and
+/api/repos are each served under TWO verbs, so counting paths undercounts the
+surface by exactly the thing the gate is derived at (verb granularity).
+test-code-agent-manager.sh derives the surface by DRIVING handle_any: every
+path the tables name, crossed with every verb the do_* methods answer,
+dispatched for real with the leaf handlers recorded. Both this table and the
+copy in docs/code-agents.md must equal that set exactly, in both directions, so
+an added route, a dropped row, and a NEW VERB on a path already listed are all
+failures rather than silent drift.
 
     GET    /api/health                  liveness + engine/image/chat counts
     GET    /api/repos                   the allowlist (names + flags)
+    POST   /api/repos                   {"name","url","tier",+flags} — add one
+                                        entry to the allowlist, after checking
+                                        the PAT can actually read the repo
     GET    /api/repos/<name>/branches   a repo's branches, default marked
     GET    /api/chats                   index merged with live container state
     GET    /api/permissions             asks parked on every running chat
@@ -64,13 +70,26 @@ own id, which opens that chat's own opencode server on its own loopback and
 nothing else. See chat_server_secret() for the derivation and CRED_EPOCH for
 how containers baked under an older secret are recreated.
 
+That is what POST /api/repos rests on, and it is the whole reason that route
+exists at all rather than a second secret or an out-of-band confirmation.
+Widening the allowlist is a privilege escalation, so the question #98 asked was
+"who can reach this verb". While a container held PASSWORD the answer included
+every code agent, and a prompt-injected one in repo A could have added repo B
+and opened a chat on it — lateral movement turning into escalation. Since #115
+a container holds only its own derived secret, so the callers of this route are
+the ones that were always meant to have it, and the route needs no compensating
+control of its own. What it still has to do itself is refuse to widen the gate
+on a body it cannot vouch for: tier is required and 3 is refused, the two
+consequential flags are read strictly (never truthily), and the repo is checked
+against GitHub BEFORE anything is written.
+
 The residual is deliberate and unfixed here: anything ELSE holding PASSWORD —
-the phone app, anyone on the tailnet — still reaches every chat, because
-authed() still answers only "do you know the secret". check-code-agents.sh
---probe reports whether the gateway is reachable from inside a chat's network
-namespace. Separately, run_container still passes the SAME GITHUB_CODE_AGENT_PAT
-into every container as GH_TOKEN — same class of problem, not fixed by this
-mechanism, since GitHub will not mint a per-chat PAT.
+the phone app, anyone on the tailnet — still reaches every chat AND can now
+widen the allowlist, because authed() still answers only "do you know the
+secret". check-code-agents.sh --probe reports whether the gateway is reachable
+from inside a chat's network namespace. Separately, run_container still passes
+the SAME GITHUB_CODE_AGENT_PAT into every container as GH_TOKEN — same class of
+problem, not fixed by this mechanism, since GitHub will not mint a per-chat PAT.
 
 Environment (from /data/secrets.env via the systemd unit):
     OPENCODE_SERVER_PASSWORD  required — auth for this gateway, and the ROOT
@@ -674,10 +693,11 @@ def load_repos() -> dict[str, RepoEntry]:
 
 # ------------------------------------------------- writing the allowlist
 #
-# There is NO ROUTE here yet — issue #98 owns that, and this is the half of it
-# that can be got wrong quietly. Everything below exists to make one operation
-# — append one entry to repos.json — incapable of destroying the file it
-# appends to.
+# The half of issue #98 that can be got wrong quietly. Everything below exists
+# to make one operation — append one entry to repos.json — incapable of
+# destroying the file it appends to. POST /api/repos (create_repo, further
+# down) is the caller; it landed second, and deliberately, because the writer
+# is what makes the route safe rather than the other way round.
 #
 # ITS OWN LOCK, and the reason is `_lock`. `_lock` guards index.json, it is a
 # plain `threading.Lock` (not reentrant), and it has already wedged this
@@ -803,10 +823,13 @@ def read_repos_document() -> tuple[dict[str, Any], list[Any]] | ApiError:
 def add_repo(entry: dict[str, Any]) -> ApiError | None:
     """Append one validated entry to repos.json, or refuse and change nothing.
 
-    Standalone on purpose: no route calls this yet (#98). What it guarantees
-    is that when one does, the worst outcome of a bad request is a refusal —
-    never a shortened allowlist, never a lost `_readme`, never a stripped
-    `tier`, and never a half-written file.
+    Standalone on purpose, and it stays standalone now that create_repo calls
+    it: the guarantee is that the worst outcome of a bad request is a refusal
+    — never a shortened allowlist, never a lost `_readme`, never a stripped
+    `tier`, and never a half-written file. It re-validates its argument rather
+    than trusting its caller, which is what keeps that true of the next caller
+    too, and it owns the duplicate check because it is the one holding the
+    lock.
 
     Returns None on success, or the ApiError a route turns into a status.
     """
@@ -1323,6 +1346,84 @@ def validate_base(name: str, entry: RepoEntry, base: str) -> ApiError | None:
         # see: cloning anyway turns a GitHub outage into a half-built chat.
         return ApiError(e.status, f"could not check base branch '{base}': {e.message}")
     return None
+
+
+def validate_repo_url(name: str, url: str) -> ApiError | None:
+    """Refuse a repo GitHub will not show us, with NOTHING written yet.
+
+    validate_base's shape, one level up: an entry that names a repo the PAT
+    cannot read is an entry whose first chat dies in `git clone`, minutes
+    later, at a point the reader cannot connect back to the tap that added it.
+    So the check happens BEFORE repos.json is touched, and its refusal is the
+    answer to the POST.
+
+    NOT `default_branch()`, which is the obvious-looking helper and the wrong
+    one: it catches every GitHubError and returns "" — a degradation that is
+    right for labelling a branch list and catastrophic here, because "GitHub
+    is down" and "that repo does not exist" would both arrive as a falsy
+    string and the entry would be written anyway.
+
+    THE 404 IS TWO CLAIMS AT ONCE and the caller has to be told both. A
+    fine-grained PAT is answered 404 — not 403 — for a repo it is not scoped
+    to, because GitHub will not confirm a private repo's existence to a token
+    that cannot see it. So "no such repo" and "your token is not scoped to
+    this one" are INDISTINGUISHABLE from here, and a message naming only the
+    first sends the reader to fix a URL that was right. Anything else is
+    validate_base's other arm verbatim: unverifiable is not the same as
+    absent, so a 5xx names the status and refuses rather than proceeding on
+    the assumption the repo is probably fine.
+    """
+    try:
+        slug = slug_of(name, RepoEntry(name=name, url=url))
+    except GitHubError as e:
+        return ApiError(e.status, e.message)
+    try:
+        gh("GET", f"/repos/{slug}")
+    except GitHubError as e:
+        if e.status == HTTPStatus.NOT_FOUND:
+            return ApiError(
+                400,
+                f"GitHub answered 404 for {slug}: either that repo does not "
+                "exist, or the PAT is not scoped to it — a fine-grained token "
+                "is answered 404 for a repo it cannot see, so the two are "
+                "indistinguishable from here. Nothing was written.",
+            )
+        return ApiError(
+            e.status,
+            f"could not check {slug} on GitHub: {e.message}. Nothing was written.",
+        )
+    return None
+
+
+def create_repo(raw: dict[str, Any]) -> dict[str, object] | ApiError:
+    """Validate, check GitHub, then append — refusing at the first no.
+
+    THE ORDER IS THE POINT. Every refusal above the write leaves repos.json
+    byte-identical, and the only step that can change it is the last one.
+    add_repo does its own validation and owns the duplicate check, because it
+    is the one that holds `_repos_lock`: a duplicate test made out here would
+    be answering about a file some other thread may rewrite before the append,
+    which is not the check that decides. Validating first anyway is what gives
+    this function a name and a url to hand GitHub.
+
+    Returns the SIX-field wire shape GET /api/repos serves, built through
+    RepoEntry rather than by deleting `tier` from the entry that was written.
+    Positive, not subtractive: the app's own RepoEntry mirrors these six
+    (crates/opencode-client/src/lib.rs), so the response is the row it can
+    splice straight into its list, and a seventh field added to the FILE later
+    cannot leak onto the wire by default. `_bool` is exact here — every flag
+    has already been through `_strict_bool` and is a real JSON boolean.
+    """
+    validated = validated_repo_entry(raw)
+    if isinstance(validated, ApiError):
+        return validated
+    unreadable = validate_repo_url(str(validated["name"]), str(validated["url"]))
+    if unreadable is not None:
+        return unreadable
+    refusal = add_repo(validated)
+    if refusal is not None:
+        return refusal
+    return RepoEntry.from_wire(validated).to_wire()
 
 
 def container_name(chat_id: str) -> str:
@@ -2751,6 +2852,13 @@ class Handler(BaseHTTPRequestHandler):
             self.route_branches(unquote(branches.group(1)))
         elif (path, verb) == ("/api/chats", "POST"):
             self.route_create_chat()
+        elif (path, verb) == ("/api/repos", "POST"):
+            # The file's own idiom, and deliberately NOT a new ROUTE_* pattern:
+            # API_READS is GET-only and a regex for one literal path would be a
+            # second place to keep this route's spelling. The harness's path
+            # oracle watches `str.__eq__`, so this comparison is what puts the
+            # route in the derived surface — see the route-doc gate.
+            self.route_add_repo()
         elif lifecycle and verb == "POST":
             self.route_wake_or_stop(lifecycle.group(1), lifecycle.group(2))
         elif one_chat and verb == "DELETE":
@@ -2792,6 +2900,44 @@ class Handler(BaseHTTPRequestHandler):
 
     def route_repos(self) -> None:
         self.send_json(200, {"repos": [repo.to_wire() for repo in load_repos().values()]})
+
+    def route_add_repo(self) -> None:
+        """Add one entry to the allowlist — the trust boundary (#98).
+
+        The preamble is route_create_chat's, character for character, because
+        the two are the manager's only JSON-body routes and a body that is not
+        an object has to mean the same thing at both: read_body first (it
+        answers 413 itself and returns None when it has, so going on would be
+        a second response on one request), then json.loads on `b"{}"` for an
+        empty body, then a 400 for each of the two ways a body can be wrong.
+
+        Everything after that is create_repo's, on purpose — no validation
+        lives here. This method's whole job is HTTP: turn a dict into a 201
+        and an ApiError into the status it names.
+
+        201 with the six-field row, not 204 and not the whole allowlist: the
+        app's repo sheet has just been told what it created and can render it
+        without a second round trip, and GET /api/repos already serves the
+        same shape from the same file. `tier` is not on it — the app's
+        RepoEntry has six fields and no tier, so keeping the classification
+        out of the response is what keeps the wire shape it already parses.
+        """
+        try:
+            raw_body = self.read_body()
+            if raw_body is None:
+                return
+            raw: Any = json.loads(raw_body or b"{}")
+        except json.JSONDecodeError:
+            self.send_json(400, {"error": "invalid JSON body"})
+            return
+        if not isinstance(raw, dict):
+            self.send_json(400, {"error": "body must be a JSON object"})
+            return
+        result = create_repo(raw)
+        if isinstance(result, ApiError):
+            self.send_json(result.status, {"error": result.message})
+            return
+        self.send_json(201, result)
 
     def route_branches(self, name: str) -> None:
         """One allowlisted repo's branches, for the app's base picker.
