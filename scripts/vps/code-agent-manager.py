@@ -229,9 +229,130 @@ def _bool(raw: dict[str, Any], key: str) -> bool:
     return bool(raw.get(key, False))
 
 
+def _strict_bool(raw: dict[str, Any], key: str) -> bool | None:
+    """Return a JSON boolean, or None when the key is present and is not one.
+
+    BESIDE `_bool`, deliberately, and not a replacement for it. The two read
+    different files for different reasons.
+
+    `_bool` is `bool(raw.get(key, False))` — truthiness — so it reads
+    `{"allow_push": "false"}` as True and `"no"` as True. That is defensible
+    for a file a HUMAN wrote and the manager merely tolerates: `load_repos`
+    has to answer something for a hand-edit, and the alternative to guessing
+    is an entry that silently drops out of the allowlist. Changing `_bool`
+    would change how every already-deployed repos.json is read, which is a
+    different decision with a different blast radius, so this is a second
+    function rather than an edit to the first.
+
+    A REQUEST BODY is the opposite case. The two flags this guards are the
+    consequential ones — `allow_push` runs `git push` with no permission ask,
+    `public_throwaway` permits Zen free models, which train on the data — so a
+    value that is not a boolean must be a refusal the caller can see, never a
+    grant. Absent stays False, matching `RepoEntry`'s defaults: defaulting
+    toward the SAFE value is the only defaulting that is safe here.
+    """
+    value = raw.get(key, False)
+    return value if isinstance(value, bool) else None
+
+
+def _tier(raw: dict[str, Any]) -> int | None:
+    """Return the data classification — 1 or 2 — or None for anything else.
+
+    Required and never defaulted. docs/privacy.md classifies a code chat AT
+    this gate rather than per message ("repos.json may only contain repos you
+    classify Tier 1 or 2 — the life vault and anything Tier 3 never enter
+    it"), and that judgment is the owner's. A default would be the manager
+    making it, so an absent tier is a refusal, and so is 3.
+
+    `type(value) is int`, NOT `isinstance`: `True` is an `int` in Python and
+    `True == 1`, so an isinstance check reads `{"tier": true}` as Tier 1. The
+    membership test alone is not enough either — `1.0 in (1, 2)` is True.
+    """
+    value = raw.get("tier")
+    return value if type(value) is int and value in (1, 2) else None
+
+
 def _float(raw: dict[str, Any], key: str) -> float:
     value = raw.get(key, 0.0)
     return float(value) if isinstance(value, (int, float)) else 0.0
+
+
+def write_json_atomic(
+    path: Path,
+    payload: object,
+    *,
+    indent: int,
+    ensure_ascii: bool,
+    fsync: bool,
+) -> None:
+    """Replace `path` with `payload` as JSON, atomically.
+
+    The idiom is `Index.save`'s, extracted so the repos.json writer cannot
+    invent a second one: a temp file beside the destination, then
+    `Path.replace`, which is `os.rename` — POSIX requires it to be atomic
+    within a filesystem, and `with_name` is what keeps the temp on the same
+    one. A concurrent reader therefore sees the whole old file or the whole
+    new file, never a partial document, and a write that dies partway leaves
+    only a stray `.tmp`.
+
+    FSYNC HAS NO DEFAULT, on purpose. `Index.save` did not fsync and said
+    nothing about it; inheriting that silence into a trust-boundary file is
+    the thing this parameter exists to prevent, so both callers state their
+    answer at the call site where the diff can see it.
+
+      * `rename` is atomic with respect to a concurrent READER. It promises
+        nothing about a CRASH: the directory entry can reach the disk before
+        the data it points at, and the file comes back present and EMPTY.
+        ext4 `data=ordered` (the brain's default) makes that unlikely rather
+        than impossible.
+      * `index.json` passes False. It is rewritten on every proxied request
+        (`touch`), it is a cache of things the container engine also knows,
+        and `Index.load` already degrades a corrupt one to "no chats" with a
+        log line. A device flush per request to protect that is the wrong
+        trade, and it is also exactly today's behaviour, so the extraction
+        changes nothing for it.
+      * `repos.json` passes True. It is the trust boundary, it is written
+        approximately never, `install_template` (deploy-vps.sh:527) refuses
+        to clobber it so NO DEPLOY RESTORES IT, and its loss is silent — an
+        empty allowlist just refuses new chats. One flush is not a cost.
+
+    The directory fsync is what makes the RENAME durable rather than just the
+    bytes; without it a reboot can restore the old directory entry. It runs
+    after the replace, so if it is the call that fails, the new file is
+    already visible to every reader on this boot and the caller is told the
+    write failed when it may have landed. That asymmetry is deliberate: the
+    caller's retry meets the duplicate-name refusal, which is loud and
+    harmless, and the other direction — reporting success for an entry a
+    reboot eats — is neither.
+
+    `ensure_ascii` splits for a different reason, and it is NOT cosmetic.
+    repos.json passes False because it is hand-edited and a six-character
+    escape in place of the accented letter its owner typed is a diff nobody
+    asked for — repos.example.json's own `_readme` has em dashes in it, so
+    every write would rewrite lines the writer did not touch. index.json
+    passes True, which is json.dump's default and therefore what this call
+    site already did: chat titles come from a request body, `json.loads`
+    happily produces a LONE SURROGATE from a u-d800 escape, and encoding one
+    as UTF-8 raises UnicodeEncodeError. Escaped, it round-trips; unescaped, a
+    title nobody would type turns every save of that index into a 500.
+
+    The trailing newline is for the human too, and costs the other file one
+    byte no reader of it has an opinion about.
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=indent, ensure_ascii=ensure_ascii)
+        f.write("\n")
+        if fsync:
+            f.flush()
+            os.fsync(f.fileno())
+    tmp.replace(path)
+    if fsync:
+        dir_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
 
 
 @dataclass
@@ -306,11 +427,11 @@ class Index:
         return cls(chats=chats)
 
     def save(self) -> None:
-        tmp = INDEX_PATH.with_name(INDEX_PATH.name + ".tmp")
         payload = {"chats": {cid: chat.to_wire() for cid, chat in self.chats.items()}}
-        with tmp.open("w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=1)
-        tmp.replace(INDEX_PATH)
+        # fsync=False and ensure_ascii=True: see write_json_atomic. Both are
+        # what this call site already did — the extraction is a refactor here
+        # and a decision only at the repos.json one.
+        write_json_atomic(INDEX_PATH, payload, indent=1, ensure_ascii=True, fsync=False)
 
 
 @dataclass(frozen=True)
@@ -465,6 +586,155 @@ def load_repos() -> dict[str, RepoEntry]:
                 repo = RepoEntry.from_wire(entry)
                 repos[repo.name] = repo
     return repos
+
+
+# ------------------------------------------------- writing the allowlist
+#
+# There is NO ROUTE here yet — issue #98 owns that, and this is the half of it
+# that can be got wrong quietly. Everything below exists to make one operation
+# — append one entry to repos.json — incapable of destroying the file it
+# appends to.
+#
+# ITS OWN LOCK, and the reason is `_lock`. `_lock` guards index.json, it is a
+# plain `threading.Lock` (not reentrant), and it has already wedged this
+# process once: wake_chat's post-mortem records fourteen request threads parked
+# on a holder that was blocked on its own lock, with only the lock-free routes
+# still answering. The server is a ThreadingHTTPServer with daemon_threads, so
+# a read-modify-write of repos.json without SOME lock is lost-update-prone —
+# two writers both read N entries and the second one's write drops the first's.
+# The answer to that is a lock of its own, never `_lock`:
+#
+#   * nothing under `_lock` reads or writes repos.json, and nothing here
+#     touches index.json, so the two guard disjoint state;
+#   * `ReaperMemory` already records the discipline for a second lock —
+#     `armed_lock` "is its OWN lock and must never be nested with `_lock` in
+#     either order" — and `_repos_lock` joins it under the same rule.
+#
+# Nothing inside this critical section calls anything that takes `_lock`,
+# `armed_lock`, or `_repos_lock` itself, which is what keeps that rule true
+# rather than merely stated. (test-code-agent-manager.sh parks a thread inside
+# the section and asserts `_lock` is still free.)
+
+_repos_lock = threading.Lock()
+
+_REPO_FLAGS = ("edit_only", "allow_push", "public_throwaway")
+
+
+def validated_repo_entry(raw: dict[str, Any]) -> dict[str, object] | ApiError:
+    """Build the dict to append to repos.json, or the refusal to send instead.
+
+    A NEW dict built key by key, never `RepoEntry.from_wire(raw).to_wire()`.
+    `RepoEntry` has six fields and the file's entries carry seven: `tier` is
+    not on the dataclass at all, so a round trip through it would drop the one
+    field docs/privacy.md is about. Building the dict here also means an
+    unknown key in the request body is dropped rather than written into the
+    trust boundary.
+
+    Key order matches config/code-agents/repos.example.json, because the next
+    person to touch this file is a human with an editor.
+    """
+    name = raw.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return ApiError(400, "name is required and must be a non-empty string")
+    url = raw.get("url")
+    if not isinstance(url, str) or not url.strip():
+        return ApiError(400, "url is required and must be a non-empty string")
+    setup = raw.get("setup", "")
+    if not isinstance(setup, str):
+        return ApiError(400, "setup must be a string")
+    tier = _tier(raw)
+    if tier is None:
+        return ApiError(
+            400,
+            "tier is required and must be 1 or 2 (docs/privacy.md): the "
+            "classification is yours to make, and Tier 3 never enters the "
+            "allowlist",
+        )
+    entry: dict[str, object] = {"name": name.strip(), "url": url.strip(), "tier": tier}
+    entry["setup"] = setup
+    for key in _REPO_FLAGS:
+        flag = _strict_bool(raw, key)
+        if flag is None:
+            return ApiError(400, f"{key} must be true or false, and was neither")
+        entry[key] = flag
+    return entry
+
+
+def read_repos_document() -> tuple[dict[str, Any], list[Any]] | ApiError:
+    """Read the RAW repos.json and its `repos` list, or the refusal to write.
+
+    NEVER `load_repos()`, and this is the whole point of the function.
+    `load_repos` answers `{}` for a file it cannot parse, and its own comment
+    explains why that is the SAFE direction — for READING, where an empty
+    allowlist merely refuses new chats. For WRITING it is catastrophic: a
+    hand-edit that left a trailing comma reads as zero entries, one append
+    makes it a one-entry document, and the allowlist is silently gone with no
+    deploy that restores it. So a document that does not parse is a refusal
+    here, and the file is left exactly as it was.
+
+    A missing file is different and IS created: no file means no allowlist to
+    lose. Everything else — not JSON, not an object, `repos` not a list — is
+    the same class as the trailing comma and gets the same answer.
+    """
+    try:
+        raw: Any = json.loads(REPOS_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        entries: list[Any] = []
+        return ({"repos": entries}, entries)
+    except (json.JSONDecodeError, OSError) as e:
+        return ApiError(
+            500,
+            f"{REPOS_PATH} is unreadable ({type(e).__name__}) and was NOT "
+            "modified: writing to it would replace the whole allowlist with "
+            "this one entry. Fix the file by hand on the brain first.",
+        )
+    if not isinstance(raw, dict) or not isinstance(raw.get("repos", []), list):
+        return ApiError(
+            500,
+            f"{REPOS_PATH} is not the expected shape (an object with a "
+            "'repos' list) and was NOT modified. Fix it by hand on the brain "
+            "first.",
+        )
+    listed: list[Any] = raw.get("repos", [])
+    # Re-attached rather than assumed attached: `.get` on a document that has
+    # a `_readme` and no `repos` at all returns a FRESH list, and appending to
+    # that would write a file with no allowlist in it.
+    raw["repos"] = listed
+    return (raw, listed)
+
+
+def add_repo(entry: dict[str, Any]) -> ApiError | None:
+    """Append one validated entry to repos.json, or refuse and change nothing.
+
+    Standalone on purpose: no route calls this yet (#98). What it guarantees
+    is that when one does, the worst outcome of a bad request is a refusal —
+    never a shortened allowlist, never a lost `_readme`, never a stripped
+    `tier`, and never a half-written file.
+
+    Returns None on success, or the ApiError a route turns into a status.
+    """
+    validated = validated_repo_entry(entry)
+    if isinstance(validated, ApiError):
+        return validated
+    with _repos_lock:
+        document = read_repos_document()
+        if isinstance(document, ApiError):
+            return document
+        raw, listed = document
+        for existing in listed:
+            if isinstance(existing, dict) and existing.get("name") == validated["name"]:
+                # NEW behaviour, not enforcement of an existing rule:
+                # `load_repos` is last-wins on duplicate names, so an appended
+                # twin would silently take over an existing entry's flags —
+                # `allow_push: true` under a name whose owner set it false.
+                return ApiError(409, f"repo '{validated['name']}' is already in the allowlist")
+        listed.append(validated)
+        try:
+            write_json_atomic(REPOS_PATH, raw, indent=2, ensure_ascii=False, fsync=True)
+        except OSError as e:
+            return ApiError(500, f"could not write {REPOS_PATH} ({type(e).__name__})")
+    log(f"allowlist: added {validated['name']}")
+    return None
 
 
 # ------------------------------------------------------------------ engine
