@@ -109,6 +109,15 @@ to it, and from the brain those are indistinguishable. A 5xx from GitHub is
 repo is live immediately; the reply is the same six-field row `GET /api/repos`
 serves, and `tier` is recorded in the file but deliberately not on the wire.
 
+**`url` must be `https://github.com/<owner>/<repo>`** (a trailing `.git` is
+fine) and nothing else — not an scp-style `git@github.com:owner/repo`, not a
+bare `owner/repo`, and above all not some other host. The check the route makes
+is "can the PAT read `<owner>/<repo>`", so a URL pointing anywhere else would be
+written on the strength of an answer GitHub gave about a *different* address;
+and the containers clone with `GH_TOKEN` over HTTPS and hold no SSH key, so the
+https form is also the only one a chat can actually clone. Editing the file by
+hand over SSH is unchanged and still accepts the older shapes.
+
 **An authorisation that can reach a repo is still not an allowlist entry.**
 Your PAT may be scoped to twenty repos; `repos.json` is the smaller set you
 chose, and it stays the Tier 1/2 gate. A GitHub connection must never imply an

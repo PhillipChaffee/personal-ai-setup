@@ -35,8 +35,9 @@ failures rather than silent drift.
     GET    /api/health                  liveness + engine/image/chat counts
     GET    /api/repos                   the allowlist (names + flags)
     POST   /api/repos                   {"name","url","tier",+flags} — add one
-                                        entry to the allowlist, after checking
-                                        the PAT can actually read the repo
+                                        entry to the allowlist. The url must be
+                                        an https github.com clone URL, and the
+                                        PAT must be able to read THAT repo
     GET    /api/repos/<name>/branches   a repo's branches, default marked
     GET    /api/chats                   index merged with live container state
     GET    /api/permissions             asks parked on every running chat
@@ -1348,7 +1349,69 @@ def validate_base(name: str, entry: RepoEntry, base: str) -> ApiError | None:
     return None
 
 
-def validate_repo_url(name: str, url: str) -> ApiError | None:
+# The one clone URL the code plane can actually use, and the only shape this
+# route mints. `config/code-agents/Containerfile` installs exactly one git
+# credential — `[credential "https://github.com"] helper = !gh auth
+# git-credential` — and `create_chat` clones with `GH_TOKEN` and nothing else:
+# no key, no agent socket, no ~/.ssh is ever mounted into a chat volume. So a
+# `git@github.com:` remote accepted here would be an entry whose first chat
+# dies on a public-key prompt, which is the exact failure validate_repo_url
+# exists to move forward in time.
+WIRE_URL_HOST = "github.com"
+WIRE_URL_SHAPE = (
+    "url must be a github.com https clone URL — "
+    "https://github.com/<owner>/<repo> (a trailing .git is fine). Nothing was written."
+)
+# GitHub's own charset for one path segment. Checked rather than assumed
+# because the slug is concatenated into an outbound request line: a `..`
+# segment is path traversal against api.github.com, and an all-dots segment is
+# the only way to spell one. `.github` is a real repo name, so a LEADING dot
+# stays legal — it is only the segment that is nothing but dots that is not.
+WIRE_URL_PART = re.compile(r"^[A-Za-z0-9._-]{1,100}\Z")
+
+
+def wire_repo_slug(url: str) -> str | ApiError:
+    """`owner/name` for a url that arrived over HTTP, or the refusal to send.
+
+    DELIBERATELY NOT `slug_of`, and that asymmetry is the whole point of this
+    function existing at all. `slug_of` parses entries that are ALREADY in the
+    allowlist — put there by hand, over SSH, by the one person the boundary
+    belongs to — so it is lenient by design: it takes an scp remote, a bare
+    `owner/name`, anything a human might have typed, and it DISCARDS THE HOST,
+    returning the last two path segments of whatever it is given. That is
+    correct for reading a file whose entries are trusted by construction, and
+    the read paths (`repo_slug`, `route_branches`, `validate_base`) still need
+    it exactly as it is — tightening it would refuse allowlists that work
+    today. Reusing it on a url off the wire silently inherits an assumption
+    that no longer holds, and the result was that
+    `https://evil.example.com/testowner/testrepo.git` derived the slug
+    `testowner/testrepo`, was checked against GitHub as THAT repo, and was
+    written to repos.json as the evil.example.com URL a container would later
+    clone and take its AGENTS.md and .claude/ instructions from. The host is
+    the thing GitHub vouched for; a check that drops it vouches for nothing.
+
+    So the host check lives HERE, in the route's own validation, and never in
+    the shared helper. `netloc`, not `hostname`: it is the one comparison that
+    also refuses `https://github.com@evil.example.com/o/n` (userinfo — hostname
+    would say evil.example.com, but people read the left end) and
+    `https://user@github.com/o/n` and `https://github.com:8443/o/n` in the same
+    line. EXACTLY two segments, so `https://github.com/x/y/testowner/testrepo`
+    cannot smuggle a third repo's slug in past a `[-2:]`.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme.lower() != "https" or parsed.netloc.lower() != WIRE_URL_HOST:
+        return ApiError(400, WIRE_URL_SHAPE)
+    if parsed.query or parsed.fragment or parsed.params:
+        return ApiError(400, WIRE_URL_SHAPE)
+    parts = parsed.path.rstrip("/").removesuffix(".git").split("/")[1:]
+    if len(parts) != SLUG_PARTS:
+        return ApiError(400, WIRE_URL_SHAPE)
+    if not all(WIRE_URL_PART.match(p) and p.strip(".") for p in parts):
+        return ApiError(400, WIRE_URL_SHAPE)
+    return f"{parts[0]}/{parts[1]}"
+
+
+def validate_repo_url(url: str) -> ApiError | None:
     """Refuse a repo GitHub will not show us, with NOTHING written yet.
 
     validate_base's shape, one level up: an entry that names a repo the PAT
@@ -1356,6 +1419,11 @@ def validate_repo_url(name: str, url: str) -> ApiError | None:
     later, at a point the reader cannot connect back to the tap that added it.
     So the check happens BEFORE repos.json is touched, and its refusal is the
     answer to the POST.
+
+    THE SLUG IS NOT THE URL, and asking GitHub about a slug derived from a url
+    says nothing about the url unless the two are pinned to the same host —
+    see `wire_repo_slug`, which is why this route parses its own input instead
+    of borrowing the allowlist's lenient reader.
 
     NOT `default_branch()`, which is the obvious-looking helper and the wrong
     one: it catches every GitHubError and returns "" — a degradation that is
@@ -1372,11 +1440,17 @@ def validate_repo_url(name: str, url: str) -> ApiError | None:
     validate_base's other arm verbatim: unverifiable is not the same as
     absent, so a 5xx names the status and refuses rather than proceeding on
     the assumption the repo is probably fine.
+
+    A url this route cannot parse is a 400 and NOT `slug_of`'s 409. 409 on
+    this route already means "that name is already in the allowlist", and one
+    status for two unrelated refusals is a status the app cannot branch on;
+    `slug_of`'s sentence is worse than useless here besides, because it is
+    worded about a repo the file already holds ("repo 'x' has no GitHub remote
+    to read") when what went wrong is the `url` field of this very request.
     """
-    try:
-        slug = slug_of(name, RepoEntry(name=name, url=url))
-    except GitHubError as e:
-        return ApiError(e.status, e.message)
+    slug = wire_repo_slug(url)
+    if isinstance(slug, ApiError):
+        return slug
     try:
         gh("GET", f"/repos/{slug}")
     except GitHubError as e:
@@ -1404,7 +1478,7 @@ def create_repo(raw: dict[str, Any]) -> dict[str, object] | ApiError:
     is the one that holds `_repos_lock`: a duplicate test made out here would
     be answering about a file some other thread may rewrite before the append,
     which is not the check that decides. Validating first anyway is what gives
-    this function a name and a url to hand GitHub.
+    this function a trimmed url to hand GitHub.
 
     Returns the SIX-field wire shape GET /api/repos serves, built through
     RepoEntry rather than by deleting `tier` from the entry that was written.
@@ -1417,7 +1491,7 @@ def create_repo(raw: dict[str, Any]) -> dict[str, object] | ApiError:
     validated = validated_repo_entry(raw)
     if isinstance(validated, ApiError):
         return validated
-    unreadable = validate_repo_url(str(validated["name"]), str(validated["url"]))
+    unreadable = validate_repo_url(str(validated["url"]))
     if unreadable is not None:
         return unreadable
     refusal = add_repo(validated)
@@ -2911,6 +2985,18 @@ class Handler(BaseHTTPRequestHandler):
         a second response on one request), then json.loads on `b"{}"` for an
         empty body, then a 400 for each of the two ways a body can be wrong.
 
+        BOTH decode failures, and `json.JSONDecodeError` alone was the same
+        hole `read_repos_document` documents at length one screen up. The body
+        is BYTES, and `json.loads` decodes before it parses, so a body that is
+        not valid UTF-8 — one stray 0xff — raises `UnicodeDecodeError`, which
+        is a `ValueError` and is NOT a `JSONDecodeError`. It escaped this
+        handler and came back as no response at all: `curl: (52) Empty reply
+        from server` and a traceback in the log, on the route that writes the
+        trust boundary. Spelled as the exact pair rather than
+        `read_repos_document`'s `ValueError` because this `try` also wraps
+        `read_body`, and a `Content-Length: abc` raising out of its `int()`
+        deserves its own answer rather than "invalid JSON body".
+
         Everything after that is create_repo's, on purpose — no validation
         lives here. This method's whole job is HTTP: turn a dict into a 201
         and an ApiError into the status it names.
@@ -2927,7 +3013,7 @@ class Handler(BaseHTTPRequestHandler):
             if raw_body is None:
                 return
             raw: Any = json.loads(raw_body or b"{}")
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             self.send_json(400, {"error": "invalid JSON body"})
             return
         if not isinstance(raw, dict):
@@ -2982,12 +3068,18 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(200, {"chats": out, "github": snap.to_wire()})
 
     def route_create_chat(self) -> None:
+        # The pair, not `json.JSONDecodeError` alone, and route_add_repo's
+        # docstring is where the reason is written down. It was wrong here
+        # first — a POST /api/chats body with one 0xff byte got no response at
+        # all, only a traceback — and the two preambles are character for
+        # character on purpose, so the fix has to land on both or the claim
+        # that they are the same preamble stops being true.
         try:
             raw_body = self.read_body()
             if raw_body is None:
                 return
             raw: Any = json.loads(raw_body or b"{}")
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             self.send_json(400, {"error": "invalid JSON body"})
             return
         if not isinstance(raw, dict):

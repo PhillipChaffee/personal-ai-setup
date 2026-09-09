@@ -104,6 +104,15 @@ is the trust boundary and who can move it.
   ([#99](https://github.com/PhillipChaffee/personal-ai-setup/issues/99) is deferred
   on exactly that ground). The route's GitHub check is a **precondition**, not a
   grant: it only refuses repos the PAT cannot read.
+- **The URL that is written is the URL that was checked.** The check asks GitHub
+  about an `owner/repo` slug, so the route accepts only
+  `https://github.com/<owner>/<repo>` from the wire and refuses every other shape
+  — otherwise a URL on any host at all could derive a slug GitHub answers `200`
+  for and be written on the strength of it, and the host in `repos.json` is the
+  one a container clones and takes its `AGENTS.md`/`.claude/` instructions from.
+  The allowlist's own reader stays lenient (it must parse whatever was
+  hand-edited into the file over SSH); the strictness belongs to the route,
+  because that is where the input is untrusted.
 - **Two flags default to the safe value and are never inferred.**
   `allow_push: true` makes `git push` run with no permission ask;
   `public_throwaway: true` permits Zen free models, which per the provider table

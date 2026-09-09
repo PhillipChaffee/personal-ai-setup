@@ -4458,6 +4458,22 @@ printf 'not json at all' > "$WORK/bad-body.json"
 BODY="$($CURL -X POST --data-binary @"$WORK/bad-body.json" "$BASE/api/chats")"
 case "$BODY" in *"invalid JSON body"*) ok "create rejects invalid JSON" ;;
   *) bad "create with invalid JSON: $BODY" ;; esac
+# "not JSON" has TWO arms and every fixture above feeds the same one. `not json
+# at all` is valid UTF-8, so it can only ever raise JSONDecodeError; a body
+# holding one 0xff byte cannot be DECODED, and json.loads decodes before it
+# parses, so it raises UnicodeDecodeError -- a ValueError that is not a
+# JSONDecodeError. Under the narrow `except` this request got NO RESPONSE AT
+# ALL: curl (52) empty reply, a traceback in manager.log, the request thread
+# dying inside json.loads. The STATUS is the assertion (a 000 from curl is
+# exactly the failure), not just the message.
+python3 -c 'import sys; open(sys.argv[1], "wb").write(b"{\"repo\":\"\xff\"}")' \
+  "$WORK/bad-utf8-body.json"
+# shellcheck disable=SC2086
+CODE="$($CURL -o "$WORK/bad-utf8-resp.json" -w '%{http_code}' -X POST \
+  --data-binary @"$WORK/bad-utf8-body.json" "$BASE/api/chats" || echo 000)"
+[ "$CODE" = "400" ] && grep -q "invalid JSON body" "$WORK/bad-utf8-resp.json" \
+  && ok "create ANSWERS a body that is not UTF-8 at all (400, not an empty reply)" \
+  || bad "create with a 0xff body: HTTP $CODE $(cat "$WORK/bad-utf8-resp.json")"
 printf '[]' > "$WORK/list-body.json"
 # shellcheck disable=SC2086
 BODY="$($CURL -X POST --data-binary @"$WORK/list-body.json" "$BASE/api/chats")"
@@ -4682,6 +4698,21 @@ repo_listed() { # repo_listed <name> -> True / False / error
     || echo error
 }
 
+# FIRST, BEFORE ANY WELL-FORMED REQUEST: the credential. Section 1 asserts 401
+# on GET /api/health, which is the manager's cheapest READ; this is its first
+# WRITE to the trust boundary, and "there is no unauthenticated path" is a
+# claim that has to be made where it costs something. Bare `curl`, not $CURL --
+# $CURL carries -u. A perfectly valid body, so the ONLY thing that can be
+# refusing it is the auth arm, and both conjuncts: the 401 and the name never
+# reaching the file that decides where a code agent may read and write.
+UNAUTH_BODY="$WORK/add-repo-unauth.json"
+printf '%s' "{\"name\":\"unauthed\",\"url\":\"$ADD_URL\",\"tier\":1}" > "$UNAUTH_BODY"
+CODE="$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' -X POST \
+  --data-binary @"$UNAUTH_BODY" "$BASE/api/repos" || echo 000)"
+[ "$CODE" = "401" ] && [ "$(repo_listed unauthed)" = "False" ] \
+  && ok "POST /api/repos with NO credential is 401 and writes nothing" \
+  || bad "add-repo unauthenticated: HTTP $CODE, listed $(repo_listed unauthed)"
+
 # The preamble, which is route_create_chat's character for character. Both arms,
 # distinguished by their messages -- a status alone cannot tell "not JSON" from
 # "JSON, but not an object", and the caller has to be able to.
@@ -4689,6 +4720,23 @@ CODE="$(post_repo 'not json at all')"
 [ "$CODE" = "400" ] && grep -q "invalid JSON body" "$ADD_OUT" \
   && ok "POST /api/repos rejects a body that is not JSON" \
   || bad "add-repo invalid JSON: HTTP $CODE $(cat "$ADD_OUT")"
+# The OTHER half of "not JSON", which the line above cannot reach: `not json at
+# all` is valid UTF-8 and only ever raises JSONDecodeError, while a body with a
+# 0xff byte in it fails in the DECODE json.loads does first and raises
+# UnicodeDecodeError -- a ValueError, not a JSONDecodeError. Under the narrow
+# `except` the write route answered nothing at all (curl (52) empty reply, a
+# traceback in manager.log), so the assertion is on the STATUS: a curl that
+# gets no response prints 000 here and this line goes red. 8d makes the same
+# claim for POST /api/chats, where the bug was copied from.
+python3 -c 'import sys; open(sys.argv[1], "wb").write(
+    b"{\"name\":\"\xff\",\"url\":\"https://github.com/testowner/testrepo.git\",\"tier\":1}")' \
+  "$WORK/add-repo-badbytes.json"
+# shellcheck disable=SC2086
+CODE="$($CURL -o "$ADD_OUT" -w '%{http_code}' -X POST \
+  --data-binary @"$WORK/add-repo-badbytes.json" "$BASE/api/repos" || echo 000)"
+[ "$CODE" = "400" ] && grep -q "invalid JSON body" "$ADD_OUT" \
+  && ok "...and ANSWERS a body that is not UTF-8 at all, rather than dying in the thread" \
+  || bad "add-repo 0xff body: HTTP $CODE $(cat "$ADD_OUT")"
 CODE="$(post_repo '[]')"
 [ "$CODE" = "400" ] && grep -q "must be a JSON object" "$ADD_OUT" \
   && ok "POST /api/repos rejects a non-object body" \
@@ -4763,22 +4811,95 @@ CODE="$(post_repo "{\"name\":\"coerced-flag\",\"url\":\"$ADD_URL\",\"tier\":1,\"
   && ok "\"allow_push\": \"false\" is REFUSED, never read as truthy and written true" \
   || bad "add-repo allow_push string: HTTP $CODE, listed $(repo_listed coerced-flag): $(cat "$ADD_OUT")"
 
-# A URL that parses to no owner/name at all never reaches GitHub: slug_of
-# raises 409 and validate_repo_url turns it into the status, which is the arm
-# that would otherwise send `/repos/justowner` to GitHub and read its 404 as
-# "the PAT cannot see it".
-CODE="$(post_repo '{"name":"one-part","url":"https://github.com/justowner","tier":1}')"
-[ "$CODE" = "409" ] && grep -q "no GitHub remote to read" "$ADD_OUT" \
-  && ok "a URL with no owner/name is refused before any GitHub call" \
-  || bad "add-repo one-part URL: HTTP $CODE $(cat "$ADD_OUT")"
+# THE URL IS NOT THE SLUG, and this is the one the route got wrong. The check
+# derives `owner/name` from the submitted URL and asks GitHub about THE SLUG,
+# so anything that lets the host fall out of the derivation gets a repo GitHub
+# vouched for and a URL it never saw -- written into the file a container later
+# CLONES, whose AGENTS.md and .claude/ then steer an unattended agent. The first
+# five URLs below all derive `testowner/testrepo`, which this fake answers 200
+# for, so every one of them was a 201 and an entry in repos.json before
+# wire_repo_slug existed: two foreign hosts (https and scp), a userinfo that
+# reads as github.com from the left, a third repo's slug buried at the end of a
+# deeper path, and a bare `owner/name` with no host at all. They must be 400s
+# naming the shape, and none of them may be listed.
+#
+# `no-host` is the function's own docstring failing rather than a boundary
+# breach: `git clone testowner/testrepo` inside the container cannot succeed,
+# and refusing "an entry whose first chat dies in git clone, minutes later" is
+# the entire reason validate_repo_url is called before the write. The last two
+# are on github.com and are refused for the OTHER half of the shape: a `..`
+# segment would be concatenated into an outbound /repos/ request line, and a
+# query string is not part of a clone URL.
+HOSTILE_OK="yes"
+HOSTILE_SEEN=""
+while IFS='|' read -r HOSTILE_NAME HOSTILE_URL; do
+  [ -n "$HOSTILE_NAME" ] || continue
+  CODE="$(post_repo "{\"name\":\"$HOSTILE_NAME\",\"url\":\"$HOSTILE_URL\",\"tier\":1}")"
+  HOSTILE_SEEN="$HOSTILE_SEEN$HOSTILE_NAME=$CODE "
+  [ "$CODE" = "400" ] && grep -q "github.com https clone URL" "$ADD_OUT" \
+    && [ "$(repo_listed "$HOSTILE_NAME")" = "False" ] || HOSTILE_OK="no"
+done <<'EOHOSTILE'
+evil-https|https://evil.example.com/testowner/testrepo.git
+evil-scp|git@evil.example.com:testowner/testrepo.git
+evil-userinfo|https://github.com@evil.example.com/testowner/testrepo.git
+deep-path|https://github.com/x/y/testowner/testrepo.git
+no-host|testowner/testrepo
+dot-segment|https://github.com/../testrepo
+query-string|https://github.com/testowner/testrepo.git?x=1
+EOHOSTILE
+[ "$HOSTILE_OK" = "yes" ] \
+  && ok "a URL that is not an https github.com clone URL is refused, however it derives a slug" \
+  || bad "add-repo hostile URLs: [ $HOSTILE_SEEN] (each wanted 400 + the shape + unlisted)"
 
-# EIGHT refused POSTs (not JSON, not an object, over the cap, no tier, tier 3,
-# tier "1", a string flag, an unparseable URL) and the file has not moved a
+# A URL that parses to no owner/name at all never reaches GitHub: it is the arm
+# that would otherwise send `/repos/justowner` to GitHub and read its 404 as
+# "the PAT cannot see it". 400, and NOT slug_of's 409 -- 409 on this route
+# already means "that name is taken", and slug_of's sentence is worded about an
+# entry the file already holds rather than about the field just submitted.
+#
+# "BEFORE ANY GITHUB CALL" IS NOW ASSERTED, not implied by the status: the same
+# refused POST inside a fake-github call-counting window (the #122 idiom), and
+# a reordering that asked GitHub first and refused afterwards moves the count.
+# The window is [read /__calls, POST, read /__calls] and counter_route() counts
+# the reads THEMSELVES, so the closing read alone makes the floor 1; a GitHub
+# call from the POST makes it 2. MINIMUM of five SPACED windows for the same
+# reason the #122 section takes one: the manager's own github_loop is sweeping
+# this fake and can only ADD to a window it lands in, so the uncontended window
+# is the one that measures the route. Refused POSTs are idempotent -- nothing
+# is written -- so repeating this one costs nothing.
+ONE_PART_MIN=""
+ONE_PART_CODES=""
+ONE_PART_OK="yes"
+for _ in $(seq 1 5); do
+  sleep 0.4
+  CALLS_B="$(curl -sS "$SEAM_GH/__calls" | jget "d['calls']" 2>/dev/null || echo "-1")"
+  CODE="$(post_repo '{"name":"one-part","url":"https://github.com/justowner","tier":1}')"
+  CALLS_A="$(curl -sS "$SEAM_GH/__calls" | jget "d['calls']" 2>/dev/null || echo "-1")"
+  ONE_PART_CODES="$ONE_PART_CODES$CODE "
+  { [ "$CODE" = "400" ] && grep -q "github.com https clone URL" "$ADD_OUT"; } \
+    || ONE_PART_OK="no"
+  if [ "$CALLS_B" = "-1" ] || [ "$CALLS_A" = "-1" ]; then
+    ONE_PART_OK="no"; ONE_PART_MIN="unreadable"; break
+  fi
+  ONE_PART_DELTA=$(( CALLS_A - CALLS_B ))
+  if [ -z "$ONE_PART_MIN" ] || [ "$ONE_PART_DELTA" -lt "$ONE_PART_MIN" ]; then
+    ONE_PART_MIN="$ONE_PART_DELTA"
+  fi
+done
+[ "$ONE_PART_OK" = "yes" ] && [ "$ONE_PART_MIN" = "1" ] \
+  && ok "a URL with no owner/name is a 400 naming the shape, before any GitHub call" \
+  || bad "add-repo one-part URL: answered [ $ONE_PART_CODES] (wanted 400), cheapest window \
+cost $ONE_PART_MIN GitHub calls (wanted 1 -- the closing counter read and nothing else): \
+$(cat "$ADD_OUT")"
+
+# TWENTY-ONE refused POSTs (unauthenticated, not JSON, not UTF-8, not an object,
+# over the cap, no tier, tier 3, tier "1", a string flag, seven URLs of the wrong
+# shape, and an unparseable one five times over) and the file has not moved a
 # byte. This is the assertion the whole ordering exists for: validation and the
 # GitHub check both happen with repos.json untouched, so nothing above can have
 # half-written the boundary.
 if cmp -s "$WORK/root/repos.json" "$WORK/repos-before-post.json"; then
-  ok "eight refused POSTs left repos.json byte-identical"
+  ok "twenty-one refused POSTs left repos.json byte-identical"
 else
   bad "a refused POST modified repos.json: $(diff "$WORK/repos-before-post.json" \
     "$WORK/root/repos.json" | head -20)"
@@ -4917,6 +5038,42 @@ CODE="$(post_repo "{\"name\":\"unverifiable\",\"url\":\"$ADD_URL\",\"tier\":1}")
   || bad "add-repo GitHub 5xx: HTTP $CODE, file changed=$(cmp -s "$WORK/root/repos.json" \
 "$WORK/repos-after-success.json" && echo no || echo yes): $(cat "$ADD_OUT")"
 restart_github ""
+
+# --- the refusal that PROTECTS the file, end to end through the route --------
+# Section 0f makes this claim of add_repo in process; this is the same claim of
+# the live HTTP route, which is where a reader will actually meet it. A trailing
+# comma is the hand-edit that produces it -- load_repos reads that file as an
+# EMPTY allowlist (the safe direction for a reader), so a writer that went
+# through load_repos would append one entry to nothing and replace the whole
+# boundary with the repo just posted. The refusal is a 500 that says the file
+# was not modified, and the byte comparison is what makes that sentence true
+# rather than reassuring. Restored afterwards, from the bytes compared against.
+cp "$WORK/root/repos.json" "$WORK/repos-before-corrupt.json"
+python3 - "$WORK/root/repos.json" <<'PY'
+import sys
+
+# A REAL hand-edit, not a shredded file: valid up to the last entry, with one
+# trailing comma. `json.loads` refuses it; a lenient reader would not.
+with open(sys.argv[1], encoding="utf-8") as fh:
+    text = fh.read()
+cut = text.rindex("\n  ]")
+with open(sys.argv[1], "w", encoding="utf-8") as fh:
+    fh.write(text[:cut] + ",\n  ]" + text[cut + len("\n  ]"):])
+PY
+cp "$WORK/root/repos.json" "$WORK/repos-corrupt.json"
+CODE="$(post_repo "{\"name\":\"onto-a-corrupt-file\",\"url\":\"$ADD_URL\",\"tier\":1}")"
+[ "$CODE" = "500" ] && grep -q "was NOT modified" "$ADD_OUT" \
+  && cmp -s "$WORK/root/repos.json" "$WORK/repos-corrupt.json" \
+  && ok "a POST against a corrupt repos.json is refused 500 and the file is byte-identical" \
+  || bad "add-repo onto a corrupt file: HTTP $CODE, file changed=$(cmp -s \
+"$WORK/root/repos.json" "$WORK/repos-corrupt.json" && echo no || echo yes): $(cat "$ADD_OUT")"
+cp "$WORK/repos-before-corrupt.json" "$WORK/root/repos.json"
+# The restore is asserted, not assumed: the allowlist this section built has to
+# be back and served before anything downstream reads it, and a `cp` that put
+# the wrong file there would otherwise be someone else's mysterious failure.
+[ "$(repo_listed added-over-http)" = "True" ] \
+  && ok "...and the good allowlist is restored and served again afterwards" \
+  || bad "repos.json restore after the corrupt-file POST: $($CURL "$BASE/api/repos")"
 
 # ---- 9. startup, which the long-lived instance cannot reach ----------------
 # Everything above runs against ONE manager, started once with a good

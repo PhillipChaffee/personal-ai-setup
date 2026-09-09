@@ -245,7 +245,7 @@ is prose and cannot stand in for a row.
 |---|---|
 | `GET /api/health` | liveness, engine/image, chat counts, `active`/`blocked`, sweep stamp |
 | `GET /api/repos` | the allowlist (names + flags) |
-| `POST /api/repos` | add one entry: `{"name","url","tier"}` + optional `setup`/`edit_only`/`allow_push`/`public_throwaway`. Checks the PAT can read the repo **before** writing |
+| `POST /api/repos` | add one entry: `{"name","url","tier"}` + optional `setup`/`edit_only`/`allow_push`/`public_throwaway`. `url` must be `https://github.com/<owner>/<repo>`, and the PAT must be able to read **that** repo — both **before** writing |
 | `GET /api/repos/<name>/branches` | one allowlisted repo's branches, default marked |
 | `GET /api/chats` | the metadata index merged with live container state (+ per-tree change stat) |
 | `GET /api/permissions` | permission asks parked on every running chat |
