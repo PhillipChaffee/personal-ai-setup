@@ -7,6 +7,22 @@
 # manager change that alters those shapes fails the harness loudly.
 #
 # State: $STUB_ENGINE_STATE/<name>.{json,pid} (default /tmp/stub-engine).
+#
+# THE `-e` VALUES ARE RECORDED, NOT DISCARDED, and that is load bearing. Until
+# issue #115 this arm was `-e|--label|--memory|--cpus) i=$((i+1)) ;;` — it threw
+# the whole flag away — and launch() started the mock with
+# `OPENCODE_SERVER_PASSWORD="${OPENCODE_SERVER_PASSWORD:-mock}"`, inherited from
+# the MANAGER's environment. Every "container" therefore shared the gateway's
+# own password no matter what the manager passed, so any assertion about a
+# per-chat credential passed while covering nothing. Demonstrated: a run with
+# `-e OPENCODE_SERVER_PASSWORD=PER-CHAT-DERIVED` under a manager holding
+# GATEWAY-SECRET answered 401 to PER-CHAT-DERIVED and 200 to GATEWAY-SECRET.
+#
+# Recording it in the state file (rather than re-reading the environment at
+# launch) is also the faithful model of `podman start`: a container's env is
+# BAKED AT CREATE and reused on every later start, which is precisely why a
+# container created under an old credential can never acquire a new one by
+# being started, and why the manager has to recreate it instead.
 set -euo pipefail
 
 STATE="${STUB_ENGINE_STATE:-/tmp/stub-engine}"
@@ -17,12 +33,19 @@ die() { echo "stub-engine: $*" >&2; exit 1; }
 
 alive() { [ -f "$STATE/$1.pid" ] && kill -0 "$(cat "$STATE/$1.pid")" 2>/dev/null; }
 
+field() { # field <name> <key> — one string out of the state file, safely
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' \
+    "$STATE/$1.json" "$2"
+}
+
 launch() {
-  # $1=name — reads port/dir from the state file.
-  local name="$1" port dir
-  port="$(python3 -c "import json;print(json.load(open('$STATE/$name.json'))['port'])")"
-  dir="$(python3 -c "import json;print(json.load(open('$STATE/$name.json'))['dir'])")"
-  OPENCODE_SERVER_PASSWORD="${OPENCODE_SERVER_PASSWORD:-mock}" \
+  # $1=name — reads port/dir/password from the state file. NOTHING here reads
+  # the ambient environment: see the header.
+  local name="$1" port dir pw
+  port="$(field "$name" port)"
+  dir="$(field "$name" dir)"
+  pw="$(field "$name" password)"
+  OPENCODE_SERVER_PASSWORD="$pw" \
     python3 "$MOCK" --port "$port" --dir "$dir" \
     >>"$STATE/$name.log" 2>&1 &
   echo $! > "$STATE/$name.pid"
@@ -31,7 +54,7 @@ launch() {
 cmd="${1:-}"; shift || true
 case "$cmd" in
   run)
-    NAME=""; PORT=""; DIR=""; ONESHOT="no"; SCRIPT=""; DETACH="no"
+    NAME=""; PORT=""; DIR=""; ONESHOT="no"; SCRIPT=""; DETACH="no"; ENVPW=""
     ARGS=("$@")
     i=0
     while [ "$i" -lt "${#ARGS[@]}" ]; do
@@ -43,7 +66,11 @@ case "$cmd" in
         --entrypoint) i=$((i+1)) ;;  # /bin/sh for one-shots
         -p) i=$((i+1)); PORT="$(echo "${ARGS[$i]}" | cut -d: -f2)" ;;
         -v) i=$((i+1)); DIR="$(echo "${ARGS[$i]}" | cut -d: -f1)" ;;
-        -e|--label|--memory|--cpus) i=$((i+1)) ;;
+        -e) i=$((i+1))
+            case "${ARGS[$i]}" in
+              OPENCODE_SERVER_PASSWORD=*) ENVPW="${ARGS[$i]#OPENCODE_SERVER_PASSWORD=}" ;;
+            esac ;;
+        --label|--memory|--cpus) i=$((i+1)) ;;
         -c) i=$((i+1)); SCRIPT="${ARGS[$i]}" ;;
       esac
       i=$((i+1))
@@ -64,7 +91,15 @@ case "$cmd" in
     fi
     [ "$DETACH" = "yes" ] || die "expected -d for a server run"
     [ -n "$NAME" ] && [ -n "$PORT" ] && [ -n "$DIR" ] || die "run missing name/port/volume"
-    printf '{"port": %s, "dir": "%s"}\n' "$PORT" "$DIR" > "$STATE/$NAME.json"
+    # LOUD, not defaulted. A server run with no password is a manager bug, and
+    # silently falling back to "mock" (or to the ambient value) is exactly the
+    # inertness this file's header describes.
+    [ -n "$ENVPW" ] || die "server run without -e OPENCODE_SERVER_PASSWORD=..."
+    # json.dump rather than printf: the password is an arbitrary string and a
+    # hand-built JSON literal would corrupt the state file on the first quote.
+    python3 -c 'import json,sys
+json.dump({"port": int(sys.argv[1]), "dir": sys.argv[2], "password": sys.argv[3]},
+          open(sys.argv[4], "w", encoding="utf-8"))' "$PORT" "$DIR" "$ENVPW" "$STATE/$NAME.json"
     launch "$NAME"
     ;;
   start)
