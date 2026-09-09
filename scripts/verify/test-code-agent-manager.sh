@@ -42,10 +42,20 @@ PORT="${PORT:-4399}"
 # `--serve` does not: a 4-second idle timeout means a client being driven by
 # hand re-wakes the container between every tap. Override for that case.
 IDLE_SECONDS="${IDLE_SECONDS:-4}"
-# The per-chat container port band, derived from PORT so a single override moves
-# everything. This is what lets several worktrees run this harness at once: the
-# manager allocates chat ports from its index rather than from the OS, so two
-# runs sharing a base both try to bind the same port for their first chat.
+# The per-chat container port band. The manager allocates chat ports from its
+# index rather than from the OS, so two runs sharing a base both try to bind the
+# same port for their first chat.
+#
+# EVERY PORT THIS HARNESS BINDS DERIVES FROM $PORT, so one override moves all of
+# them and several worktrees can run this at once. That sentence used to be here
+# and was FALSE: GH_PORT was a bare 4398 (see the fake-github block below), so a
+# second run at a different PORT still collided on it -- and fake-github binds it
+# twice, once at start-up and once for the mid-run restarts, so the symptom was
+# three unrelated pull-request assertions failing plus a JSON traceback. Issue
+# #118 is the general version of this; this is the one line of it that this file
+# owns. The map, so a new fixture picks a free offset instead of guessing:
+#     PORT-2  ntfy      PORT-1  fake-github      PORT  the manager
+#     PORT+11 TLS       PORT+20 the chat band
 BASE_CHAT_PORT="${BASE_CHAT_PORT:-$((PORT + 20))}"
 PASS="test-secret-$$"
 BASE="http://127.0.0.1:$PORT"
@@ -154,7 +164,12 @@ read -r -a MANAGER_PY <<<"${MANAGER_PY:-python3}"
 
 # A fake GitHub, so the manager's pull-request routes exercise real request
 # building and real error mapping instead of going untested.
-GH_PORT="${GH_PORT:-4398}"
+#
+# DERIVED FROM $PORT, not a literal. It was `4398` and that was the one port in
+# this file a single PORT override did not move, which quietly cost the
+# concurrency the header claims. PORT-1 keeps the default byte-identical
+# (4399-1 == 4398) so no existing invocation changes.
+GH_PORT="${GH_PORT:-$((PORT - 1))}"
 FAKE_GITHUB_BRANCH="agent/testrepo-fixture" \
   FAKE_GITHUB_BRANCHES_FILE="$WORK/branches.txt" \
   python3 "$HERE/fake-github.py" --port "$GH_PORT" &
