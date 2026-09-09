@@ -93,6 +93,32 @@ Set FAKE_GITHUB_MODE to make it misbehave on purpose:
                                                    rather than crashing
     nocompare the compare alone answers 404       -> the tree loses its `stat`
                                                    and keeps its pull requests
+
+FAKE_GITHUB_INVISIBLE_REPOS is a SEAM, not a mode: a comma-separated list of
+`owner/repo` slugs this PAT cannot see. Every route under `/repos/:owner/:repo`
+answers 404 carrying GitHub's own body, `{"message": "Not Found"}`, while every
+other slug — `testowner/testrepo` included — is served normally in the SAME run.
+Three properties are load bearing and none of them are cosmetic:
+
+    404, NOT 403.   Real GitHub will not confirm to an unscoped token that a
+                    private repo exists, so it answers 404. And gh() maps
+                    401/403 onto "the PAT may have expired" — the wrong
+                    sentence for "your token cannot see that repo", which a
+                    route built against a 403 fixture would then ship. The
+                    `nodefault` mode above IS the 403 shape and is deliberately
+                    not this one.
+    PER REPO.       `denied` above is a whole-request 403: arming it to refuse
+                    one repo takes the branch sweep and every other
+                    GitHub-touching route down with it, so it can never show
+                    one route refusing while the rest of the stack runs.
+    ABSENT, not unverifiable. A 404 is an ANSWER. A caller shaped like the
+                    manager's validate_base has to read it as "no such base"
+                    (a 400 the picker can print) and a 5xx as "could not
+                    check" (a 502) — two different claims that must not
+                    collapse into one.
+
+Applied AFTER the whole-request modes and after GET /__calls, so a counter read
+stays readable while it is armed.
 """
 
 from __future__ import annotations
@@ -203,6 +229,19 @@ def _branches() -> list[str]:
 BRANCHES: list[str] = _branches()
 
 
+def _invisible_repos() -> frozenset[str]:
+    """Read the env seam's `owner/repo` slugs — the ones this PAT cannot see.
+
+    Read the same way BRANCHES_FILE is: once, at import, so the fixture a run
+    is serving cannot change under an assertion halfway through it.
+    """
+    raw = os.environ.get("FAKE_GITHUB_INVISIBLE_REPOS", "")
+    return frozenset(slug.strip() for slug in raw.split(",") if slug.strip())
+
+
+INVISIBLE_REPOS: frozenset[str] = _invisible_repos()
+
+
 def _int(raw: str, fallback: int) -> int:
     """Read a query parameter as an int, without a traceback for a bad one.
 
@@ -231,6 +270,11 @@ class Handler(BaseHTTPRequestHandler):
     # manager would read that as the legitimate "never pushed" arm, and the
     # whole stat matrix would go green having tested nothing.
     COMPARE = re.compile(r"^/repos/([^/]+)/([^/]+)/compare/(.+)$")
+    # EVERY route under a repo, not only the two-segment one. A validator
+    # refused on `GET /repos/:o/:r` must be refused on the branch check it
+    # would have made next, or the fixture is not the refusal GitHub gives and
+    # the caller under test never reaches its own second call.
+    REPO_SCOPED = re.compile(r"^/repos/([^/]+)/([^/]+)(?:/.*)?$")
 
     def send(self, code: int, obj: object) -> None:
         raw = json.dumps(obj).encode()
@@ -273,6 +317,24 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def invisible_repo(self, path: str) -> bool:
+        """404 a repo FAKE_GITHUB_INVISIBLE_REPOS names; True when it answered.
+
+        Keyed on the owner/repo the path carries, which is why it can be true
+        of one repo and false of the next in the same run — unlike
+        whole_request_mode() above, which cares only about the mode. This is
+        the only arm in the file that reads the two captures the routes have
+        always thrown away.
+        """
+        m = self.REPO_SCOPED.match(path)
+        if m is None or f"{m.group(1)}/{m.group(2)}" not in INVISIBLE_REPOS:
+            return False
+        # GitHub's own body, not a bare 404: a caller's error mapping has to be
+        # tested against the shape it will really meet, and an empty body would
+        # let one that reads `message` pass for the wrong reason.
+        self.send(404, {"message": "Not Found"})
+        return True
+
     def count_request(self) -> int:
         """Count one request and return the running total."""
         with STATE_LOCK:
@@ -308,6 +370,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         parsed = urlparse(self.path)
         path = parsed.path
+        # Ahead of every repo route and behind counter_route(), so an invisible
+        # repo cannot be reached by any verb and GET /__calls still answers.
+        if self.invisible_repo(path):
+            return
         if m := self.PULLS_LIST.match(path):
             self.route_list(parse_qs(parsed.query))
         elif m := self.PULL_ONE.match(path):
