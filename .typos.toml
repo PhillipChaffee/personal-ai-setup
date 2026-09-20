@@ -1,0 +1,44 @@
+# Spell-check configuration. Default dictionary on; every non-default entry
+# carries its reason. The root file is the union this repo needs (it scans
+# all four languages); the python/ and typescript/ folder canonicals carry
+# the trimmed subsets their bootstrapped repos can actually hit, and the
+# go/ and rust/ template copies carry the shared entries only.
+[default.extend-identifiers]
+# ruff's copyright rule family, not the word "copy"
+CPY001 = "CPY001"
+# the seeded-misspelling proof quotes in the folder READMEs quote the
+# finding the typos gate caught, they do not make one
+recieve = "recieve"
+calender = "calender"
+# the deliberate mistyped-tag example in the typescript folder's docs; it
+# quotes the bug the jsdoc rule catches, it does not make one
+retruns = "retruns"
+
+# Words and flag tokens that are not identifiers
+[default.extend-words]
+# GNU grep's PCRE flags in the typescript folder's bidi-hygiene step
+# (grep -rPn); typos reads it as a misspelling of "On"
+Pn = "Pn"
+
+# --- this repo's measured additions, one reason each -----------------------
+
+# Hetzner's Helsinki datacenter code (hel1, next to fsn1/nbg1); typos splits
+# the token at the digit and reads the letters as "hel"
+hel = "hel"
+# the connector id tailnet-redirect-unregisterable is a live identifier; both
+# spellings are accepted English and this repo's is the longer one
+unregisterable = "unregisterable"
+# this repo's chosen spelling, used consistently in config/skills/ship
+waiveable = "waiveable"
+# this repo's chosen spelling across the verify scripts' fixtures and
+# comments ("an unparseable manifest is a FAIL"); both spellings are
+# dictionary-valid and the repo is consistent
+unparseable = "unparseable"
+# the English prefix in the hyphenated compounds "mis-set" and
+# "Mis-flagging"; typos tokenizes the half before the hyphen as a word
+mis = "mis"
+Mis = "Mis"
+# HIPAA Business Associate Agreement, pluralized as "BAAs" in docs/privacy.md
+BA = "BA"
+# the $HOME shell variable pluralized inside a comment ("$HOMEs")
+HOM = "HOM"

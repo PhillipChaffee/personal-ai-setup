@@ -261,7 +261,7 @@ MAP_ENTRIES: Final[tuple[MapEntry, ...]] = (
     row(1, "lychee.toml", "lychee.toml", "the offline link and anchor checker's config"),
     row(1, "mypy.ini", "mypy.ini", "the --strict roster; every tracked .py is on it"),
     row(1, "ruff.toml", "ruff.toml", "ruff with every rule on; exceptions justified in place"),
-    row(1, "package.json", "package.json", "markdownlint-cli2 only, pinned by package-lock.json"),
+    row(1, "package.json", "package.json", "markdownlint + jscpd, pinned by package-lock.json"),
     row(1, "docs/", "docs"),
     row(2, "index.md", "docs/index.md",
         "the GitHub Pages landing page (LOAD-BEARING EXTERNALLY)"),

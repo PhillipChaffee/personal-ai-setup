@@ -191,7 +191,7 @@ Siri Shortcut ─────┤            OpenCode CLI (coding, local)      �
 ├── lychee.toml                        # the offline link and anchor checker's config
 ├── mypy.ini                           # the --strict roster; every tracked .py is on it
 ├── ruff.toml                          # ruff with every rule on; exceptions justified in place
-├── package.json                       # markdownlint-cli2 only, pinned by package-lock.json
+├── package.json                       # markdownlint + jscpd, pinned by package-lock.json
 ├── docs/
 │   ├── index.md                       # the GitHub Pages landing page (LOAD-BEARING EXTERNALLY)
 │   ├── app-privacy-policy.md          # the URL on the Google OAuth consent screen (LOAD-BEARING EXTERNALLY)
