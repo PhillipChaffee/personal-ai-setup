@@ -1,0 +1,16 @@
+name: wayfinder-gate-test
+
+on:
+  pull_request:
+
+permissions: {}
+
+jobs:
+  gate-test:
+    name: gate-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: fail on purpose
+        run: |
+          echo "This check must FAIL so the ruleset's empty required_status_checks can be tested."
+          exit 1
