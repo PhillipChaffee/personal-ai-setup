@@ -1,0 +1,168 @@
+# Two gates that scan EVERY file type, so no file-type workflow owns them:
+#
+#   typos  spell check over everything with letters -- shell comments, YAML
+#          descriptions, Terraform docs, and this repo's largest file type,
+#          markdown.
+#   jscpd  copy-paste detection over the code formats. A copy that drifts (a
+#          fix applied to one copy and never the other) is exactly the class
+#          of bug review is worst at seeing, so a machine raises it instead.
+#
+# These are the two members of the shared-hygiene set (full-lint reference
+# setup) this repo did not yet run; the rest already live in the file-type
+# workflows: markdownlint and lychee in docs-lint.yml, yamllint in
+# data-lint.yml, gitleaks in secret-scan.yml and .pre-commit-config.yaml.
+#
+# Pinning model, matching the rest of this repo: typos is a release tarball
+# with its sha256 embedded below -- the same trust-anchor as secret-scan.yml's
+# gitleaks install, so a re-uploaded or retargeted upstream asset fails the
+# gate instead of executing. jscpd arrives via `npm ci` against the committed
+# lockfile, for the same reason docs-lint.yml refuses `npm install -g`. Each
+# gate gets a negative test proving it can actually fail.
+name: hygiene
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typos:
+    name: spell check (typos)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # PINNED v1.50.1; the digest was computed from that exact release asset
+      # at pin time (same model as the actionlint install in actions-lint.yml).
+      - name: Install typos (checksum-verified)
+        run: |
+          set -euo pipefail
+          TYPOS_VERSION=1.50.1
+          curl --connect-timeout 10 --max-time 300 -sSfL \
+            "https://github.com/crate-ci/typos/releases/download/v${TYPOS_VERSION}/typos-v${TYPOS_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+            -o /tmp/typos.tar.gz
+          echo "edf0545109aee6a22751d04ddecb97c45be47d3aa0409564fb895eeeace91b1e  /tmp/typos.tar.gz" \
+            | sha256sum --check --status
+          mkdir /tmp/typosx && tar xz -C /tmp/typosx -f /tmp/typos.tar.gz
+          sudo mv /tmp/typosx/typos /usr/local/bin/
+          typos --version
+
+      # Bare invocation: typos walks the checkout, skips hidden and gitignored
+      # paths, and reads .typos.toml from the root -- the config whose
+      # allowlist entries each carry their own reason.
+      - name: spell check
+        run: typos
+
+      # Proves the gate can actually fail, twice over, against the COMMITTED
+      # config: the archive copy in $RUNNER_TEMP carries this commit's
+      # .typos.toml, and the checkout is never modified.
+      #
+      #   misspelled  'teh' must be caught, and the failure must be ABOUT it:
+      #               an exit-code-only assertion would go green off some
+      #               other finding (the data-lint.yml warning).
+      #   allowlisted 'recieve' and 'calender' are .typos.toml entries, so a
+      #               pass here is the proof the config file is actually the
+      #               one being read -- without it, the default dictionary
+      #               fails this word.
+      - name: Negative test — a misspelling must fail and the allowlist must be read
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/hygiene-negative-typos"; mkdir -p "$work"
+          git archive HEAD | tar -x -C "$work"
+          printf 'the teh probe\n' > "$work/zz-misspelled.txt"
+          if out="$(cd "$work" && typos 2>&1)"; then
+            echo "::error::typos accepted 'teh' — the gate is inert"
+            exit 1
+          fi
+          # shellcheck disable=SC2016  # the backticks are part of typos' own
+          # message being matched, not a command substitution to expand
+          printf '%s\n' "$out" | grep -q '`teh`' || {
+            echo "::error::typos failed, but not on the planted misspelling"
+            printf '%s\n' "$out"
+            exit 1
+          }
+          rm "$work/zz-misspelled.txt"
+          printf 'the recieve calender probe\n' > "$work/zz-allowed.txt"
+          (cd "$work" && typos) \
+            || { echo "::error::typos flagged a word .typos.toml allowlists — the config is not being read"; exit 1; }
+          echo "typos catches a real misspelling and honors the committed allowlist."
+
+  jscpd:
+    name: copy-paste detection (jscpd)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: "22"
+
+      # `npm ci` against the committed lockfile, not `npm install -g
+      # jscpd@5.2.0`: the latter pins one package and floats its whole
+      # transitive tree -- the supply-chain gap docs-lint.yml already names
+      # for markdownlint-cli2. Keep the version in package.json in lockstep
+      # with this comment: jscpd 5.2.0.
+      - name: Install jscpd (locked)
+        run: npm ci
+
+      # Bare invocation: jscpd reads .jscpd.json from the checkout root
+      # (threshold 5%, markdown excluded) and honors .gitignore, so
+      # node_modules never enters the denominator.
+      - name: copy-paste detection
+        run: npx jscpd
+
+      # Proves the gate can actually fail. The probe is a bare two-file tree
+      # that is 100% duplicated, far past the 5% threshold, scanned with
+      # --no-gitignore because jscpd's default file listing needs a git tree:
+      # in a directory with no .git it analyzes 0 files and would pass
+      # vacuously. The second arm runs the SAME tree minus one file, so its
+      # exit 0 proves the first failure came from the threshold and not from
+      # jscpd refusing a bare directory. $RUNNER_TEMP only; the checkout is
+      # never modified.
+      - name: Negative test — clones past the threshold must fail
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/hygiene-negative-jscpd"; mkdir -p "$work"
+          cp .jscpd.json "$work/"
+          python3 - "$work" <<'PY'
+          import pathlib
+          import sys
+
+          root = pathlib.Path(sys.argv[1])
+          lines = [
+              "#!/usr/bin/env bash",
+              "set -euo pipefail",
+              'readonly PROBE_ROOT="${PROBE_ROOT:-/tmp/probe-root}"',
+          ]
+          lines += [
+              f'printf "probe line {i} of the planted clone block: %s %s\\n" "$1" "$2"'
+              for i in range(1, 16)
+          ]
+          lines += [
+              'if [ -d "$PROBE_ROOT" ]; then',
+              '  printf "probe root exists: %s\\n" "$PROBE_ROOT"',
+              "  exit 3",
+              "fi",
+              "exit 0",
+          ]
+          for name in ("zz-a.sh", "zz-b.sh"):
+              (root / name).write_text("\n".join(lines) + "\n")
+          PY
+          if (cd "$work" && "$GITHUB_WORKSPACE/node_modules/.bin/jscpd" --no-gitignore); then
+            echo "::error::jscpd passed a tree that is 100% duplicated — the threshold is inert"
+            exit 1
+          fi
+          rm "$work/zz-b.sh"
+          (cd "$work" && "$GITHUB_WORKSPACE/node_modules/.bin/jscpd" --no-gitignore) \
+            || { echo "::error::jscpd failed a single-file tree — the probe is broken, not the gate"; exit 1; }
+          echo "jscpd exits 1 past the threshold and 0 on a clean tree."
