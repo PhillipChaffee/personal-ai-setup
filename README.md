@@ -181,6 +181,8 @@ Siri Shortcut ─────┤            OpenCode CLI (coding, local)      �
 ```text
 .
 ├── README.md                          # you are here: install, the add-on menu, the budget
+├── AGENTS.md                          # how agents work in this repo: the tracker, the labels, the domain docs
+├── CONTEXT.md                         # the domain glossary: one term, one meaning, everywhere
 ├── LICENSE                            # MIT
 ├── bin/pai                            # the one entry point: doctor, status, list, units, verify, docs
 ├── .gitignore                         # keeps secrets, tfstate/tfvars, OAuth tokens out of a public repo
@@ -197,6 +199,8 @@ Siri Shortcut ─────┤            OpenCode CLI (coding, local)      �
 │   ├── app-privacy-policy.md          # the URL on the Google OAuth consent screen (LOAD-BEARING EXTERNALLY)
 │   ├── _config.yml                    # Jekyll config for those two pages
 │   ├── setup/                         # 8 runbooks, in order; START at 00-overview.md
+│   ├── agents/                        # 3 agent-skills config files: issue tracker, triage labels, domain-doc rules
+│   ├── adr/                           # 1 decisions, numbered oldest first
 │   ├── connecting.md                  # adding a connector, end to end
 │   ├── model-routing.md               # which model for which job + hard privacy rules
 │   ├── privacy.md                     # data classification per provider tier; encryption model and residual risk
