@@ -32,6 +32,14 @@ _Avoid_: code agent, subagent (a different, OpenCode-internal concept)
 The coding agents the wizard installs and wires by default: OpenCode and Pi.
 _Avoid_: builtin agents, defaults
 
+**Catalog agent**:
+A coding agent the wizard can install at setup beyond the first-class two, with shallower wiring: session-identity integration where herdr offers one, and a credential that rides the default biller or is captured only when picked.
+_Avoid_: tier (vague), add-on agent, optional agent
+
+**Default biller**:
+The API provider a wizard-wired coding agent bills through unless changed: Together AI. Zen and vendor keys are captured only when an agent's pick demands them.
+_Avoid_: gateway, provider config, inference provider
+
 **Tailnet-only**:
 Every path to the brain goes through Tailscale; zero public inbound ports. A standing constraint, not a feature.
 _Avoid_: VPN (too generic)
