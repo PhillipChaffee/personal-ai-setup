@@ -1,0 +1,30 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "opencode/kimi-k2.6",
+  "small_model": "opencode/minimax-m2.7",
+  "provider": {
+    "together": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Together AI",
+      "options": {
+        "baseURL": "https://api.together.xyz/v1",
+        "apiKey": "{env:TOGETHER_API_KEY}"
+      },
+      "models": {
+        "openai/gpt-oss-120b": {
+          "name": "GPT-OSS 120B (Together)"
+        },
+        "Qwen/Qwen3.5-397B-A17B": {
+          "name": "Qwen3.5 397B A17B (Together)"
+        }
+      }
+    }
+  },
+  "mcp": {
+    "todoist-example": {
+      "type": "remote",
+      "url": "https://ai.todoist.net/mcp",
+      "enabled": false
+    }
+  }
+}
