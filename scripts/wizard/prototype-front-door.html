@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PROTOTYPE — front-door wizard flow (throwaway, answers issue #137)</title>
+<meta name="robots" content="noindex">
+<style>
+  :root { --ink:#1a1d21; --paper:#fdfdfc; --line:#d9d5cc; --accent:#0f6f4f; --accent-soft:#e7f2ec; --dim:#6b6f66; --warn:#8a4a12; --warn-soft:#f6ecdf; --prop:#3a4a8a; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.55 ui-sans-serif, -apple-system, "Helvetica Neue", sans-serif; color:var(--ink); background:var(--paper); }
+  header { padding:28px 36px 10px; max-width:1280px; }
+  h1 { font-size:22px; margin:0 0 6px; }
+  .question-p { max-width:880px; color:var(--dim); margin:0 0 4px; }
+  .banner { display:inline-block; margin:10px 0 0; padding:4px 12px; border:1px solid var(--line); border-radius:16px; font-size:13px; background:var(--accent-soft); }
+  main { display:grid; grid-template-columns: 1.35fr 1fr; gap:28px; padding:20px 36px 60px; max-width:1280px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin:0 0 10px; }
+  .card { border:1px solid var(--line); border-radius:10px; padding:16px 18px; margin-bottom:14px; background:#fff; }
+  .card.current { border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-soft); }
+  .card .tag { font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:var(--dim); }
+  .card h3 { margin:2px 0 6px; font-size:16px; }
+  .card p.why { margin:0 0 10px; color:var(--dim); font-size:13.5px; }
+  button { font:inherit; cursor:pointer; border-radius:7px; border:1px solid var(--line); background:#fff; padding:7px 13px; margin:0 8px 8px 0; text-align:left; }
+  button:hover { border-color:var(--accent); }
+  button.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.small { font-size:13px; padding:5px 10px; }
+  .selects { font-size:13px; color:var(--dim); margin:4px 0 10px; }
+  .selects b { color:var(--ink); font-weight:600; }
+  code { font:12.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace; background:#f4f2ec; padding:1px 5px; border-radius:4px; }
+  pre { font:12.5px/1.6 ui-monospace, "SF Mono", Menlo, monospace; background:#f4f2ec; border:1px solid var(--line); border-radius:8px; padding:12px 14px; overflow-x:auto; white-space:pre-wrap; }
+  .panel h2 { margin-top:0; }
+  .panel .card { padding:12px 14px; }
+  ul { margin:4px 0 8px; padding-left:18px; }
+  li { margin:2px 0; }
+  .never li::marker { content:"✋ "; }
+  .openq { background:#f6ecdf; border-color:#e2c9a8; }
+  .openq li::marker { content:"⚑ "; }
+  .muted { color:var(--dim); font-size:13px; }
+  .note-autom { border:1px solid var(--accent); border-radius:8px; background:var(--accent-soft); padding:8px 12px; font-size:13px; margin:8px 0 2px; }
+  .scenarios { display:grid; grid-template-columns:1fr; gap:12px; }
+  .scen { border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  .scen h4 { margin:0 0 4px; font-size:14px; }
+  .scen p { margin:0 0 8px; font-size:13px; color:var(--dim); }
+  .changed { color:var(--accent); font-weight:600; }
+</style>
+</head>
+<body>
+<header>
+  <h1>PROTOTYPE (throwaway) — the front-door wizard's question flow</h1>
+  <p class="question-p"><b>The question this answers (issue #137):</b> what does the one linear wizard ask, in what order, and what does each answer select — mapped to the units/flags of <code>bootstrap-mac.sh</code> and <code>deploy-vps.sh</code>. Click through it; the right panel is the plan your answers produce, the captured-values roster, the credential steps the wizard must never touch, and the open decisions. Units marked <span style="color:var(--prop)">blue</span> don't exist yet — the herdr epic revision (issue #139) owns writing them.</p>
+  <div class="banner" id="scope-banner">No scope chosen yet — start below.</div>
+</header>
+<main>
+  <section id="flow"></section>
+  <aside class="panel">
+    <h2>The plan your answers produce</h2>
+    <div class="card"><h3>Stage: Mac</h3><pre id="macCmd"></pre><div id="macUnits"></div></div>
+    <div class="card"><h3>Stage: brain (over SSH)</h3><pre id="brainCmd"></pre><div id="brainUnits"></div></div>
+    <div class="card"><h3>Captured by <code>ask_secret</code> → local .env</h3><div id="captured"></div></div>
+    <div class="card"><h3>Never touched — the wizard points, a human types</h3><ul class="never" id="neverTouch"></ul></div>
+    <div class="card"><h3>Hand-steps list at <code>finish</code></h3><ul id="handSteps"></ul></div>
+    <div class="card openq"><h3>Open decisions this flow asks you to settle</h3><ul id="openQ"></ul></div>
+  </aside>
+</main>
+<script>
+/* ------------------------------------------------- the pure module.
+   The wizard draft as data + one pure function (planFor). Lifts into the
+   authored wizard's spec once agreed; the page below is throwaway. */
+
+const MAC_UNITS = [
+  { id:"base-toolchain", desc:"uv, node, jq, Tailscale cask", state:"today", always:true },
+  { id:"base-goose",     desc:"goose CLI + Desktop, pin, ~/.config/goose", state:"today", always:true },
+  { id:"opencode",       desc:"OpenCode CLI + config + Zen credential", state:"today", always:true },
+  { id:"coding-pack",    desc:"eleven ported skills, agents, AGENTS.md", state:"today", always:true },
+  { id:"herdr-client",   desc:"herdr 0.9.x CLI, pinned; attaches to the brain over SSH", state:"proposed" },
+];
+
+const AGENTS = [
+  { id:"opencode",    name:"OpenCode",    firstClass:true,  integration:"official — herdr owns lifecycle (plugin + TUI)", creds:"Zen key on the Mac; brain-side auth is a first-run-in-pane hand step" },
+  { id:"pi",          name:"Pi",          firstClass:true,  integration:"official — herdr owns lifecycle (extension)", creds:"none shipped; login inside the pane is human" },
+  { id:"claude-code", name:"Claude Code", firstClass:false, integration:"session-identity only (no lifecycle hook)", creds:"login inside the pane, by hand" },
+  { id:"codex",       name:"Codex",       firstClass:false, integration:"session-identity only (no lifecycle hook)", creds:"login inside the pane, by hand" },
+  { id:"gemini-cli",  name:"Gemini CLI",  firstClass:false, integration:"none — detected-but-untested upstream", creds:"login inside the pane, by hand" },
+];
+
+const DEFAULTS = { scope:null, agents:["opencode","pi"], macExtras:[], captureZen:true };
+
+const state = JSON.parse(JSON.stringify(DEFAULTS));
+let lastAction = "";
+
+/* planFor :: state -> plan. Pure — no DOM. */
+function planFor(s){
+  const inScope = s.scope==="fresh" || s.scope==="existing";
+  const macCmd = inScope
+    ? "bootstrap-mac.sh   # units on: " + ["base-toolchain","base-goose","opencode","coding-pack"]
+        .concat(s.agents.length ? ["herdr-client"] : []).join(", ")
+      + (s.macExtras.includes("connectors") ? " (+connectors: hand edit, no flags)" : "")
+    : "(choose a scope first)";
+  let brainCmd = inScope ? "deploy-vps.sh" : "(choose a scope first)";
+  if (inScope) {
+    if (s.scope==="fresh") brainCmd += " https://github.com/<you>/personal-ai-setup.git   # first-ever clone";
+    if (s.agents.length) brainCmd += " --with herdr --coding-agents " + s.agents.join(",");
+    if (s.scope==="existing") brainCmd += "\n# ⚠ one-time teardown checklist (schedules, recipe timers, schedule.json,\n#   dead secrets, vault deploy key) is hand-run BEFORE this deploy";
+    brainCmd += "\n# the wizard collects values in local .env, then sshes in and drives this deploy (decided)";
+    brainCmd += "\n# brain units: herdr ONLY — google-workspace and telegram-gateway are deleted from the menu (2026-09-21; re-add later if wanted)";
+  }
+
+  const captured = [];
+  if (s.captureZen && s.agents.includes("opencode"))
+    captured.push("OPENCODE_ZEN_API_KEY — ask_secret → local .env, exported so bootstrap-mac.sh writes it into ~/.local/share/opencode/auth.json (decided 2026-09-21: capture)");
+  if (inScope)
+    captured.push("GOOSE_SERVER__SECRET_KEY — generated, ask_secret → local .env; a human copies it into /data/secrets.env (the wizard never writes that file)");
+
+  const never = [];
+  if (s.scope==="fresh") never.push(
+    "Tailscale auth key — typed at terraform's interactive prompt, never stored in a file",
+    "Tailscale admin toggles (MagicDNS + HTTPS certs) — two switches in the web console",
+    "LUKS passphrase — typed during luks-setup.sh",
+    "/data/secrets.env — filled by hand (docs/setup/50-vps-brain.md §4); the wizard prints the roster and writes nothing to it");
+  if (inScope && s.agents.length)
+    never.push("Coding-agent logins (Claude / Codex / Gemini / Pi) — typed inside their herdr pane, by hand");
+  if (inScope) never.push(
+    "Goose Desktop connect — URL + secret key + cert fingerprint pasted by hand",
+    "Goose Desktop settings — auto-update OFF + first-run provider pick (human-only unit)");
+
+  const hand = [];
+  if (s.scope==="fresh") hand.push(
+    "Create the Tailscale account; enable MagicDNS & HTTPS certs (tailnet unit — human-only)",
+    "terraform plan/apply — you type the tagged, reusable auth key at the prompt",
+    "Boot confirm, then luks-setup.sh — you type the passphrase",
+    "Fill /data/secrets.env from the roster the wizard prints");
+  if (s.scope==="existing") hand.push(
+    "ONE-TIME teardown on the ai-brain before deploy: goose schedule remove <id> per roster id; disable+remove goose-recipe@.service and its timers; delete /data/goose/data/schedule.json; drop USER_GOOGLE_EMAILS, NTFY_TOPIC, NTFY_EMAIL and the vault deploy key from /data/secrets.env; delete the GitHub vault deploy key",
+    "On the Mac by hand: rm -rf ~/.agents/skills/connect-service");
+  if (inScope) hand.push(
+    "Goose Desktop: auto-update OFF + first-run provider pick",
+    "If the App Store Tailscale variant is installed: keep it and brew uninstall --cask tailscale");
+  if (s.agents.includes("opencode")) hand.push("OpenCode on the brain: first auth inside its herdr pane");
+  if (s.agents.includes("pi")) hand.push("Pi on the brain: first login inside its herdr pane");
+  if (s.macExtras.includes("connectors")) hand.push("Connectors are a hand edit: flip enabled in the fragment, re-render config.yaml, copy to both hosts, place the credential in goose's per-extension store");
+  if (s.macExtras.includes("phone-kit")) hand.push("Phone (checklist unit, pending #140): pair Telegram bot, Tailscale iOS, Pal Chat endpoints, Siri Shortcut");
+  hand.push("Run the verify checks (Phase-3 checklist), then the reboot drill");
+
+  return { inScope, macCmd, brainCmd, captured, never, hand };
+}
+
+/* ---------------------------------------------------------- the page shell */
+const el = id => document.getElementById(id);
+const SCOPE_LABEL = { fresh:"Fresh end-to-end", existing:"Configure the existing ai-brain" };
+
+function render(){
+  const p = planFor(state);
+  el("macCmd").textContent = p.macCmd;
+  el("brainCmd").textContent = p.brainCmd;
+  el("macUnits").innerHTML = p.inScope
+    ? "installer units on: " + ["base-toolchain","base-goose","opencode","coding-pack"].concat(state.agents.length?["herdr-client"]:[]).map(u=>`<code>${u}</code>`).join(" ")
+      + (state.macExtras.includes("connectors") ? ' · connectors: hand edit only' : ' · <span class="muted">connectors stays off</span>')
+      + (state.macExtras.includes("phone-kit") ? ' · phone: checklist only' : '')
+    : '<span class="muted">—</span>';
+  el("brainUnits").innerHTML = p.inScope
+    ? "units on: " + (state.agents.length ? '<code>herdr</code>' : '<span class="muted">none — no coding agents picked</span>')
+      + `<br><span class="muted">coding agents → herdr integrations: ${state.agents.length ? state.agents.map(a=>`<code>${a}</code>`).join(" ") : "none picked"}</span>`
+      + `<br><span class="muted"><b>nothing schedules anything</b> — no --enable-scheduler, no timers, no recipes</span>`
+    : '<span class="muted">—</span>';
+  el("captured").innerHTML = p.captured.length
+    ? "<ul>"+p.captured.map(c=>`<li>${c}</li>`).join("")+"</ul>"
+    : '<span class="muted">nothing — the wizard captures no secrets in this shape</span>';
+  el("neverTouch").innerHTML = p.never.length ? p.never.map(n=>`<li>${n}</li>`).join("") : '<span class="muted">none in this shape</span>';
+  el("handSteps").innerHTML  = p.hand.map(h=>`<li>${h}</li>`).join("");
+  el("openQ").innerHTML = [
+    "Settled 2026-09-21 · scope is <b>fresh</b> or <b>existing</b> — no Mac-only / brain-only answers",
+    "Settled 2026-09-21 · the wizard <b>drives the deploy over SSH</b> (values live in local .env; it still never writes /data/secrets.env)",
+    "Settled 2026-09-21 · <b>google-workspace and telegram-gateway are deleted from the menu</b> for now — re-add later if wanted; the epic revision owns the repo side",
+    "Settled 2026-09-21 · <code>ask_secret</code> <b>captures the Zen key</b>",
+    "Still open ⚑ · per-agent setup semantics for the catalog agents — <a href=\"https://github.com/PhillipChaffee/personal-ai-setup/issues/138\">Agent picker semantics: what setup means per coding agent</a> owns the detail",
+    "Still open ⚑ · the <code>--with herdr --coding-agents</code> flag surface and the herdr unit itself — the <a href=\"https://github.com/PhillipChaffee/personal-ai-setup/issues/139\">herdr-on-brain epic revision</a> owns it",
+  ].map(q=>`<li>${q}</li>`).join("");
+  el("banner").innerHTML = state.scope
+    ? `Scope: <b>${SCOPE_LABEL[state.scope]}</b>${lastAction ? ' · <span class="changed">just changed</span>' : ""} — pick again any time (free play).`
+    : "No scope chosen yet — start below.";
+  renderFlow(p);
+}
+
+function renderFlow(p){
+  const F = [];
+  const card = (tag,title,why,body,cur) => F.push(`<div class="card${cur?" current":""}"><span class="tag">${tag}</span><h3>${title}</h3><p class="why">${why}</p>${body}</div>`);
+
+  card("question 1 · the one fork", "Where are we starting from?", "Everything downstream is linear from this answer — no sub-wizards; it only decides fresh provisioning vs the upgrade+teardown path. Both answers run both installers.",
+    ["fresh","existing"].map(o=>
+      `<button class="${state.scope===o?"on":""}" onclick="act('scope','${o}')">${SCOPE_LABEL[o]}</button>`).join("")
+    + `<div class="selects">· <b>fresh</b> → both installers + the provisioning hand-steps (terraform, LUKS, secrets.env)<br>· <b>existing</b> → both installers, upgrade path + the <b>one-time teardown checklist</b> before deploy</div>`,
+    state.scope===null);
+
+  card("question 2", "Which coding agents live in herdr panes on the brain?", "OpenCode + Pi are first-class (pre-checked; herdr owns their lifecycle). The catalog is Claude Code, Codex, Gemini CLI. Per-agent <i>semantics</i> are issue #138's — this fixes the pick list and its consequences.",
+    AGENTS.map(a=>`<button class="${state.agents.includes(a.id)?"on":""}" onclick="act('agent','${a.id}')">${a.firstClass?"★ ":""}${a.name}</button>`).join("")
+    + `<div class="selects">${AGENTS.filter(a=>state.agents.includes(a.id)).map(a=>`· <b>${a.name}</b> → ${a.integration}; creds: ${a.creds}`).join("<br>") || "· none picked → herdr runs empty; the Mac keeps its local tools only"}</div>`
+    + `<div class="selects muted">Drives: brain <code>--with herdr --coding-agents ${state.agents.join(",")||"∅"}</code> (proposed), herdr integration installs with config dirs pre-created; Mac <code>herdr-client</code> installs only when ≥1 agent picked.</div>`,
+    false);
+
+  if (p.inScope) card("question 3", "Anything extra on the Mac?", "Defaults already cover the thin client (toolchain, goose, OpenCode, coding-pack, herdr-client). The two opt-ins are survivors of the old menu — even being on this menu is a decision this ticket feeds.",
+    `<button class="${state.macExtras.includes("connectors")?"on":""}" onclick="act('macExtra','connectors')">connectors</button>`
+    + `<button class="${state.macExtras.includes("phone-kit")?"on":""}" onclick="act('macExtra','phone-kit')">phone checklist</button>`
+    + `<div class="selects">· <b>connectors</b> → nothing installs; adoption stays the documented hand edit (and it needs base-skills, which dies — re-parenting is an epic note)<br>· <b>phone checklist</b> → hand-steps only; nothing on either host (waits on #140)</div>`,
+    false);
+
+  if (p.inScope) card("stage 4", state.scope==="fresh" ? "Provisioning confirm — the human-only gauntlet" : "Existing-brain confirm — teardown once, then deploy", "Irreversible actions sit behind <code>confirm</code>; the wizard points at each human step and waits, but never performs it.",
+    (state.scope==="fresh"
+      ? `<div class="selects">1. terraform plan/apply — <b>you</b> type the tagged reusable auth key<br>2. luks-setup.sh — <b>you</b> type the passphrase<br>3. fill <code>/data/secrets.env</code> from the printed roster<br>4. only then does the wizard drive the deploy over SSH — decided; values ride in local <code>.env</code>, never into <code>/data/secrets.env</code></div>`
+      : `<div class="selects">The teardown checklist (roster schedules, recipe timers, schedule.json, dead secrets, vault deploy key) prints as hand-steps, and the deploy waits behind a <code>confirm</code> that you ran it. The deploy itself is driven over SSH by the wizard — decided.</div>`)
+    + `<div class="note-autom"><b>The no-automations guarantee:</b> stages write only local <code>.env</code> and drive installers — no scheduler flag, no timers, no recipes. Nothing schedules anything. Asserted in the spec and checked by the repo's gates, because the wizard library can't enforce it.</div>`,
+    false);
+
+  if (p.inScope) card("question 5", "What may the wizard capture?", "Everything under “Never touched” is typed by a human, forever — this is the only <code>ask_secret</code> the flow carries (decided 2026-09-21: capture it):",
+    `<button class="${state.captureZen?"on":""}" onclick="act('zen')">capture the OpenCode Zen key (ask_secret → .env → bootstrap writes auth.json)</button>`,
+    false);
+
+  card("stage 6 · the edge of the map", "Verify + finish", "Runs the verify checks, prints the hand-steps list on the right, and closes with the guarantee: nothing schedules anything. The wizard build itself graduates only after this flow is agreed.",
+    "", false);
+
+  const scen = [
+    { t:"Configure the existing ai-brain", d:"Phillip's actual path: both installers, teardown checklist first.", steps:[["scope","existing"],["macExtra","connectors"]] },
+    { t:"Fresh end-to-end", d:"New Mac + new brain. Watch the hand-steps list grow.", steps:[["scope","fresh"]] },
+    { t:"Catalog picks on top of first-class", d:"Add Claude Code and Codex to the pre-checked pair — watch each pick's integration line change: herdr owns OpenCode/Pi's lifecycle; the catalog pair only carry session identity.", steps:[["scope","existing"],["agent","claude-code"],["agent","codex"]] },
+  ];
+  F.push(`<div class="card"><h3>Guided scenarios</h3><div class="scenarios">` + scen.map(s=>
+    `<div class="scen"><h4>${s.t}</h4><p>${s.d}</p>${s.steps.map(st=>`<button class="small" onclick="act('${st[0]}','${st[1]}')">→ ${stepLabel(st)}</button>`).join("")}</div>`).join("")
+    + `</div><button class="small" onclick="reset()">↺ reset to the draft defaults</button></div>`);
+
+  el("flow").innerHTML = F.join("");
+}
+
+function stepLabel(st){
+  if (st[1]==="deselect-opencode") return "deselect OpenCode";
+  if (st[1]==="deselect-pi") return "deselect Pi";
+  if (st[0]==="zen") return "toggle Zen capture";
+  if (st[0]==="scope") return SCOPE_LABEL[st[1]];
+  if (st[0]==="agent") return (AGENTS.find(a=>a.id===st[1])||{}).name || st[1];
+  return st[1];
+}
+
+function act(kind, val){
+  lastAction = kind + ":" + val;
+  if (kind==="scope"){ Object.assign(state, JSON.parse(JSON.stringify(DEFAULTS)), { scope: val }); }
+  else if (kind==="agent"){
+    if (val.startsWith("deselect-")) state.agents = state.agents.filter(x=>x!==val.slice(9));
+    else state.agents.includes(val) ? state.agents = state.agents.filter(x=>x!==val) : state.agents.push(val);
+  }
+  else if (kind==="macExtra") state.macExtras.includes(val) ? state.macExtras = state.macExtras.filter(x=>x!==val) : state.macExtras.push(val);
+  else if (kind==="brainExtra") state.brainExtras.includes(val) ? state.brainExtras = state.brainExtras.filter(x=>x!==val) : state.brainExtras.push(val);
+  else if (kind==="zen") state.captureZen = !state.captureZen;
+  render();
+}
+function reset(){ Object.assign(state, JSON.parse(JSON.stringify(DEFAULTS))); lastAction=""; render(); }
+render();
+</script>
+</body>
+</html>
