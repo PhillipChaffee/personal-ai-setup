@@ -18,8 +18,8 @@
     "these instructions are the container's, not any one repo's."
   ],
   "instructions": ["/chat/home/.config/opencode/AGENTS.md"],
-  "model": "opencode/deepseek-v4-flash",
-  "small_model": "opencode/minimax-m2.7",
+  "model": "togetherai/zai-org/GLM-5.3-Flash",
+  "small_model": "togetherai/zai-org/GLM-5.3-Flash",
   "share": "disabled",
   "permission": {
     "*": "allow",
