@@ -2467,7 +2467,13 @@ if [ -n "$CID" ]; then
     && ok "no base named: the chat records none" || bad "base leaked onto a default create"
   [ -f "$CD/workspace/setup-ran.marker" ] \
     && ok "repo setup command ran in the workspace" || bad "setup marker missing"
-  grep -q '"opencode/deepseek-v4-flash"' "$CD/home/.config/opencode/opencode.json" 2>/dev/null \
+  # The expected default is read from the template, not hardcoded, so a model
+  # bump in config/code-agents/opencode.json cannot stale this gate.
+  python3 -c 'import json, sys
+tpl = json.load(open(sys.argv[1], encoding="utf-8"))
+got = json.load(open(sys.argv[2], encoding="utf-8"))
+assert got.get("model") == tpl.get("model"), (tpl.get("model"), got.get("model"))' \
+    "$REPO_ROOT/config/code-agents/opencode.json" "$CD/home/.config/opencode/opencode.json" \
     && ok "per-chat opencode config rendered (default model)" || bad "chat config missing/wrong"
   grep -q '"git push\*": "ask"' "$CD/home/.config/opencode/opencode.json" 2>/dev/null \
     && ok "push=ask policy in chat config" || bad "push policy missing"
