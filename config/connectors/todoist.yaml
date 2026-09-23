@@ -21,7 +21,7 @@ summary: >-
 
 manifest_version: 1
 verified_on: 2026-08-23
-goose_version_verified: 1.46.0
+goose_version_verified: 1.51.0
 
 # ---- what it is -----------------------------------------------------------
 archetype: first_party_remote_mcp
@@ -81,7 +81,8 @@ vetting:
     evidence: >-
       available_tools pins the agent to an exact 8-tool surface (asserted by the smoke test).
       The credential itself is NOT scopeable: a Todoist personal API token is full-account
-      read/write, and goose 1.46.0 has no clientId/scopes fields to narrow it with. So the
+      read/write, and its auth is a bearer header — the clientId/scopes fields goose grew at
+      v1.47.0+ are OAuth-only and have nothing to narrow here. So the
       allowlist narrows the agent, never the token — a stolen token is full account access.
       This is the gap docs/connecting.md warns about when it says both layers must be set.
   privacy_row:
@@ -172,8 +173,10 @@ acp_extension:
     - update-tasks                # write
     - complete-tasks              # write
     - reschedule-tasks            # write
-  # No clientId / clientSecretKey / scopes: absent at goose 1.46.0, and `scopes` without
-  # `clientId` is a hard config error. Auth is the bearer header above, nothing else.
+  # No clientId / clientSecretKey / scopes sent: they exist upstream (v1.47.0+)
+  # but this is a bearer-token connector, and `scopes` without `clientId` is a
+  # hard config error the validator rejects. Auth is the bearer header above,
+  # nothing else.
 
 # ---- proof it works -------------------------------------------------------
 # What --smoke proves, stated precisely. It reads THIS FILE and talks to the endpoint

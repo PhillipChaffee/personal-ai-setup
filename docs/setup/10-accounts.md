@@ -118,8 +118,9 @@ this repo you can finish entirely from the phone. Earlier revisions of this doc
 said "no API key, browser OAuth on first connect"; that was wrong. The full
 record is [`config/connectors/todoist.yaml`](../../config/connectors/todoist.yaml).
 
-The token is **full-account read/write** and cannot be scoped — goose 1.46.0 has
-no `scopes` field to narrow it with. The `available_tools` allowlist in
+The token is **full-account read/write** and cannot be scoped — Todoist's auth is a bearer
+header, not OAuth, so the `clientId`/`scopes` fields goose grew at v1.47.0+ have nothing to
+narrow here. The `available_tools` allowlist in
 `config/goose/config.yaml` narrows the *agent* to 8 tools (four reads, four
 non-destructive writes; the endpoint publishes no delete tool), but it does not
 narrow the *token*. Revoke it in Todoist's settings if it ever leaks.

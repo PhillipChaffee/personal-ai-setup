@@ -20,7 +20,7 @@ summary: Gmail, Calendar and Tasks through your own GCP OAuth app, over a stdio 
 
 manifest_version: 1
 verified_on: 2026-08-23
-goose_version_verified: 1.46.0
+goose_version_verified: 1.51.0
 
 # ---- what it is -----------------------------------------------------------
 archetype: self_hosted_mcp_stdio

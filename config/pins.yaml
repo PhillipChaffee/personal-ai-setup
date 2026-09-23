@@ -32,8 +32,8 @@
 goose:
   # The version this whole setup is verified against. goose releases roughly
   # weekly and 2.0 is in RC churn, so upgrades are opt-in rather than automatic.
-  version: "1.46.0"
-  verified_on: "2026-08-20"
+  version: "1.51.0"
+  verified_on: "2026-09-23"
   # sha256 of config/goose/acp-contract.json, which is the ACP surface goose
   # published AT `version` above -- method names and the extension field names
   # -- captured from crates/goose/{acp-meta,acp-schema}.json and committed, so
@@ -46,4 +46,4 @@ goose:
   # re-taking it at the new tag names any method that disappeared. The hash
   # itself catches the other half: a capture edited by hand to make the check
   # pass. Evidence, not configuration.
-  acp_contract_sha256: "5fae385e8173a0599b2e9784e2327c6ce749430a188dd0cf8aba8177ffa67a5a"
+  acp_contract_sha256: "7b01e89a32f45092c22b5332187ebec77f1f002fc2cd3e548c2be594dd67e6ae"

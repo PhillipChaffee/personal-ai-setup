@@ -305,7 +305,8 @@ import sys
 
 import yaml
 
-# The eleven methods this feature calls. All verified present at v1.46.0.
+# The ten methods this feature calls. Asserted against the vendored capture at
+# the pinned tag (v1.51.0 as of 2026-09-23).
 #
 # FIVE OF THEM ARE NOT WRITTEN HERE. They are imported from
 # scripts/pai/goosecfg.ACP_METHODS -- the only code in this repo that actually
@@ -316,10 +317,12 @@ import yaml
 # workflow passes --acp-roundtrip, so without this a PYTHONPATH typo would ship
 # green. A failed import is a NAMED failure below, never a silently short list.
 #
-# The other six have no single caller to import from: docs/connecting.md's
+# The other five have no single caller to import from: docs/connecting.md's
 # adapter names them, and a session-scoped extension is added by goose itself.
+# A sixth, `_goose/unstable/extensions/available`, was here until the 1.51.0
+# bump deleted it upstream with no replacement -- nothing in this repo ever
+# called it, so it left the list rather than the pin reverting.
 ADAPTER_METHODS = [
-    "_goose/unstable/extensions/available",
     "_goose/unstable/session/extensions/add",
     "_goose/unstable/session/extensions/remove",
     "_goose/unstable/session/extensions/list",
@@ -388,7 +391,7 @@ def audit_methods(names):
         failures.append((
             "scripts/pai/goosecfg.py could not be imported: %s" % IMPORT_ERROR,
             "The ACP method list this check asserts comes from goosecfg.ACP_METHODS, so",
-            "an unimportable module means five of the eleven methods went unchecked.",
+            "an unimportable module means five of the ten methods went unchecked.",
             "PYTHONPATH is set by check-connectors.sh; a syntax error in goosecfg.py or a",
             "missing scripts/pai/ is the usual cause.",
         ))
@@ -447,16 +450,27 @@ def audit_fields(mcp, http, schema_seen):
             "GooseExtension.mcp lost `envKeys` — per-connector secrets no longer work as documented",
         ))
 
-    oauth = [k for k in ("clientId", "clientSecretKey", "scopes") if k in mcp]
-    if oauth:
-        failures.append((
-            "OAuth fields now exist on the mcp variant: %s" % ", ".join(sorted(oauth)),
-            "Those are v1.47.0+. Manifests are validated as if they cannot exist, so if",
-            "the pin has moved, docs/connecting.md's OAuth section needs re-verifying —",
-            "and OAuth still cannot be completed from a phone.",
+    # The OAuth fields exist at the pin since v1.47.0; the 1.51.0 bump
+    # re-verified this exact set against crates/goose/acp-schema.json on
+    # 2026-09-23, along with the phone-side OAuth verdict in docs/connecting.md:
+    # the callback is loopback-bound, the authorization URL is only announced
+    # via warn!/eprintln!, and ACP URL elicitation is refused — OAuth still
+    # cannot be completed from a phone. This repo's credential path stays
+    # envKeys; the manifests never send any of the three, and the manifest
+    # validator below rejects all three outright.
+    oauth = sorted(k for k in ("clientId", "clientSecretKey", "scopes") if k in mcp)
+    if oauth == ["clientId", "clientSecretKey", "scopes"]:
+        passes.append((
+            "OAuth fields on the mcp variant are exactly clientId/clientSecretKey/scopes "
+            "(the repo sends none of them — envKeys is the credential path)",
         ))
     else:
-        passes.append(("clientId/clientSecretKey/scopes absent, as expected at a 1.46.x pin",))
+        failures.append((
+            "the OAuth fields on the mcp variant changed: %s" % (", ".join(oauth) or "none"),
+            "Expected exactly clientId, clientSecretKey, scopes. Upstream added, renamed",
+            "or removed one — re-verify docs/connecting.md's OAuth section and",
+            "config/connectors/README.md's validator rules before trusting the pin.",
+        ))
 
     if http:
         if "url" in http and "uri" not in http:
@@ -723,10 +737,11 @@ SMOKE_KEYS = {
     "kind", "command", "expect_tools_exactly", "expect_tools_set", "expect_tools_absent",
     "expect_roundtrip", "notes",
 }
-# Fallback key lists, read off crates/goose/acp-schema.json at v1.46.0. Used
+# Fallback key lists, read off crates/goose/acp-schema.json at v1.51.0. Used
 # only when the live schema could not be fetched; the live schema always wins.
 FALLBACK_KEYS = {
-    "mcp": ["available_tools", "bundled", "description", "envKeys", "server", "socket", "timeout", "type"],
+    "mcp": ["available_tools", "bundled", "clientId", "clientSecretKey", "description",
+            "envKeys", "scopes", "server", "socket", "timeout", "type"],
     "stdio": ["_meta", "args", "command", "env", "name"],
     "http": ["_meta", "headers", "name", "type", "url"],
 }
@@ -824,10 +839,11 @@ for forbidden in ("clientId", "clientSecretKey", "scopes"):
     if hits:
         bad(
             "declares `%s` at %s" % (forbidden, ", ".join(hits)),
-            "The OAuth fields on the mcp variant are v1.47.0+ and do not exist at the",
-            "pinned %s, so goose drops them silently. And OAuth cannot be completed" % PINNED_VER,
-            "from a phone at all (docs/connecting.md): the callback is loopback-bound on",
-            "the brain and the authorization URL appears in no ACP message. Use a bearer",
+            "The OAuth fields on the mcp variant exist at the pinned %s (v1.47.0+), so a" % PINNED_VER,
+            "manifest that sets them asks goose to RUN its OAuth flow — which cannot be",
+            "completed from a phone (docs/connecting.md): the callback is loopback-bound on",
+            "the brain, the authorization URL appears in no ACP message, and URL-mode",
+            "elicitation is refused. This repo's credential path is envKeys. Use a bearer",
             "token or app password — first_run_auth: phone_secret.",
         )
 
@@ -1064,9 +1080,9 @@ else:
 try:
     live = bool(KEYFILE) and os.path.exists(KEYFILE)
     keys_map = json.load(open(KEYFILE)) if live else FALLBACK_KEYS
-    keys_src = "live schema" if live else "built-in v1.46.0 key list"
+    keys_src = "live schema" if live else "built-in v1.51.0 key list"
 except Exception:                                           # noqa: BLE001
-    keys_map, keys_src = FALLBACK_KEYS, "built-in v1.46.0 key list"
+    keys_map, keys_src = FALLBACK_KEYS, "built-in v1.51.0 key list"
 
 ext_raw = doc.get("acp_extension")
 if isinstance(ext_raw, dict):
@@ -2159,7 +2175,7 @@ if [ "$OFFLINE" = "yes" ]; then
 elif ! fetch_at_tag "crates/goose/acp-meta.json" "$META_JSON" ||
      ! fetch_at_tag "crates/goose/acp-schema.json" "$SCHEMA_JSON"; then
   skip "could not fetch acp-meta.json / acp-schema.json at $GOOSE_TAG (no network, no gh, or the tag does not exist)"
-  echo "      Manifest key validation falls back to the v1.46.0 key list baked into"
+  echo "      Manifest key validation falls back to the v1.51.0 key list baked into"
   echo "      this script. Re-run with network before trusting a version bump."
 else
   run_check "ACP contract @ $GOOSE_TAG" \

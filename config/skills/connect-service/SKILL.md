@@ -25,7 +25,7 @@ executes, not background reading:
 - [`docs/connecting.md`](../../../docs/connecting.md) — archetypes, `first_run_auth`, the
   privacy gate, and what is deliberately unsupported.
 
-Facts here are pinned to **goose 1.46.0**. If the goose you are talking to is a different
+Facts here are pinned to **goose 1.51.0**. If the goose you are talking to is a different
 version, stop (see [Hard stops](#hard-stops)).
 
 ## The three things that go wrong
@@ -54,9 +54,9 @@ Everything else in this file is procedure. These three are why the procedure exi
 ## Prerequisites
 
 - A running `goose serve` on the brain at the pinned version, reachable over the tailnet.
-- The ACP custom methods (all present at 1.46.0; verified against `crates/goose/acp-meta.json`
-  at the `v1.46.0` tag, the only machine-readable method contract goose publishes):
-  `_goose/unstable/extensions/available`, `_goose/unstable/config/extensions/list | add |
+- The ACP custom methods (all present at 1.51.0; asserted against the vendored capture of
+  `crates/goose/acp-meta.json` at the pin, the only machine-readable method contract goose
+  publishes): `_goose/unstable/config/extensions/list | add |
   remove | set-enabled`, `_goose/unstable/session/extensions/add`,
   `_goose/unstable/config/upsert`.
 - **Driving ACP by hand**, if you are not going through the phone client: `POST /acp`; the
@@ -278,11 +278,14 @@ Server-side, translate the same verbs into that server's flags (workspace-mcp's
 has no scope mechanism, that is vetting bar 4 partial: record it in `vetting.restrictable_tools`
 and in `privacy.notes`, and tell the user the credential is broader than the agent.
 
-### Fields that do not exist at 1.46.0
+### The OAuth fields: they exist now — do not use them
 
-`clientId`, `clientSecretKey` and `scopes` on the `mcp` variant are **v1.47.0+ only and absent
-at the pinned version**. Do not emit them. (The validator's rules about them — `scopes`
-requires `clientId`, all three are `http`-only — bite if and when the pin moves.)
+`clientId`, `clientSecretKey` and `scopes` on the `mcp` variant are v1.47.0+ and **exist at
+the pinned 1.51.0** (schema-verified 2026-09-23). Do not emit them. This repo's credential
+path is `envKeys`, and goose's OAuth flow still cannot be completed from a phone (the
+callback is loopback-bound, the authorization URL never reaches an ACP message, and URL-mode
+elicitation is refused — re-verified in the v1.51.0 source). The validator rejects all three
+outright (see `config/connectors/README.md`, "Fields the validator rejects").
 
 ## 7 — CREDENTIALS
 
@@ -419,7 +422,7 @@ Abort and report. Do not improvise a partial connection around any of these.
 - Never send `availableTools`; never omit `available_tools`; never send it empty.
 - Never put values in `server.env`.
 - Never use `server.type: sse`.
-- Never emit `clientId` / `clientSecretKey` / `scopes` at the pinned 1.46.0 — they do not exist there.
+- Never emit `clientId` / `clientSecretKey` / `scopes` — they exist at the pinned 1.51.0, but this repo's credential path is `envKeys` and goose's OAuth flow cannot be completed from a phone.
 - Never read a secret back to verify it.
 - Never widen an allowlist mid-run to make a failing smoke test pass.
 - Never mark `privacy.row_added: true` before the row is in the file.
