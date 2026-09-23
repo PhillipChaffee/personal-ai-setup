@@ -1,7 +1,7 @@
 ---
 # brain — the VPS itself: the Hetzner server terraform creates, the LUKS
 # volume everything stateful lives on, goose's whole path root moved onto it,
-# and the always-on `goose serve` that Desktop and the phone talk to.
+# and the always-on `goose serve` that Desktop talks to.
 #
 # DESCRIBES TODAY. This is the largest single region of deploy-vps.sh —
 # deploy-vps.sh:314-516 (preflight + migration), deploy-vps.sh:606-634
@@ -78,8 +78,7 @@ secrets:
     optional: false
     prompt: >-
       shared secret every goose serve client presents; mint it HERE with
-      openssl rand -hex 32, then transcribe it into the Mac Keychain and the
-      iOS app
+      openssl rand -hex 32, then transcribe it into the Mac Keychain
     generate: openssl rand -hex 32
   # THE MAC HALF OF THE SAME KEY, and the reason it is filed under a host: vps
   # unit. `store` names where a value lives, not where the unit runs: Desktop

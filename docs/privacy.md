@@ -31,8 +31,8 @@ Two rules of thumb that catch most edge cases:
   Tier 1 or 2 — the life vault and anything Tier 3 never enter it. Zen-free models are
   refused unless a repo is explicitly flagged `public_throwaway` (hard rule 1). If a chat
   trips over sensitive content anyway, abort it — never continue the session. Chat
-  transcripts live in per-chat volumes on the encrypted `/data`, and the phone app caches
-  transcripts on-device — consistent with the trusted-client-device stance in
+  transcripts live in per-chat volumes on the encrypted `/data` — consistent with the
+  trusted-client-device stance in
   [security.md](security.md).
 
 ## Provider policy summary (verified as of 2026-08-20)
@@ -153,27 +153,6 @@ strict policies" stance: Hetzner is a reliable European provider, and the realis
 threats (snapshot exposure, disk disposal, opportunistic scanning) are all covered. If
 your threat model ever grows to include the hosting provider itself, the design ports to
 a homelab box unchanged — that's the exit path, documented in
-[roadmap.md](roadmap.md).
-
-## The Goose iOS tunnel and Cloudflare
-
-The Goose iOS app reaches the brain through an **outbound-only** websocket tunnel that
-relays via Cloudflare's infrastructure. This means: no inbound port is opened on the
-brain (good), but session traffic transits a Cloudflare relay in addition to the
-Goose-level encryption (a third party in the phone path that the Mac path — Desktop over
-Tailscale — does not have).
-
-If that's unacceptable to you, the alternatives, in order of preference:
-
-1. **Don't pair the iOS app.** Use Goose Desktop over Tailscale on the Mac as the only
-   interactive brain client; automation results arrive by email.
-2. **Telegram gateway** on the brain — moves the relay trust from Cloudflare to Telegram;
-   different party, same shape of trade-off.
-3. **Pal Chat** direct to Together — bypasses the brain entirely (device-local history,
-   ZDR provider), at the cost of losing the shared history.
-
-The tunnel is a pragmatic accepted trade for now; the Goose mobile roadmap (native remote
-ACP over your own network) is the thing to watch for removing it — see
 [roadmap.md](roadmap.md).
 
 ## Delivery channels: never PHI, never account numbers

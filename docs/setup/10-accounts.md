@@ -78,8 +78,7 @@ The only network path to the brain. Free personal plan.
 
 1. Create an account at <https://tailscale.com> (sign-in via an identity
    provider; pick the one you'll keep).
-2. Install the client on the **Mac** and the **iPhone** and sign both into
-   your tailnet.
+2. Install the client on the **Mac** and sign it into your tailnet.
 3. In the admin console, under DNS: enable **MagicDNS** and **HTTPS
    certificates**. Both are required later — MagicDNS gives the brain a stable
    `<hostname>.<your-tailnet>.ts.net` name, and the cert support backs TLS to
@@ -250,17 +249,17 @@ else, and `--units <id>` adds one add-on's names at a time.
 | Credential | Variable / form | Mac Keychain | Brain secrets.env | Elsewhere | Collected in |
 |---|---|---|---|---|---|
 | OpenCode Zen API key | `OPENCODE_ZEN_API_KEY` | yes | yes | — | §1 (now) |
-| Together AI API key | `TOGETHER_API_KEY` | yes | yes | Pal Chat on iPhone (Phase 1) | §2 (now) |
+| Together AI API key | `TOGETHER_API_KEY` | yes | yes | — | §2 (now) |
 | ntfy topic | `NTFY_TOPIC` | yes | yes | — | §6 (now) |
 | Failure-alert email (recommended; not a secret) | `NTFY_EMAIL` | yes | yes | — | §6 (now) |
 | ntfy topic for code-agent buzzes (optional) | `NTFY_AGENT_TOPIC` | yes | yes | ntfy app on the phone (subscribed) | §6a (now) |
 | Tavily key (optional) | `TAVILY_API_KEY` | yes | yes | — | §7 |
 | Hetzner API token | `hcloud_token`, typed at the Terraform prompt | no | no | nowhere — never stored on disk | §5 (Phase 3) |
 | Tailscale auth key | `tailscale_authkey`, typed at the Terraform prompt | no | no | nowhere — never stored on disk | Phase 3 |
-| goose serve shared secret | `GOOSE_SERVER__SECRET_KEY` | yes (Desktop connects with it) | yes | Goose iOS app (pairing) | Phase 3 |
+| goose serve shared secret | `GOOSE_SERVER__SECRET_KEY` | yes (Desktop connects with it) | yes | — | Phase 3 |
 | Google OAuth client | `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` | yes | yes | — | Phase 2 ([30-google-oauth.md](30-google-oauth.md)) |
 | LUKS passphrase | (passphrase) | no | no | password manager **only** | Phase 3 |
-| Telegram bot token (optional) | `TELEGRAM_BOT_TOKEN` | yes (transcribe) | yes | — | Phase 3 ([40-phone-setup.md](40-phone-setup.md)) |
+| Telegram bot token (optional) | `TELEGRAM_BOT_TOKEN` | yes (transcribe) | yes | — | Phase 3 |
 | Todoist personal API token (optional) | `TODOIST_API_KEY` | no | no | goose's own per-extension secret store | §4 |
 
 Cross-check before moving on: everything in the "now" rows exists, the two Zen

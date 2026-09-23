@@ -21,8 +21,8 @@ Companion to [privacy.md](privacy.md) (which providers may see what) and
   with hypervisor access) could read memory. No cloud VPS defends against this; accepted
   per the "cloud with strict policies" stance. See the residual-risk section of
   [privacy.md](privacy.md).
-- **A compromised phone or Mac.** Client devices hold pairing credentials and tailnet
-  membership by design; device security (passcode, FileVault, OS updates) is assumed, not
+- **A compromised Mac.** Client devices hold pairing credentials and tailnet
+  membership by design; device security (FileVault, OS updates) is assumed, not
   provided by this repo.
 - **The lock screen, once `NTFY_AGENT_TOPIC` is set.** Subscribing a phone to the
   code-agent channel puts a rendering surface outside the tailnet and outside the app
@@ -60,7 +60,7 @@ The brain's agent endpoint (`goose serve`, port 3284, systemd unit
 `scripts/vps/systemd/goose-serve.service`):
 
 - **Binds the tailnet address** — unreachable off-tailnet even before auth.
-- **TLS** (`--tls`) — encrypted even on-tailnet; clients (Goose Desktop, iOS app) pin the
+- **TLS** (`--tls`) — encrypted even on-tailnet; Goose Desktop pins the
   certificate fingerprint, so a swapped endpoint fails loudly.
 - **Shared-secret auth** — `GOOSE_SERVER__SECRET_KEY`, loaded from `/data/secrets.env`
   via systemd `EnvironmentFile`, required from every client.
@@ -75,7 +75,7 @@ The brain's agent endpoint (`goose serve`, port 3284, systemd unit
   dispatched without passing through the permission manager, which makes an imported app
   an unreviewed route to every other extension's tools — Gmail send, the shell, the vault.
   `config/goose/config.yaml` sets `apps: enabled: false`; the brain loses nothing, since
-  its clients are Goose Desktop, the iOS app and the scheduler. On a brain deployed before
+  its clients are Goose Desktop and the scheduler. On a brain deployed before
   that template landed, confirm with `goose configure` → Toggle Extensions.
 
 ## The code plane: the manager, the containers and the allowlist
@@ -218,7 +218,8 @@ the residual-risk section. Treat it as a reason to rotate anything that was in
 server is ever decommissioned — a snapshot of it taken earlier is likewise still
 plaintext.
 
-This matters more once connectors exist, not less: a credential typed on the phone is
+This matters more once connectors exist, not less: a credential typed in an
+interactive client is
 written by goose to `<config_dir>/secrets.yaml`, mode 0600. That is deliberate —
 per-extension `envKeys` are what keep one connector's credential out of every other
 connector's process environment (goose does no `env_clear`) — but it is only an acceptable
@@ -306,8 +307,8 @@ new → update stores (Keychain on Mac, `/data/secrets.env` on brain) → restar
 | Secret | Where to rotate | Notes |
 |---|---|---|
 | `OPENCODE_ZEN_API_KEY` | Zen console (opencode.ai) | Keychain on the Mac (goose's Zen providers and the verify scripts read it), `/data/secrets.env` on the brain. The bootstrap no longer writes any OpenCode credential file |
-| `TOGETHER_API_KEY` | Together dashboard → API keys | Also update Pal Chat on the phone |
-| `GOOSE_SERVER__SECRET_KEY` | Generate locally (`openssl rand -hex 32`) | Update secrets.env, restart goose-serve, re-enter on Desktop and iOS clients |
+| `TOGETHER_API_KEY` | Together dashboard → API keys | Keychain on the Mac and `/data/secrets.env` on the brain |
+| `GOOSE_SERVER__SECRET_KEY` | Generate locally (`openssl rand -hex 32`) | Update secrets.env, restart goose-serve, re-enter on the Desktop client |
 | Tailscale | Admin console → Machines / Keys | Auth keys are one-time (bootstrap); rotate device keys by re-authing; remove stale devices |
 | Google OAuth client secret | GCP console → Credentials | Re-run the workspace-mcp auth flow; re-transfer tokens per `docs/setup/30-google-oauth.md` |
 | `NTFY_TOPIC` | Pick a new random topic | Update secrets.env + Keychain; old topic is burned |

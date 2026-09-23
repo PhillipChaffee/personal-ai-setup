@@ -26,9 +26,8 @@ requires: [brain]
 # own.
 #
 # The SECTION is cited, never a line number. Both citations that stood here
-# were wrong: the first named Pal Chat's row rather than this one (phone-kit
-# held the mirror-image error), and the second pointed at the BLANK LINE under
-# the table. README.md now also carries two generated regions, so any line
+# were wrong: the first named the wrong row, and the second pointed at the
+# BLANK LINE under the table. README.md now also carries two generated regions, so any line
 # number here would be a standing invitation to repeat that.
 cost:
   - line: Code agents on the brain (containers)

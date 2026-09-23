@@ -95,20 +95,6 @@ the bar, a privacy.md policy row, a `docs/setup/3x-<provider>.md` runbook,
 and a check-mcp smoke test. Trigger: the day a real second provider joins
 your life (a work M365 tenant, a Fastmail migration) — not before.
 
-## Watch the goose mobile roadmap (remote ACP + push)
-
-The iOS pairing fallback chain in `docs/setup/40-phone-setup.md` exists because
-mobile access is experimental and the documented pairing path assumes Goose
-Desktop, not a headless brain. Upstream's stated direction is **HTTP/remote
-Agent Client Protocol plus push messaging for long-running work**
-([mobile-access docs](https://github.com/aaif-goose/goose/blob/main/documentation/docs/experimental/remote-access/mobile-access.md),
-[announcement](https://aaif-goose.github.io/goose/blog/2026/01/20/goose-mobile-apps/)).
-If that ships, the phone connects to `goose serve` the same way Desktop does —
-no tunnel, no Cloudflare relay (removing the caveat in `docs/privacy.md`), and
-native push could replace ntfy for run notifications. Nothing to build now:
-check the goose release notes when running the monthly `pin-models.sh` pass,
-and simplify `40-phone-setup.md` the release it lands.
-
 ## Optional: self-hosted ntfy
 
 The public ntfy.sh server sees your notification traffic and rate-limits
@@ -120,5 +106,4 @@ the central ntfy.sh server because of iOS background restrictions — so
 self-hosting improves content privacy but doesn't fully cut the third party out
 on iOS. Since the PHI-free push rule (`docs/privacy.md`) already guarantees
 nothing sensitive transits ntfy.sh, this is a nice-to-have, not a gap. Do it if
-notification volume grows, or fold it in when goose-native push (previous item)
-makes ntfy optional anyway.
+notification volume grows.

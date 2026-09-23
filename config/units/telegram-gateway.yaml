@@ -1,6 +1,6 @@
 ---
-# telegram-gateway — the phone's agentic surface: a full goose process on the
-# brain answering one paired Telegram account.
+# telegram-gateway — a full goose process on the brain answering one paired
+# Telegram account.
 #
 # DESCRIBES TODAY. The unit file is installed by unit_telegram_gateway() at
 # deploy-vps.sh:639-640 and enabled only when TELEGRAM_BOT_TOKEN is already in
@@ -31,7 +31,11 @@ installer:
 
 # NOTHING VERIFIES THIS UNIT - see the blocker below.
 verify: []
-runbook: docs/setup/40-phone-setup.md#1a-telegram-gateway-the-working-agentic-path
+# The only runbook this unit ever had was the deleted phone setup doc
+# (docs/setup/40-phone-setup.md); no replacement doc exists, so the field is
+# null behind the no-runbook blocker below rather than pointing at prose
+# nobody wrote.
+runbook: null
 
 secrets:
   # optional: true is the literal deploy behaviour, not a softening: the
@@ -44,8 +48,7 @@ secrets:
     secret: true
     optional: true
     prompt: >-
-      bot token from @BotFather (docs/setup/40-phone-setup.md §1a) — the
-      gateway reads it from /data/secrets.env
+      bot token from @BotFather — the gateway reads it from /data/secrets.env
     generate: null
   # The Mac half, and the row #39 exists for. keychain-secrets.sh:12 used to
   # prompt for this name on EVERY run, with an empty parenthetical, for a
@@ -57,8 +60,8 @@ secrets:
     secret: true
     optional: true
     prompt: >-
-      bot token from @BotFather (docs/setup/40-phone-setup.md §1a) —
-      TRANSCRIBE it; the gateway itself runs on the brain
+      bot token from @BotFather — TRANSCRIBE it; the gateway itself runs on
+      the brain
     generate: null
 
 owns:
@@ -66,19 +69,22 @@ owns:
   - {kind: systemd_unit, target: goose-telegram-gateway.service}
 
 manual_steps:
-  - id: create-telegram-bot
+  - id: create-and-pair-telegram-bot
     summary: Create the bot with BotFather and put its token in
       /data/secrets.env. Nothing prompts for it, and a deploy that ran before
-      the token existed leaves the unit installed but disabled.
-    doc: docs/setup/40-phone-setup.md#1a-telegram-gateway-the-working-agentic-path
-    blocking: true
-  - id: pair-telegram-account
-    summary: Run `goose gateway pair telegram` once on the brain so the
-      gateway answers your account and no one else's.
-    doc: docs/setup/40-phone-setup.md#1a-telegram-gateway-the-working-agentic-path
+      the token existed leaves the unit installed but disabled. Then run
+      `goose gateway pair telegram` once on the brain so the gateway answers
+      your account and no one else's.
+    doc: docs/setup/10-accounts.md#credential-checklist
     blocking: true
 
 blockers:
+  - id: no-runbook
+    severity: warn
+    detail: 'The only runbook this unit ever had was docs/setup/40-phone-setup.md,
+      deleted with the phone story (2026-09-23); the BotFather and pairing
+      steps live only in the manual_steps summaries here. No replacement doc
+      exists yet.'
   - id: no-verify
     severity: warn
     detail: 'No check asserts the unit file is installed, that it is enabled
@@ -125,8 +131,5 @@ uninstall:
     still present."
 
 notes: >-
-  This is the only phone path in the repo that is agentic. docs/setup/40-phone-setup.md
-  §1b records that the Goose iOS app is not usable against a headless brain,
-  and §4's Pal Chat is a plain chat client with no tools - so when this unit is
-  not enabled, the phone can talk to a model but cannot reach the brain's
-  extensions at all.
+  This is a full agentic surface: a paired Telegram account drives the brain's
+  extensions, which a plain chat client pointed at an inference API cannot do.

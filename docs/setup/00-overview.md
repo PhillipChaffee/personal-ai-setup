@@ -4,7 +4,7 @@
 
 A self-owned personal AI stack: one always-on Goose agent (the **brain**) on a
 small, hardened, Terraform-managed VPS holds your single chat history and runs
-all scheduled automations; your Mac and iPhone are thin clients to it over
+all scheduled automations; your Mac is a thin client to it over
 Tailscale; inference is pay-as-you-go against OpenCode Zen and Together AI with
 strict per-tier privacy rules; OpenCode is the dedicated coding agent on the
 Mac. It handles coding, writing/research, personal admin (Gmail and
@@ -24,10 +24,10 @@ script. Total hands-on time: roughly a weekend, spread out however you like.
 
 | Phase | Doc | Time | Milestone |
 |---|---|---|---|
-| 1 — Day-1 minimal viable | [10-accounts.md](10-accounts.md) → [20-mac-setup.md](20-mac-setup.md) | ~1–2 h | You can chat with your own models from the Mac (OpenCode + goose CLI) and from the iPhone (Pal Chat) — no server, working on day one. |
+| 1 — Day-1 minimal viable | [10-accounts.md](10-accounts.md) → [20-mac-setup.md](20-mac-setup.md) | ~1–2 h | You can chat with your own models from the Mac (OpenCode + goose CLI) — no server, working on day one. |
 | 2 — Admin plumbing | [30-google-oauth.md](30-google-oauth.md) (+ Tailscale/Todoist from [10-accounts.md](10-accounts.md)) | ~2–3 h | Goose on the Mac reads your Gmail, Calendar, and Todoist through your own OAuth app — no aggregator in the middle. |
-| 3 — The brain | [50-vps-brain.md](50-vps-brain.md) → [40-phone-setup.md](40-phone-setup.md) | ~3 h | **The same chat history on Desktop and iPhone, and the morning brief arrives automatically.** This is the payoff phase. |
-| 4 — Sensitive tier | [60-vault-setup.md](60-vault-setup.md) | ~1–2 h | Your health and finance documents are answerable from the phone, pinned to Together (ZDR/HIPAA tier), with PHI-free delivery emails. |
+| 3 — The brain | [50-vps-brain.md](50-vps-brain.md) | ~3 h | **Your chat history lives on the brain, and the morning brief arrives automatically.** This is the payoff phase. |
+| 4 — Sensitive tier | [60-vault-setup.md](60-vault-setup.md) | ~1–2 h | Your health and finance documents are answerable, pinned to Together (ZDR/HIPAA tier), with PHI-free delivery emails. |
 | 5 — Go public + roadmap | [`docs/public-repo.md`](../public-repo.md), [`docs/roadmap.md`](../roadmap.md) | ~1 h | Guardrails green (gitleaks full-history scan, placeholder audit) and the repo flipped public; roadmap items queued. |
 
 Phase details, verification steps, and the exact scripts each phase runs are in
@@ -47,7 +47,6 @@ verified as of 2026-08-20 — re-verify at signup, and run
 | Hetzner cpx21-class VPS + LUKS-encrypted volume | ~€6–9 |
 | Inference at expected usage (Zen + Together combined) | ~$10–30 |
 | Tailscale personal plan, ntfy failure-alert emails | $0 |
-| Pal Chat backup client | ~$7 one-time |
 | **Total** | **~$15–35/mo** |
 
 The inference range is wide because it tracks your usage directly — that's the

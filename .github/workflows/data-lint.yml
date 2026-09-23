@@ -644,11 +644,57 @@ jobs:
           # stops it, and the other two arms below both pass on it.
           probe tier base-skills \
             "base-skills.uninstall.supported is true on tier: base"
-          # AC#5 of #43, and it covers EXACTLY ONE manifest: P4 already fails an
-          # empty owns unless host: checklist, and phone-kit is the only
-          # checklist unit.
-          probe owns phone-kit \
-            "phone-kit.uninstall.supported is true but owns is empty"
+          # AC#5 of #43. Its only live target was phone-kit — the sole
+          # checklist unit, and the only manifest allowed an empty owns — and
+          # the phone deletion removed it, so the arm's negative test now
+          # mints its own fixture: a checklist host owning nothing, flipped to
+          # supported: true, must be refused by name.
+          work="$RUNNER_TEMP/units-negative-uninstall-owns"; mkdir -p "$work"
+          git archive HEAD | tar -x -C "$work"
+          cat > "$work/config/units/zz-probe-owns.yaml" <<'YAML'
+          ---
+          id: zz-probe-owns
+          manifest_version: 1
+          verified_on: "2026-01-01"
+          summary: Lint fixture for the uninstall owns-arm negative test.
+          host: checklist
+          tier: opt_in
+          requires: []
+          cost: []
+          installer: null
+          verify: []
+          runbook: docs/setup/10-accounts.md#credential-checklist
+          secrets: []
+          manual_steps:
+            - id: touch-nothing
+              summary: This fixture exists only so the owns-arm has a live target.
+              doc: docs/setup/10-accounts.md#credential-checklist
+              blocking: true
+          owns: []
+          blockers:
+            - id: no-verify
+              severity: warn
+              detail: A lint fixture; nothing real sits behind it to verify.
+          uninstall:
+            supported: false
+            reason: "A checklist fixture that owns nothing has nothing to remove."
+          notes: Minted by this negative test; never part of the real catalog.
+          YAML
+          sed -i 's/^  supported: false$/  supported: true/' "$work/config/units/zz-probe-owns.yaml"
+          grep -qx '  supported: true' "$work/config/units/zz-probe-owns.yaml" || {
+            echo "::error::the owns mutation did not apply — this control is inert"
+            exit 1
+          }
+          if out="$("$work/scripts/verify/check-units.sh" --offline 2>&1)"; then
+            echo "::error::check-units.sh accepted zz-probe-owns with uninstall.supported: true"
+            exit 1
+          fi
+          printf '%s\n' "$out" | grep -qF "zz-probe-owns.uninstall.supported is true but owns is empty" || {
+            echo "::error::the gate failed, but not on the owns arm — it is inert"
+            printf '%s\n' "$out"
+            exit 1
+          }
+          echo "check-units.sh correctly rejected zz-probe-owns (owns)."
           # A reason was only required in the `false` state, so
           # {supported: true, reason: ""} passed — and `pai remove` would have
           # printed a blank explanation for the one state that needs one.

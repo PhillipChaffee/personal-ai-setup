@@ -1,8 +1,8 @@
 # Phase 3 — Stand up the brain
 
 The payoff phase (~3 h). At the end: one always-on Goose agent on a hardened
-VPS owns your chat history and your automations; Desktop and iPhone are
-windows onto it. **Milestone: the same session visible on Desktop and phone,
+VPS owns your chat history and your automations; Desktop is the window onto
+it. **Milestone: your chat history lives on the brain,
 and a morning brief that arrives by itself.**
 
 Prerequisites: Phases 1–2 done and verified; Hetzner account + API token
@@ -116,7 +116,7 @@ The script `luksFormat`s that device (LUKS2 — prompting for the passphrase
 and a typed `FORMAT` confirmation), adds `noauto` crypttab/fstab entries (so
 no key is ever stored on the machine and nothing auto-unlocks at boot), and
 opens + mounts it at `/data`. One-time only; after any future reboot the
-counterpart is `luks-unlock.sh` (step 10).
+counterpart is `luks-unlock.sh` (step 9).
 
 ## 4. Secrets onto the encrypted volume
 
@@ -137,8 +137,8 @@ generate the one new secret now:
 openssl rand -hex 32    # → GOOSE_SERVER__SECRET_KEY in /data/secrets.env
 ```
 
-Keep `GOOSE_SERVER__SECRET_KEY` at hand (password manager): Desktop and the
-iOS app authenticate with it in steps 7–8. This file is the brain's entire
+Keep `GOOSE_SERVER__SECRET_KEY` at hand (password manager): Desktop
+authenticates with it in step 7. This file is the brain's entire
 secret store — 0600, owned by `agent`, on the encrypted volume, injected into
 services via systemd `EnvironmentFile`, never anywhere else.
 
@@ -196,7 +196,7 @@ brain core, which always runs:
 | unit | what it is | what skipping it costs |
 | --- | --- | --- |
 | `google-workspace` | `~/.google_workspace_mcp` → `/data/workspace-mcp` | Google OAuth tokens land on the **unencrypted** root disk instead |
-| `telegram-gateway` | `goose-telegram-gateway.service`, enabled when `TELEGRAM_BOT_TOKEN` is set | no phone gateway ([40-phone-setup.md](40-phone-setup.md)) |
+| `telegram-gateway` | `goose-telegram-gateway.service`, enabled when `TELEGRAM_BOT_TOKEN` is set | unverified by any check (see the unit's blockers) |
 | `code-agents` | rootless podman, the `code-agent:local` image, `/data/code-agents`, `code-agent-manager.service` | no code agents ([70-code-agents.md](70-code-agents.md)) |
 | `automations` | `register-schedules.sh` — the goose scheduler roster | no scheduled recipes; the disabled fallback timers are still installed |
 
@@ -289,14 +289,7 @@ brain's automations. Sessions you start here execute on the brain and land in
 its history. The Mac-local goose remains available as the offline fallback —
 that's by design ([20-mac-setup.md](20-mac-setup.md)).
 
-## 8. Pair the iPhone
-
-Follow the fallback chain in [40-phone-setup.md §1](40-phone-setup.md):
-headless tunnel attempt from the brain first, then Desktop-initiated tunnel,
-then the Telegram gateway, with Pal Chat as the floor. Whichever path sticks,
-the test that matters is in the next step.
-
-## 9. VERIFY — the Phase 3 checklist
+## 8. VERIFY — the Phase 3 checklist
 
 Two scripts plus five live tests. Run all of it; this phase has the most
 moving parts and every test below guards a specific failure mode.
@@ -304,7 +297,7 @@ moving parts and every test below guards a specific failure mode.
 ```bash
 agent@brain$ /home/agent/personal-ai-setup/scripts/verify/check-brain.sh
 # goose-serve service active, serve /status over TLS, the 5-schedule roster,
-# an optional run-now live fire, and the manual cross-device checklist
+# an optional run-now live fire, and the manual checklist
 
 agent@brain$ /home/agent/personal-ai-setup/scripts/verify/check-security.sh --local
 # host checks: /data is a real mountpoint (LUKS mounted), secrets.env is 0600,
@@ -319,10 +312,9 @@ agent@brain$ /home/agent/personal-ai-setup/scripts/verify/check-security.sh --lo
 
 Then, by hand:
 
-1. **Cross-device session visibility** — start a session in Desktop
-   (connected to the brain), send one message; open the phone surface and
-   find that session; reply from the phone; see the reply on Desktop. This is
-   the milestone that matters: one history, every surface.
+1. **Session lands in the shared history** — start a session in Desktop
+   (connected to the brain), send one message, and see the reply land in the
+   brain's history. This is the milestone that matters: one history.
 2. **Automation fires and delivers** — on the brain:
    `goose schedule run-now --schedule-id morning-brief` → the digest email
    (`Morning brief — <date>`, self-addressed) arrives in your inbox within
@@ -336,9 +328,9 @@ Then, by hand:
    `scripts/common/run-recipe.sh recipes/does-not-exist.yaml` → a failure
    alert must arrive (emailed to `NTFY_EMAIL` via ntfy's gateway). A silent
    failure path is the one thing this stack isn't allowed to have.
-5. **Reboot drill** — step 10, now, while everything is fresh.
+5. **Reboot drill** — step 9, now, while everything is fresh.
 
-## 10. Reboot drill
+## 9. Reboot drill
 
 Reboots are rare but the recovery path must be muscle memory
 ([`docs/security.md`](../security.md#operational-drills)):

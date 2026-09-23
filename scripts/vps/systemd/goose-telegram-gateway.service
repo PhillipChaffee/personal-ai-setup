@@ -1,10 +1,9 @@
-# The phone's agentic surface: goose's Telegram gateway on the brain.
-# Answers only the paired Telegram account (pair once with
-# `goose gateway pair telegram` — docs/setup/40-phone-setup.md §1a).
+# goose's Telegram gateway on the brain. Answers only the paired Telegram
+# account (pair once with `goose gateway pair telegram`).
 # deploy-vps.sh enables this unit only when TELEGRAM_BOT_TOKEN is present
 # in /data/secrets.env.
 [Unit]
-Description=goose Telegram gateway (phone agentic access)
+Description=goose Telegram gateway (paired-account agentic access)
 After=network-online.target goose-serve.service
 RequiresMountsFor=/data
 

@@ -1,5 +1,5 @@
 # goose-serve.service — the always-on brain: `goose serve` (ACP server for
-# Desktop/phone clients + the native recipe scheduler).
+# Desktop clients + the native recipe scheduler).
 # Installed to /etc/systemd/system/ by scripts/vps/deploy-vps.sh.
 #
 # Binding mechanism: docs/security.md requires the listener to exist on the
@@ -49,7 +49,7 @@ Environment=GOOSE_DISABLE_KEYRING=1
 # The consequence for secrets: with the config dir on the LUKS volume,
 # secrets.yaml is now an ACCEPTABLE place for a credential rather than a leak
 # — and it is the mechanism per-connector `envKeys` are resolved through, so a
-# secret typed on the phone (config/upsert with is_secret) has somewhere
+# secret typed in an interactive client (config/upsert with is_secret) has somewhere
 # encrypted to land. EnvironmentFile stays the store for stack-wide keys;
 # secrets.yaml is the store for per-extension ones, which is what keeps one
 # connector's credential out of every other connector's environment
