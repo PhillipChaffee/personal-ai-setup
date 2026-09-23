@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # bootstrap-mac.sh — one-shot Mac setup for the personal-ai stack.
 #
-# Installs (via Homebrew): goose CLI + Goose Desktop, OpenCode, uv, node, jq,
-# Tailscale; pins the goose CLI formula; lays down the repo's config templates
-# into ~/.config plus the ported skills (~/.agents/skills — read by both
-# OpenCode and goose), OpenCode agents, and global AGENTS.md rules (never
-# overwriting existing files). Idempotent — safe to re-run after a failed
-# step. See docs/setup/20-mac-setup.md and docs/cursor-port.md.
+# Installs (via Homebrew): goose CLI + Goose Desktop, uv, node, jq, Tailscale;
+# pins the goose CLI formula; lays down the repo's config templates into
+# ~/.config plus the ported skills (~/.agents/skills — read by goose) and the
+# global AGENTS.md rules (never overwriting existing files). Idempotent — safe
+# to re-run after a failed step. See docs/setup/20-mac-setup.md and
+# docs/cursor-port.md.
 #
-# THE INSTALL IS FIVE UNITS: unit_base_toolchain, unit_base_goose, unit_opencode,
+# THE INSTALL IS FOUR UNITS: unit_base_toolchain, unit_base_goose,
 # unit_base_skills, unit_coding_pack, called in that (dependency) order at the
 # bottom of this file. Each one is the installer named by a manifest in
 # config/units/ -- config/units/base-goose.yaml's `installer.function`, for
@@ -16,7 +16,7 @@
 # renamed function or an uncalled one is a failing gate rather than a comment
 # that went stale.
 #
-# WHICH of the five run is chosen by --with/--without/--only, resolved ONCE in
+# WHICH of the four run is chosen by --with/--without/--only, resolved ONCE in
 # the prelude into $SELECTED; --dry-run prints that resolution and exits without
 # touching anything. The unit table those flags are resolved against (UNIT_IDS,
 # REQUIRES_*, OWNS_*) is checked against the manifests by units_lint.py's P8, so
@@ -49,11 +49,9 @@ Usage: bootstrap-mac.sh [--with ID] [--without ID] [--only ID] [--dry-run] [--he
 Installs the Mac toolchain for the personal-ai setup and copies the repo's
 config templates (no-clobber) into place. Run it from your clone of the repo;
 re-running is safe. Follow-ups it will point you at: keychain-secrets.sh and
-the scripts/verify/ checks. OpenCode's Zen credential is written for you
-(scripts/mac/opencode-auth.sh) when $OPENCODE_ZEN_API_KEY is already set --
-there is no /connect step any more.
+the scripts/verify/ checks.
 
-With no flags it installs all five units, which is what it has always done.
+With no flags it installs all four units, which is what it has always done.
 
   --with ID[,ID]     add ID (and whatever it requires) to the default set
   --without ID[,ID]  drop ID, and anything left needing it, from the set
@@ -62,18 +60,17 @@ With no flags it installs all five units, which is what it has always done.
                      needs no Homebrew, and does not even ask what OS this is
   -h, --help         this text
 
-The five units, in dependency order:
+The four units, in dependency order:
 
   base-toolchain   uv, node, jq, the Tailscale cask
   base-goose       the goose CLI + Desktop cask, the pin, ~/.config/goose
-  opencode         the OpenCode CLI, ~/.config/opencode/opencode.json, and the
-                   Zen credential in ~/.local/share/opencode/auth.json
   base-skills      the connect-service skill in ~/.agents/skills
   coding-pack      the eleven ported skills, the OpenCode agents, AGENTS.md
 
-`--only coding-pack` therefore installs four units, because coding-pack needs
-opencode, which needs base-goose, which needs base-toolchain. Excluding a unit
-something else still needs is refused with exit 2 rather than half-installed.
+`--only coding-pack` therefore installs one unit: coding-pack requires nothing
+since the OpenCode unit left the catalog (coding agents are the brain's, under
+herdr). Excluding a unit something else still needs is refused with exit 2
+rather than half-installed.
 EOF
 }
 
@@ -175,36 +172,25 @@ fi
 # an indirectly-read global is SC2034 (unused) to ShellCheck 0.11.0, and a
 # warning is a red gate here. (This paragraph deliberately does not start a line
 # with the linter's own name -- that spelling parses as a directive.)
-UNIT_IDS="base-toolchain base-goose opencode base-skills coding-pack"
+UNIT_IDS="base-toolchain base-goose base-skills coding-pack"
 
-# `requires`, restricted to the five units this script installs. base-goose and
-# opencode also require base-secrets in the manifests; base-secrets has
-# `installer: null` (the Keychain is a human's job), so it is elided rather than
-# ordered, and P8(c) asserts exactly that elision instead of assuming it.
+# `requires`, restricted to the four units this script installs. base-goose also
+# requires base-secrets in the manifests; base-secrets has `installer: null`
+# (the Keychain is a human's job), so it is elided rather than ordered, and
+# P8(c) asserts exactly that elision instead of assuming it.
 REQUIRES_BASE_TOOLCHAIN=""
 REQUIRES_BASE_GOOSE="base-toolchain"
-REQUIRES_OPENCODE="base-goose"
 REQUIRES_BASE_SKILLS="base-goose"
-REQUIRES_CODING_PACK="opencode"
+REQUIRES_CODING_PACK=""
 
 # `owns`, at the manifests' granularity: brew: / cask: / home: prefixes over the
 # manifest's brew_formula, brew_cask and home_path targets, in manifest order.
 # The `~` is LITERAL -- these strings are printed and compared, never used as a
 # path, so nothing here is ever tilde-expanded or globbed.
-#
-# ~/.local/share/opencode/auth.json IS LISTED even though opencode-auth.sh
-# writes it only when $OPENCODE_ZEN_API_KEY is in the environment. `owns` is the
-# unit's FOOTPRINT -- what this unit, and no other, is allowed to put on the
-# machine -- and the manifest claims it for exactly that reason. A --dry-run
-# plan that hid it because of a runtime condition would be a plan whose contents
-# depended on the caller's shell, and P8(d)/P8(f) compare this list against the
-# manifest, not against what a particular run happened to do.
 OWNS_BASE_TOOLCHAIN="brew:uv brew:node brew:jq cask:tailscale"
 OWNS_BASE_GOOSE="brew:block-goose-cli cask:block-goose
 home:~/.config/goose/config.yaml home:~/.config/goose/custom_providers
 home:~/.config/goose/.goosehints"
-OWNS_OPENCODE="brew:anomalyco/tap/opencode home:~/.config/opencode/opencode.json
-home:~/.local/share/opencode/auth.json"
 OWNS_BASE_SKILLS="home:~/.agents/skills/connect-service"
 OWNS_CODING_PACK="home:~/.agents/skills/ci-lint-test home:~/.agents/skills/clean-plan
 home:~/.agents/skills/code-review home:~/.agents/skills/deep-research
@@ -219,7 +205,6 @@ requires_of() {
   case "$1" in
     base-toolchain) printf '%s' "$REQUIRES_BASE_TOOLCHAIN" ;;
     base-goose)     printf '%s' "$REQUIRES_BASE_GOOSE" ;;
-    opencode)       printf '%s' "$REQUIRES_OPENCODE" ;;
     base-skills)    printf '%s' "$REQUIRES_BASE_SKILLS" ;;
     coding-pack)    printf '%s' "$REQUIRES_CODING_PACK" ;;
   esac
@@ -230,7 +215,6 @@ owns_of() {
   case "$1" in
     base-toolchain) printf '%s' "$OWNS_BASE_TOOLCHAIN" ;;
     base-goose)     printf '%s' "$OWNS_BASE_GOOSE" ;;
-    opencode)       printf '%s' "$OWNS_OPENCODE" ;;
     base-skills)    printf '%s' "$OWNS_BASE_SKILLS" ;;
     coding-pack)    printf '%s' "$OWNS_CODING_PACK" ;;
   esac
@@ -327,8 +311,8 @@ while [ "$CLOSURE_PASS" -lt 8 ]; do
 done
 
 # THE CASCADE. Dropping a unit drops whatever is left needing it -- but only if
-# nobody named that dependent. `--without opencode` loses coding-pack and says
-# so; `--only coding-pack --without opencode` names coding-pack, so it survives
+# nobody named that dependent. `--without base-goose` loses base-skills and says
+# so; `--only base-skills --without base-goose` names base-skills, so it survives
 # here and the closure check below refuses the whole command line instead.
 DROPPED=""
 CASCADE_PASS=0
@@ -363,10 +347,10 @@ if [ -n "$DROPPED" ]; then
 fi
 
 # THE CLOSURE CHECK, and it is reachable rather than defensive: it is where
-# `--only coding-pack --without opencode` lands. A unit whose requirement the
-# flags removed is refused with exit 2 naming both, because the alternative is
-# unit_coding_pack() installing OpenCode agents onto a machine with no OpenCode
-# -- a broken install that exits 0.
+# `--only base-skills --without base-goose` lands. A unit whose requirement the
+# flags removed is refused with exit 2 naming both, because the alternative is a
+# unit running against a dependency that never ran -- a broken install that
+# exits 0.
 for want_id in $SELECTED; do
   for dep_id in $(requires_of "$want_id"); do
     if ! in_set "$dep_id" "$SELECTED"; then
@@ -537,12 +521,10 @@ install_skill() {
 # test-base-install.sh was re-typed for.
 FORMULAE_BASE_TOOLCHAIN="uv node jq"
 FORMULAE_BASE_GOOSE="block-goose-cli"
-# anomalyco/tap/opencode: OpenCode's official Homebrew tap (https://opencode.ai/docs)
-FORMULAE_OPENCODE="anomalyco/tap/opencode"
 
 # The eleven Cursor-ported skills, ENUMERATED and never "everything in
 # config/skills/ except connect-service". The complement would install a future
-# skill silently, would make `--without opencode` quietly install it anyway, and
+# skill silently, would make a selective run quietly install it anyway, and
 # would make coding-pack.yaml's `owns` list decorative instead of authoritative.
 # This list is the manifest's list: config/units/coding-pack.yaml `owns` the
 # same eleven names as repo_file entries, and units_lint.py's P8(e) is the
@@ -553,8 +535,8 @@ looping-code-review looping-plan-review mr-review plan-review
 pre-mr-checklist refactor-planner ship"
 
 # ------------------------------------------------------------- The units ----
-# Below this line the install is five functions, one per config/units/*.yaml
-# manifest that names this script. All five are still CALLED unconditionally;
+# Below this line the install is four functions, one per config/units/*.yaml
+# manifest that names this script. All four are still CALLED unconditionally;
 # what changed with the flag surface is that each one opens with `want <id> ||
 # return 0`, so the selection decides inside the body and never at the call
 # site. With no flags every unit is selected, want() never prints, and the
@@ -672,36 +654,6 @@ unit_base_goose() {
   return 0
 }
 
-unit_opencode() {
-  want opencode || return 0
-  brew_formula "$FORMULAE_OPENCODE"
-
-  # ~/.config/opencode is created HERE and nowhere else, which is what makes a
-  # future `--without opencode` assertable as an ABSENCE rather than as an
-  # empty directory. coding-pack creates its own agents/ subdirectory.
-  echo "==> Installing the OpenCode config template (no-clobber)"
-  mkdir -p "$HOME/.config/opencode"
-  copy_no_clobber "$REPO_ROOT/config/opencode/opencode.json" "$HOME/.config/opencode/opencode.json"
-
-  # THE CREDENTIAL, UNATTENDED (#38). This used to be a line in the epilogue
-  # telling you to run `opencode`, type /connect and paste the key, while
-  # scripts/vps/code-agent-manager.py's seed_auth() had been writing exactly
-  # that file on the brain all along.
-  #
-  # A BARE CALL, deliberately: rule 2 above. It is safe as the second-to-last
-  # command of this unit because opencode-auth.sh exits 0 when there is no key
-  # in the environment -- a fresh Mac has not run keychain-secrets.sh yet, and
-  # aborting the whole bootstrap there would be the worst possible time.
-  #
-  # NOT through pai_exec, and that is the same call this file already makes for
-  # python3 and uv (see the PAI_EXEC paragraph in the header): this is a script
-  # in THIS repo doing local compute over a file in $HOME, not an external
-  # binary. Routing it would fake away the write that test-base-install.sh's
-  # phase I then reads back out of the fake $HOME.
-  "$SCRIPT_DIR/opencode-auth.sh"
-  return 0
-}
-
 unit_base_skills() {
   want base-skills || return 0
   # One skills target serves both tools: ~/.agents/skills/ is read by OpenCode
@@ -761,31 +713,25 @@ unit_coding_pack() {
   return 0
 }
 
-# THE FIVE CALLS. Bare, column 0, contiguous, and with no comment, no `if` and
+# THE FOUR CALLS. Bare, column 0, contiguous, and with no comment, no `if` and
 # no `||` on the call lines themselves — see rule 2 above, and note that
 # units_lint.py's P3 counts these lexically (`^unit_x$`), so a trailing space or
 # a wrapper changes what the manifests are checked against.
 #
 # The order is a topological order of the manifest graph restricted to these
-# five: base-goose needs base-toolchain, opencode needs base-goose, base-skills
-# needs base-goose, coding-pack needs opencode. (base-secrets is in base-goose's
-# `requires` and has no installer at all, so it is elided rather than ordered.)
+# four: base-goose needs base-toolchain, base-skills needs base-goose.
+# (base-secrets is in base-goose's `requires` and has no installer at all, so it
+# is elided rather than ordered; coding-pack requires nothing since the
+# OpenCode unit left the catalog.)
 unit_base_toolchain
 unit_base_goose
-unit_opencode
 unit_base_skills
 unit_coding_pack
 
 # -------------------------------------------------------------- Next steps --
-# Split into FOUR heredocs so both OpenCode-specific lines can be omitted when
-# opencode was not installed -- telling someone how the credential for a CLI
-# this very run deliberately did not install got written, or pointing them at a
-# check for it, is how a selective install teaches people to distrust the
-# output. The step NUMBER follows step 2, which is why the tail is a separate
-# heredoc rather than a conditional line inside one; the check-opencode.sh line
-# is a separate heredoc for the same reason, one step lower down. With opencode
-# selected (every no-flag run) the four concatenate to exactly the text a
-# no-flag run has always printed, and G6 is what says so about the other case.
+# The step NUMBER follows step 1, which is why the tail is a separate heredoc:
+# the OpenCode credential step this numbering used to follow died with that
+# unit (coding agents are the brain's, under herdr).
 cat <<EOF
 
 ==> Bootstrap done. Next steps (docs/setup/20-mac-setup.md):
@@ -793,32 +739,8 @@ cat <<EOF
   1. Store your API keys in the macOS Keychain:
          $SCRIPT_DIR/keychain-secrets.sh
      then open a NEW terminal so the exported vars are live.
-EOF
 
-NEXT_STEP=2
-if in_set opencode "$SELECTED"; then
-  cat <<EOF
-
-  2. OpenCode's Zen credential is written by the bootstrap itself, from
-     \$OPENCODE_ZEN_API_KEY. If step 1 was the first time you set that key,
-     re-run this script (or just $SCRIPT_DIR/opencode-auth.sh) in the new
-     terminal. There is no /connect step any more. /models is still there for
-     one case: config/opencode/opencode.json pins the models for a FRESH
-     OpenCode profile, so if yours has already remembered a different choice,
-     type /models and set it per docs/model-routing.md.
-EOF
-  NEXT_STEP=3
-fi
-
-cat <<EOF
-
-  $NEXT_STEP. Verify before going further:
+  2. Verify before going further:
          $REPO_ROOT/scripts/verify/check-providers.sh   # raw HTTPS per endpoint
          $REPO_ROOT/scripts/verify/check-goose.sh       # goose through all 3 providers
 EOF
-
-if in_set opencode "$SELECTED"; then
-  cat <<EOF
-         $REPO_ROOT/scripts/verify/check-opencode.sh    # opencode, credential and PATH
-EOF
-fi

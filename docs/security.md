@@ -305,7 +305,7 @@ new → update stores (Keychain on Mac, `/data/secrets.env` on brain) → restar
 
 | Secret | Where to rotate | Notes |
 |---|---|---|
-| `OPENCODE_ZEN_API_KEY` | Zen console (opencode.ai) | Also re-run `scripts/mac/opencode-auth.sh` on the Mac to rewrite `~/.local/share/opencode/auth.json` |
+| `OPENCODE_ZEN_API_KEY` | Zen console (opencode.ai) | Keychain on the Mac (goose's Zen providers and the verify scripts read it), `/data/secrets.env` on the brain. The bootstrap no longer writes any OpenCode credential file |
 | `TOGETHER_API_KEY` | Together dashboard → API keys | Also update Pal Chat on the phone |
 | `GOOSE_SERVER__SECRET_KEY` | Generate locally (`openssl rand -hex 32`) | Update secrets.env, restart goose-serve, re-enter on Desktop and iOS clients |
 | Tailscale | Admin console → Machines / Keys | Auth keys are one-time (bootstrap); rotate device keys by re-authing; remove stale devices |

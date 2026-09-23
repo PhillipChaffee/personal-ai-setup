@@ -28,7 +28,7 @@ cd personal-ai-setup
 ```
 
 That is the base install, and it **runs start to finish without asking you
-anything**. It puts the goose CLI and Desktop, OpenCode, the toolchain and the
+anything**. It puts the goose CLI and Desktop, the toolchain and the
 skills/agents/rules onto the Mac at the versions pinned in `config/pins.yaml`,
 never overwriting a file you already have. Re-running it is safe.
 
@@ -53,12 +53,6 @@ credentials or consent that no script may invent on your behalf:
   `~/.zshrc`.
 - **The Tailscale sign-in** — you sign the Mac into your own tailnet, from the
   app the bootstrap installed.
-
-OpenCode's Zen credential is *not* a third one: the bootstrap writes
-`~/.local/share/opencode/auth.json` itself, from `$OPENCODE_ZEN_API_KEY`. If the
-first bullet above is where you set that key for the first time, then the
-bootstrap ran before the key existed — open a new terminal and re-run either the
-bootstrap or `scripts/mac/opencode-auth.sh` on its own.
 
 **The brain is different: it cannot be made unattended, by design.** It has five
 interactive points, and every one of them is key material this repo deliberately
@@ -103,7 +97,6 @@ one that is not there. `bin/pai list` prints the same catalog on your machine.
 | [base-toolchain](docs/setup/20-mac-setup.md) | base | mac | macOS guard, Homebrew presence check, and the uv/node/jq formulae. | `bootstrap-mac.sh` | — |
 | [coding-pack](docs/cursor-port.md) | default_on | mac | Eleven ported Cursor skills, 30 OpenCode subagents, and the global AGENTS.md rule set. | `bootstrap-mac.sh` | — |
 | [goose-desktop](docs/setup/20-mac-setup.md) | default_on | mac | Human-only, turn OFF Desktop auto-update and pick the custom providers on first run. | by hand | — |
-| [opencode](docs/setup/20-mac-setup.md) | default_on | mac | The OpenCode CLI from anomalyco/tap, ~/.config/opencode/opencode.json, and the Zen credential the bootstrap writes. | `bootstrap-mac.sh` | `check-opencode.sh` |
 | [automations](docs/automations.md) | opt_in | vps | The three non-vault recipes, register-schedules.sh, and the disabled fallback timers. | `deploy-vps.sh` | — |
 | [brain](docs/setup/50-vps-brain.md) | opt_in | vps | Hetzner VPS, LUKS /data, goose's path root on it, and goose-serve over tailnet TLS. | `deploy-vps.sh` (planned) | `check-brain.sh`, `check-security.sh --local` |
 | [code-agents](docs/setup/70-code-agents.md) | opt_in | vps | Rootless podman, the code-agent image, and the per-chat session manager. | `deploy-vps.sh` | `check-code-agents.sh` |
@@ -157,7 +150,7 @@ Siri Shortcut ─────┤            OpenCode CLI (coding, local)      �
 | **Goose** (hub agent, on the brain) | General-purpose agent under Linux Foundation / AAIF governance — explicitly "not just for code": research, writing, automation, personal admin. MCP-native extensions, built-in Memory, custom providers for Zen and Together, recipes + built-in cron scheduler. Pinned to stable 1.x (2.0 is in RC churn). |
 | **Goose Desktop** (Mac) | Full desktop UI, attached to the brain as a remote client over goose's Agent Client Protocol ("remote ACP" in the diagram) — same sessions as the phone. Also hosts the Scheduler UI (pause / run-now / per-run history). |
 | **goose CLI** (Mac) | Local offline fallback hub when the brain is unreachable. |
-| **OpenCode CLI** (Mac) | The daily coding driver — dedicated open-source coding agent with first-party Zen integration (the credential the bootstrap writes), per-agent cheap-model routing, and the same MCP servers. Runs locally; coding sessions don't need the brain. |
+| **Coding agents** (on the brain, herdr) | The coding-agent runtime: herdr manages the agent panes (OpenCode, Pi, and the setup-time catalog), the wizard wires the picked set, and the Mac attaches over SSH — no coding agent installs on the Mac. |
 | **Code agents** (on the brain) | Claude Code-style autonomous coding chats: one container per chat (idle chats spin down, volumes persist), live streaming + permission asks to your devices, any model per chat, PRs as the deliverable. Managed by `code-agent-manager` behind the tailnet on port 4300. See [`docs/code-agents.md`](docs/code-agents.md). |
 | **Goose iOS app** | Primary phone surface: thin remote client tunneling to the brain (experimental; fallback chain documented in `docs/setup/40-phone-setup.md`). |
 | **Pal Chat** (iPhone) | BYOK backup chat straight to Together — works even if the brain is down. Backup precisely because its history is device-local. |
@@ -214,14 +207,13 @@ Siri Shortcut ─────┤            OpenCode CLI (coding, local)      �
 │   └── roadmap.md                     # SearXNG, memory, budgeting-app API, vault RAG
 ├── infra/terraform/                   # Hetzner server, deny-all firewall, encrypted volume, cloud-init
 ├── config/
-│   ├── units/                         # 18 unit manifests — the add-on menu above is rendered from these
+│   ├── units/                         # 17 unit manifests — the add-on menu above is rendered from these
 │   ├── pins.yaml                      # the versions the installers pin and the checks compare against
 │   ├── goose/config.yaml              # GENERATED from config.base.yaml + extensions.d/
 │   ├── goose/extensions.d/            # 4 MCP extension fragments, one file each
 │   ├── goose/custom_providers/        # together (DEFAULT), zen-openai, zen-anthropic, zen-free (trains on data)
 │   ├── goose/goosehints.example       # identity, routing rules, vault path, PHI standing rules
 │   ├── goose/acp-contract.json        # the captured ACP method list check-connectors.sh asserts against
-│   ├── opencode/opencode.json         # OpenCode: Zen models + Together provider, cheap small_model
 │   ├── opencode/AGENTS.md             # global coding/workflow rules template
 │   ├── opencode/agents/               # 30 review/research subagents
 │   ├── opencode/project-rules/        # per-project rule snippets (python, django, linear…) — paste-in
@@ -237,7 +229,7 @@ Siri Shortcut ─────┤            OpenCode CLI (coding, local)      �
 │   ├── vps/                           # deploy-vps.sh, LUKS setup/unlock, schedule registration, systemd units
 │   ├── common/                        # run-recipe.sh (failure watchdog), notify.sh (alerts to ntfy's email gateway)
 │   ├── sync-models.sh                 # refresh provider model lists from the live Zen/Together catalogs
-│   └── verify/                        # 12 check-*.sh, plus the harnesses and the fakes they drive
+│   └── verify/                        # 11 check-*.sh, plus the harnesses and the fakes they drive
 └── vault-template/                    # skeleton for the SEPARATE PRIVATE vault repo — no real data here
 ```
 

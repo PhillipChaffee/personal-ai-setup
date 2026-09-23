@@ -366,8 +366,9 @@ if leg differential; then
   # guards, not one.) The tag's job is REACHABILITY; the sha's job is IDENTITY.
   #
   # AND NO OLDER SHA CAN REPLACE IT. The obvious hardening — pin something that
-  # is already an ancestor of main, the way test-base-install.sh's A14b pins the
-  # merge commit 5f016b3 — is not available here: the seam is introduced by
+  # is already an ancestor of main, the way test-base-install.sh's A14b used to
+  # pin the merge commit 5f016b3 before the pivot retired that differential —
+  # is not available here: the seam is introduced by
   # this branch's own first commit, and every earlier revision of
   # deploy-vps.sh writes to the literal /data and /etc/systemd/system, so it
   # cannot be run against a fake host at all. Failing the tag, GitHub keeps

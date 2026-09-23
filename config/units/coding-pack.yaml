@@ -12,10 +12,10 @@ verified_on: "2026-09-07"
 summary: Eleven ported Cursor skills, 30 OpenCode subagents, and the global AGENTS.md rule set.
 host: mac
 tier: default_on
-requires: [opencode]
+requires: []
 
-# Markdown. It bills through whatever model reads it -- the Zen row the
-# opencode unit claims -- so there is no README budget row of its own.
+# Markdown. It bills through whatever model reads it -- no model row of its
+# own, so there is no README budget row either.
 cost: []
 
 installer:
@@ -98,9 +98,9 @@ blockers:
       `kept existing` and moves on), so stale is silent too."
   - id: doctor-is-not-selection-aware
     severity: warn
-    detail: "bootstrap-mac.sh can now leave this unit out (--without opencode
-      cascades to it, and --only base-goose never reaches it), but
-      doctor.py:166-182 compares ~/.agents/skills against every directory in
+    detail: "bootstrap-mac.sh can now leave this unit out (--only base-goose
+      never reaches it), but doctor.py:166-182 compares ~/.agents/skills
+      against every directory in
       config/skills/ and hard-FAILs on the difference. So a deliberate
       selective install reads as a broken one: `pai doctor` says '11 of 12
       shipped skills are not installed' and tells you to re-run the bootstrap,

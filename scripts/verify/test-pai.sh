@@ -2254,7 +2254,7 @@ import pathlib, sys
 import yaml
 repo, fixture = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
 units = fixture / "config/units"
-d = yaml.safe_load((repo / "config/units/opencode.yaml").read_text())
+d = yaml.safe_load((repo / "config/units/coding-pack.yaml").read_text())
 d.update({
     "id": "zz-removable",
     "tier": "opt_in",
@@ -2325,7 +2325,7 @@ manifests = {
     p.stem: yaml.safe_load(p.read_text())
     for p in sorted((REPO / "config/units").glob("*.yaml"))
 }
-assert len(manifests) >= 18, len(manifests)
+assert len(manifests) >= 17, len(manifests)
 
 # ---- 0. THE PROOF THAT IT CANNOT DELETE, over the SYNTAX and not the text ---
 # The fingerprint assertion above proves one fixture survived a handful of
@@ -2502,21 +2502,12 @@ for stem, data in manifests.items():
         assert any(raw in line for line in lines), (stem, lines)
 
 # The three arms, distinguished. base-goose takes the tier arm AND prints its
-# manifest reason; opencode takes the declared arm alone; zz-removable takes the
-# arm no shipped manifest can reach.
+# manifest reason; coding-pack takes the declared arm alone; zz-removable takes
+# the arm no shipped manifest can reach.
 base = mod.refusal_for(mod.load_manifest(REPO, "base-goose"))
 assert len(base) == 2, base
 assert "tier: base" in base[0], base
 assert "brew pin block-goose-cli" in base[1], base
-
-opencode = mod.refusal_for(mod.load_manifest(REPO, "opencode"))
-assert len(opencode) == 1, opencode
-assert opencode[0].startswith("the manifest says so:"), opencode
-
-# THE REASON IS THE MANIFEST'S, WORD FOR WORD. Compared whitespace-normalised,
-# because the manifest's line breaks are the YAML file's and not the sentence's.
-raw = " ".join(manifests["opencode"]["uninstall"]["reason"].split())
-assert raw in opencode[0], (raw, opencode[0])
 
 # THE HELP TEXT'S CLAIM ABOUT ITSELF, asserted against the code. `pai remove
 # --help` used to say coding-pack and opencode "are refused for these reasons"
@@ -2524,11 +2515,14 @@ assert raw in opencode[0], (raw, opencode[0])
 # manifests say `supported: false`, so both take the declared arm and print
 # their own sentence. Nothing went red, because the --help assertion greps the
 # help output for strings this file writes. These grep the REFUSAL instead.
-#
-# coding-pack only; opencode's arms are asserted immediately above.
 coding_pack = mod.refusal_for(mod.load_manifest(REPO, "coding-pack"))
 assert len(coding_pack) == 1, coding_pack
 assert coding_pack[0].startswith("the manifest says so:"), coding_pack
+
+# THE REASON IS THE MANIFEST'S, WORD FOR WORD. Compared whitespace-normalised,
+# because the manifest's line breaks are the YAML file's and not the sentence's.
+raw = " ".join(manifests["coding-pack"]["uninstall"]["reason"].split())
+assert raw in coding_pack[0], (raw, coding_pack[0])
 # And no unit's refusal mentions doctor AT ALL. The two doctor facts are facts
 # about this repo and they live in --help; a refusal that repeated one would be
 # the per-unit special-casing the help text now says does not exist.

@@ -1,9 +1,10 @@
 # Phase 1b — Mac setup
 
-The Mac gets three tools: **Goose** (Desktop + CLI), **OpenCode** (the coding
-driver), and the supporting kit (uv, node, jq, Tailscale). One bootstrap
-script installs everything and lays down the config templates; one secrets
-script puts your keys in the Keychain; then you verify.
+The Mac gets two tools: **Goose** (Desktop + CLI) and the supporting kit (uv,
+node, jq, Tailscale). One bootstrap script installs everything and lays down
+the config templates; one secrets script puts your keys in the Keychain; then
+you verify. The coding agents are not on this list — they run on the brain
+under herdr (Phase 3), and the Mac reaches them as a client.
 
 Prerequisite: [10-accounts.md](10-accounts.md) §1–2 and §6 done — you have
 `OPENCODE_ZEN_API_KEY`, `TOGETHER_API_KEY`, and an `NTFY_TOPIC` ready to paste.
@@ -25,10 +26,9 @@ From your clone of this repo:
 What it does (it's idempotent — safe to re-run after a failed step):
 
 - **Installs via Homebrew**: `block-goose-cli` (goose CLI) and the
-  `block-goose` cask (Goose Desktop), `opencode`, `uv`, `node`, `jq`, and
+  `block-goose` cask (Goose Desktop), `uv`, `node`, `jq`, and
   `tailscale`. Install reference:
-  [goose installation docs](https://github.com/aaif-goose/goose/blob/main/documentation/docs/getting-started/installation.md),
-  [OpenCode docs](https://opencode.ai/docs).
+  [goose installation docs](https://github.com/aaif-goose/goose/blob/main/documentation/docs/getting-started/installation.md).
 - **Pins goose to 1.x.** Goose releases roughly weekly and 2.0 is in churn;
   the script pins the CLI formula (`brew pin block-goose-cli`) and keeps the
   Desktop cask off auto-update, so goose upgrades only happen when you decide
@@ -41,7 +41,6 @@ What it does (it's idempotent — safe to re-run after a failed step):
   | `config/goose/config.yaml` | `~/.config/goose/config.yaml` |
   | `config/goose/custom_providers/*.json` | `~/.config/goose/custom_providers/` |
   | `config/goose/goosehints.example` | `~/.config/goose/.goosehints` |
-  | `config/opencode/opencode.json` | OpenCode's config dir (`~/.config/opencode/`) |
   | `config/skills/*/` | `~/.agents/skills/` |
   | `config/opencode/agents/*.md` | `~/.config/opencode/agents/` |
   | `config/opencode/AGENTS.md` | `~/.config/opencode/AGENTS.md` |
@@ -58,7 +57,9 @@ The last three rows are the part of the install that is easiest to miss,
 because nothing on this machine is named after it.
 
 **`~/.agents/skills/`** is a single directory read by **both** tools: OpenCode
-treats it as its agent-compatible global skills dir, and goose ≥ 1.16 reads
+treats it as its agent-compatible global skills dir (if you run OpenCode — the
+repo ships no OpenCode install or config; you input your own settings), and
+goose ≥ 1.16 reads
 skills from it too. Each skill is a directory holding a Claude-compatible
 `SKILL.md` — a short instruction file the model loads when the task matches.
 The bootstrap installs them **atomically** (copy to a temp dir, then `mv`), so
@@ -88,8 +89,8 @@ delete it and re-run the bootstrap to take a new version from the repo.
 
 ### Choosing what to install
 
-The bootstrap is five **units**, one per manifest in
-[`config/units/`](../../config/units/README.md). With no flags all five run,
+The bootstrap is four **units**, one per manifest in
+[`config/units/`](../../config/units/README.md). With no flags all four run,
 which is what the section above describes. The flags pick a subset:
 
 | Flag | Meaning |
@@ -105,27 +106,26 @@ The units and their dependencies:
 |---|---|---|
 | `base-toolchain` | uv, node, jq, the Tailscale cask | — |
 | `base-goose` | goose CLI + Desktop cask, the pin, `~/.config/goose` | `base-toolchain` |
-| `opencode` | the OpenCode CLI, `~/.config/opencode/opencode.json`, the Zen credential in `~/.local/share/opencode/auth.json` | `base-goose` |
 | `base-skills` | the `connect-service` skill | `base-goose` |
-| `coding-pack` | the eleven ported skills, the agents, `AGENTS.md` | `opencode` |
+| `coding-pack` | the eleven ported skills, the agents, `AGENTS.md` | — |
 
 ```bash
 ./scripts/mac/bootstrap-mac.sh --dry-run              # what would happen, and nothing else
-./scripts/mac/bootstrap-mac.sh --without opencode     # goose only, no OpenCode
 ./scripts/mac/bootstrap-mac.sh --only base-toolchain  # just uv/node/jq/Tailscale
+./scripts/mac/bootstrap-mac.sh --without base-goose   # toolchain + coding-pack, no goose
 ```
 
 Three things worth knowing before you use them:
 
 - **`--only` replaces the default set; `--with` adds to it.** `--only coding-pack`
-  installs four units (coding-pack needs opencode, which needs base-goose, which
-  needs base-toolchain) and leaves `connect-service` out. `--with coding-pack`
-  installs all five, because coding-pack was already in the default set.
+  installs one unit — coding-pack requires nothing since the OpenCode unit left
+  the catalog — and leaves `connect-service` out. `--with coding-pack`
+  installs all four, because coding-pack was already in the default set.
 - **Excluding something another unit needs is refused, not half-done.**
-  `--without opencode` also drops `coding-pack` and says so on stdout, because
-  nothing else needs opencode. But `--only coding-pack --without opencode` names
-  coding-pack explicitly, so it exits `2` naming both rather than installing
-  OpenCode agents onto a machine with no OpenCode.
+  `--without base-goose` also drops `base-skills` and says so on stdout,
+  because nothing else needs base-skills. But `--only base-skills --without
+  base-goose` names base-skills explicitly, so it exits `2` naming both rather
+  than installing a skill onto a machine where its dependency never ran.
 - **`--dry-run` really touches nothing** — no `$HOME`, no `brew`, not even a
   `uname`. It answers before the macOS check and before the Homebrew check, so
   it works on a Mac that has neither.
@@ -184,24 +184,18 @@ echo "${#OPENCODE_ZEN_API_KEY} chars"   # non-zero means the export worked
 
 ## 3. OpenCode → Zen
 
-OpenCode is your coding agent, wired natively to Zen, and **there is nothing to
-do here** on a normal install: `bootstrap-mac.sh` writes
-`~/.local/share/opencode/auth.json` (mode `600`) from `$OPENCODE_ZEN_API_KEY`,
-and `config/opencode/opencode.json` — already copied by the bootstrap — pins the
-models and the `together` provider so they survive across machines. There is no
-`/connect` step any more. `/models` survives for exactly one case, the second
-bullet below: those pins are the defaults for a **fresh** profile, and OpenCode
-will keep a model it has already remembered.
+OpenCode is no longer part of this install: the coding agents run on the brain
+under herdr (Phase 3), and the repo ships no OpenCode config for anyone —
+people input their own settings. There is nothing to do here. What step 2
+stored still matters: the Mac's goose providers and the verify scripts bill
+against Zen through `$OPENCODE_ZEN_API_KEY`.
 
-Two cases where you do something:
+If you run OpenCode locally anyway, two things to know:
 
-- **You set the key for the first time in step 2 above.** The bootstrap ran
-  before the key existed. Open a new terminal and run
-  `./scripts/mac/opencode-auth.sh` (or the whole bootstrap again — it is
-  idempotent). It tells you which of the two happened.
-- **OpenCode has remembered a different model** from an earlier session.
-  `opencode.json` only sets the defaults for a fresh profile, so type `/models`
-  and set it per the [routing table](../model-routing.md): **`kimi-k2.6`** for
+- **Nothing here configures it.** There is no shipped `opencode.json`, no
+  credential write, no `/connect` step — you point OpenCode at Zen yourself.
+- **The routing rules still apply.** Set models with `/models` per the
+  [routing table](../model-routing.md): **`kimi-k2.6`** for
   daily coding, escalate to **`claude-sonnet-5`** manually when a problem
   deserves it, and use **`big-pickle`** (free) only for throwaway code that
   contains nothing personal — the free tier trains on your prompts.
@@ -231,7 +225,7 @@ terminal (`open -a Goose`) or follow the `launchctl setenv` hint that
 
 ## 5. Verify — don't skip
 
-Three checks, in order, each designed to settle a known ambiguity before it
+Two checks, in order, each designed to settle a known ambiguity before it
 can waste an evening:
 
 ```bash
@@ -245,17 +239,10 @@ can waste an evening:
 #    /chat/completions) against the pinned goose version — if a provider
 #    404s, this is the script that tells you why and what to change.
 ./scripts/verify/check-goose.sh
-
-# 3. The OpenCode unit: the config, the credential (existence, mode 600 and
-#    contents), the ported agents, one real `opencode run`, and WHICH opencode
-#    your PATH actually resolves to. Exits 2, not 1, if OpenCode is not
-#    installed. This replaces the hand-typed `opencode run` that used to be
-#    step 3 here — that line was the entire automated coverage this unit had.
-./scripts/verify/check-opencode.sh
 ```
 
-All three green means: keys are stored correctly, all three Goose providers
-and both Zen wire formats work, and the coding driver bills against Zen.
+Both green means: keys are stored correctly, all three Goose providers
+and both Zen wire formats work.
 Failures: [`docs/troubleshooting.md`](../troubleshooting.md) has a section for
 each (base_url 404s, Zen auth, model IDs).
 
@@ -267,8 +254,9 @@ goose run --provider zen-openai --model kimi-k2.6 -t "Reply with exactly: local 
 
 ## Done — where you are now
 
-- OpenCode codes against Zen on the Mac.
 - Goose Desktop + CLI work locally against all three providers.
+- The Cursor-ported skills are in place for goose (and for any OpenCode you
+  run yourself).
 - Combined with Pal Chat on the phone
   ([40-phone-setup.md §4](40-phone-setup.md) — you can set that up today, it
   doesn't need the brain), this is the complete **Phase 1** stack: usable on
