@@ -257,9 +257,7 @@ goose run --provider zen-openai --model kimi-k2.6 -t "Reply with exactly: local 
 - Goose Desktop + CLI work locally against all three providers.
 - The Cursor-ported skills are in place for goose (and for any OpenCode you
   run yourself).
-- Combined with Pal Chat on the phone
-  ([40-phone-setup.md §4](40-phone-setup.md) — you can set that up today, it
-  doesn't need the brain), this is the complete **Phase 1** stack: usable on
+- This is the complete **Phase 1** stack: usable on
   day one, no server.
 
 Next: [30-google-oauth.md](30-google-oauth.md) to give goose your Gmail,

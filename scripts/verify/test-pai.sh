@@ -2325,7 +2325,7 @@ manifests = {
     p.stem: yaml.safe_load(p.read_text())
     for p in sorted((REPO / "config/units").glob("*.yaml"))
 }
-assert len(manifests) >= 17, len(manifests)
+assert len(manifests) >= 16, len(manifests)
 
 # ---- 0. THE PROOF THAT IT CANNOT DELETE, over the SYNTAX and not the text ---
 # The fingerprint assertion above proves one fixture survived a handful of

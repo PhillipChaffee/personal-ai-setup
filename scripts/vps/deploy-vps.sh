@@ -653,7 +653,7 @@ unit_telegram_gateway() {
     sudo systemctl enable --now goose-telegram-gateway.service >/dev/null
     echo "    telegram gateway: enabled (token present)"
   else
-    echo "    telegram gateway: installed but not enabled (no TELEGRAM_BOT_TOKEN in secrets.env; see docs/setup/40-phone-setup.md §1a)"
+    echo "    telegram gateway: installed but not enabled (no TELEGRAM_BOT_TOKEN in secrets.env)"
   fi
   return 0
 }
@@ -824,14 +824,13 @@ machine. Two entries are security-relevant, and both fail quietly:
 check-security.sh --local asserts the live file for both, so it is the thing to
 re-run after any hand-merge.
 
-Verify next (docs/setup/50-vps-brain.md §6-10):
+Verify next (docs/setup/50-vps-brain.md §6-9):
   1. TLS fingerprint for client pinning:
        sudo journalctl -u goose-serve -n 50 --no-pager | grep -iE 'listen|fingerprint'
   2. Full brain check:
        $REPO_DIR/scripts/verify/check-brain.sh
   3. Connect Goose Desktop to https://<your-brain>.<your-tailnet>.ts.net:$SERVE_PORT
-     with GOOSE_SERVER__SECRET_KEY and the pinned fingerprint, then pair the
-     phone (docs/setup/40-phone-setup.md).
+     with GOOSE_SERVER__SECRET_KEY and the pinned fingerprint.
   4. Fire a test run:  goose schedule run-now --schedule-id morning-brief
   5. From the Mac (in your repo checkout, where the terraform state lives),
      confirm zero public exposure:

@@ -247,23 +247,19 @@ else
   echo "SKIP  run-now morning-brief (re-run with --run-now to fire it)"
 fi
 
-# ---- 5. manual cross-device checklist ---------------------------------------
+# ---- 5. manual checklist -----------------------------------------------------
 cat <<'EOF'
 
-== manual checklist — the v2 milestone (one history, every surface) ==
+== manual checklist — the milestone (one history, on the brain) ==
 Nothing can verify this for you; do it once, now:
 
   [ ] Goose Desktop (connected to the brain) -> start a session, send one
-      message.
-  [ ] Phone surface (Goose iOS app, or the fallback per
-      docs/setup/40-phone-setup.md) -> the SAME session is listed; open it,
-      reply from the phone.
-  [ ] Desktop -> the phone's reply appears in the same session.
+      message, and see the reply land in the brain's history.
   [ ] Desktop Scheduler UI -> the schedules check 3 listed are visible (three
       before the life vault exists, five after); the run-now run from check 4
       shows up in its per-schedule session history.
 
-All boxes ticked = shared sessions.db confirmed across surfaces.
+All boxes ticked = shared sessions.db confirmed on Desktop.
 EOF
 
 finish

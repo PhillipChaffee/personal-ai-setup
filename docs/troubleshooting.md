@@ -15,7 +15,6 @@ Quick index:
 | Brain unreachable from the Mac after it slept | [Tailscale after Mac sleep](#tailscale-unreachable-after-mac-sleep) |
 | Brain unreachable after a VPS reboot | [Brain down after reboot](#brain-unreachable-after-a-vps-reboot-luks) |
 | Google MCP asks you to re-authenticate every week | [workspace-mcp 7-day re-auth](#workspace-mcp-re-auth-every-7-days) |
-| Goose iOS app won't pair with the brain | [iOS pairing fails](#goose-ios-pairing-fails) |
 | A model ID that used to work is rejected | [Model ID rejected](#model-id-rejected-deprecated) |
 
 ---
@@ -87,13 +86,13 @@ your shell? see `scripts/mac/keychain-secrets.sh`), or Zen changed its auth.
    available through OpenCode on the Mac, and the hub's daily driver falls
    back to `zen-openai`/`kimi-k2.6` — see `docs/model-routing.md`.
 
-## Phone or new client gets a TLS error (or Desktop suddenly can't connect)
+## A client gets a TLS error (or Desktop suddenly can't connect)
 
-**Symptom.** A client refuses the brain's TLS: iOS apps error outright;
-Desktop fails if a pinned fingerprint no longer matches.
+**Symptom.** A client refuses the brain's TLS — Desktop fails if a pinned
+fingerprint no longer matches.
 
-**Cause.** Either the brain is still on its self-signed certificate (iOS
-will never accept it), or the LE certificate rotated (they renew ~every 60
+**Cause.** Either the brain is still on its self-signed certificate, or the
+LE certificate rotated (they renew ~every 60
 days via `tls-cert-renew.timer`) while a client still pins the old
 fingerprint.
 
@@ -183,7 +182,7 @@ throttled, and a fresh account with no history has very little headroom
 
 **Symptom.** After the Mac wakes from sleep, Goose Desktop can't reach the brain,
 `tailscale status` hangs or shows peers offline, and pings to `<brain>.<your-tailnet>.ts.net`
-time out — but the brain is fine (the iPhone still reaches it).
+time out — but the brain is fine.
 
 **Cause.** Known macOS Tailscale client bug: the client fails to re-establish
 connectivity after longer sleeps until it is relaunched
@@ -197,7 +196,7 @@ Desktop's settings. Confirm with `scripts/verify/check-brain.sh` from the Mac.
 
 ## Brain unreachable after a VPS reboot (LUKS)
 
-**Symptom.** Nothing reaches the brain — Desktop, iPhone, `check-brain.sh` all
+**Symptom.** Nothing reaches the brain — Desktop, `check-brain.sh` all
 fail — typically after a Hetzner maintenance reboot or a manual one. SSH over the
 tailnet still works.
 
@@ -243,33 +242,6 @@ ignore the verification flow — you'll see an "unverified app" warning at conse
 time, which is fine. Re-authenticate **once more** after publishing; that new
 refresh token is long-lived. Full walkthrough (and how to move tokens to the
 brain): `docs/setup/30-google-oauth.md`.
-
-## Goose iOS pairing fails
-
-**Symptom.** The Goose iOS app can't pair with, or loses connection to, the
-brain.
-
-**Cause.** Mobile access is an **experimental** Goose feature, and pairing an iOS
-client to a *headless* `goose serve` (rather than to Goose Desktop) is the least
-proven link in this whole setup — upstream docs describe Desktop-initiated
-pairing. The tunnel also relays through Cloudflare infrastructure (outbound-only;
-see `docs/privacy.md`), so an upstream change can break it without notice.
-
-**Fix.** Walk the fallback chain in order — it's laid out step-by-step in
-`docs/setup/40-phone-setup.md`:
-
-1. **Retry headless pairing** against the brain (transient tunnel failures are
-   common; check `journalctl -u goose-serve` for pairing log lines).
-2. **Desktop-initiated tunnel**: connect Goose Desktop to the remote brain, start
-   the tunnel/pairing from Desktop, pair the phone against that. Sessions still
-   live on the brain.
-3. **Telegram gateway on the brain**: `goose gateway start telegram` gives full
-   chat access from the Telegram app — computer-independent, same sessions.
-4. **Pal Chat** direct to Together — always works, but chat-only and
-   device-local history; it's the backup of last resort by design.
-
-Also watch the goose mobile roadmap (remote ACP + push notifications) — see
-`docs/roadmap.md`; when that ships, most of this chain collapses into one step.
 
 ## Model ID rejected (deprecated)
 

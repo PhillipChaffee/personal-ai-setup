@@ -366,10 +366,12 @@ becoming decoration.
   arm non-trivial: its one `home_path` is as removable as anything in the catalogue, and
   nothing but the tier stops it.
 - **`supported: true` requires a non-empty `owns`.** A unit that owns nothing has nothing
-  to remove, so removing it is a no-op that reports success. This covers exactly ONE file:
-  P4 already fails an empty `owns` unless `host: checklist`, so `phone-kit.yaml` — four
-  apps and a Shortcut, all on a phone — is the only manifest the arm can reach. A rule
-  whose coverage is one file is worth having only if nobody thinks it is doing more.
+  to remove, so removing it is a no-op that reports success. P4 already fails an empty
+  `owns` unless `host: checklist`, so the arm's only possible target is a checklist-host
+  manifest that owns nothing — `phone-kit.yaml` was exactly that, and it is gone; the
+  rule stays as the guard for the next checklist host that claims `supported: true`
+  while owning nothing. A rule whose live coverage is zero files is worth having only
+  if nobody thinks it is doing more.
 
 Kept honest in both directions: `test-pai.sh`'s remove probe feeds each rejected shape
 through the real `check_uninstall` (so a rule dropped from the lint goes red) **and** greps

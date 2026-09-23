@@ -7,9 +7,9 @@ permalink: /
 
 A self-owned personal AI, built from open-source parts and pay-as-you-go
 inference: one [Goose](https://github.com/aaif-goose/goose) agent with one
-shared conversation history runs 24/7 on a small hardened VPS; your laptop and
-phone are thin clients to it; scheduled automations (morning brief, inbox
-triage, weekly review) deliver to your phone; and sensitive data only ever
+shared conversation history runs 24/7 on a small hardened VPS; your laptop is
+a thin client to it; scheduled automations (morning brief, inbox
+triage, weekly review) deliver by email; and sensitive data only ever
 reaches zero-data-retention inference endpoints.
 
 **Everything lives in the GitHub repository — start there:**

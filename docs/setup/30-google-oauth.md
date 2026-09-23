@@ -137,7 +137,7 @@ The wiring lives in two template files the bootstrap already put in place:
 
   **This entry is deliberately write-capable**, and that is the one judgement
   call in the line. `calendar:full` + `tasks:manage` mean the interactive
-  session — the phone chat, Goose Desktop — can actually move a meeting and
+  session — Goose Desktop — can actually move a meeting and
   tick a task, which is most of the point of having it. The `available_tools`
   allowlist grants exactly the matching write tools (`manage_event`,
   `manage_task`), so credential and allowlist agree: a tight allowlist over a

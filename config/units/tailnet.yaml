@@ -86,7 +86,7 @@ blockers:
     severity: warn
     detail: No check-*.sh asks whether MagicDNS or HTTPS Certificates are on.
       The failure surfaces weeks later as renew-tls-cert.sh:19 exiting 1 on
-      the brain, or as an iPhone refusing goose serve's self-signed cert.
+      the brain.
   - id: https-prereq-is-recorded-only-in-a-script-header
     severity: warn
     detail: "The requirement that both toggles be enabled lives at

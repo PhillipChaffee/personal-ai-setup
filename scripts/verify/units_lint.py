@@ -547,13 +547,14 @@ def check_uninstall(unit: Manifest) -> list[str]:
     would have printed a blank explanation for the one state where the reader
     most needs to know what is left behind.
 
-    `supported: true` requires a non-empty `owns`. This is AC #5 of #43, and
-    it covers EXACTLY ONE manifest: P4 (`prop_footprint`) already fails an
-    empty `owns` unless `host: checklist`, so the only file this arm can catch
-    is phone-kit.yaml, whose four apps and one Shortcut live on a phone.
-    Saying that out loud is the point — a rule whose coverage is one file, and
-    whose overlap with an existing rule is total everywhere else, is worth
-    having only if nobody thinks it is doing more.
+    `supported: true` requires a non-empty `owns`. This is AC #5 of #43.
+    P4 (`prop_footprint`) already fails an empty `owns` unless
+    `host: checklist`, so the only file this arm could ever catch is a
+    checklist-host manifest that owns nothing — phone-kit.yaml was exactly
+    that, and it is gone. Saying that out loud is the point — a rule whose
+    live coverage is zero files, and whose overlap with an existing rule is
+    total everywhere else, is worth having only if nobody thinks it is doing
+    more.
 
     `supported: true` is refused on `tier: base`. A base unit is the install
     itself; `pai remove` refuses it at the tier arm before it ever looks at
