@@ -69,11 +69,15 @@ Notes on reading the table:
 
 ## Hard rules — these override convenience, always
 
-1. **Zen free models never see personal data.** All six free models (`big-pickle`,
-   MiMo-V2.5 Free, Hy3 Free, the Nemotron frees, Muse Spark Contributor) are explicitly
+1. **Zen free models never see personal data.** All free models (`big-pickle`,
+   MiMo-V2.5 Free, Hy3 Free, the Nemotron frees, Muse Spark Contributor, Muse Spark
+   1.3 Contributor Free) are explicitly
    exempt from Zen's zero-retention/no-training policy — they may train on your prompts
    ([Zen docs](https://opencode.ai/docs/zen)). Free tier is for throwaway, non-personal
    code only. Nothing from email, calendar, the vault, or any chat that mentions your life.
+   Zen additionally refuses the free tier from any non-OpenCode client with a 403
+   `FreeTierError` (verified 2026-09-23), so a free pick requires an OpenCode session —
+   no other coding agent can reach a free model even by accident.
 2. **Claude and GPT models billed through Zen never see health or finance data.**
    Anthropic- and OpenAI-billed requests carry 30-day retention per those providers'
    policies — the one exception to Zen's zero-retention posture. `claude-sonnet-5` (and

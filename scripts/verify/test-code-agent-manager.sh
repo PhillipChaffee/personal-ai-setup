@@ -2447,6 +2447,12 @@ BODY="$($CURL -X POST -H 'Content-Type: application/json' \
   -d '{"repo":"testrepo","task":"x","model":"opencode/big-pickle"}' "$BASE/api/chats")"
 echo "$BODY" | grep -q "zen-free" \
   && ok "zen-free model refused for a private repo" || bad "free-model guard: $BODY"
+# shellcheck disable=SC2086
+BODY="$($CURL -X POST -H 'Content-Type: application/json' \
+  -d '{"repo":"testrepo","task":"x","model":"muse-spark-1.3-contributor-free"}' "$BASE/api/chats")"
+echo "$BODY" | grep -q "zen-free" \
+  && ok "Responses-wire free id refused for a private repo" \
+  || bad "free-model guard (responses wire): $BODY"
 
 # ---- 3. create --------------------------------------------------------------
 # shellcheck disable=SC2086
