@@ -248,7 +248,12 @@ WAIT_FOR_CHAT_SECONDS = 90  # opencode boot budget, create and wake alike
 # Zen's free models train on user data (docs/privacy.md, hard rule 1). Refused
 # unless the repo's allowlist entry sets public_throwaway. The explicit set
 # tracks docs/model-routing.md; the "free" substring is a forward-compat net.
-FREE_MODEL_IDS = frozenset({"big-pickle", "muse-spark-contributor"})
+# muse-spark-1.3-contributor-free is the Responses wire's free id (Zen serves
+# the free tier only to OpenCode clients — verified 2026-09-23) and is pinned
+# here so the refusal survives a rename that drops the "-free" suffix.
+FREE_MODEL_IDS = frozenset(
+    {"big-pickle", "muse-spark-contributor", "muse-spark-1.3-contributor-free"},
+)
 
 
 def log(msg: str) -> None:
