@@ -48,9 +48,10 @@ Notes on reading the table:
   Treat it like `zen-anthropic`: ~30-day retention, hard rule 2 applies. (OpenCode
   reaches Zen's GPT models natively, and OpenAI's open-weight `gpt-oss` models are
   already on `together`.)
-- "OpenCode → Zen" rows run in the OpenCode CLI (your coding driver), connected to Zen by
-  the credential `bootstrap-mac.sh` writes to `~/.local/share/opencode/auth.json`. They
-  never pass through Goose or the brain.
+- "OpenCode → Zen" rows run wherever OpenCode runs — the brain under herdr
+  (Phase 3), or a local OpenCode you installed yourself. The repo ships no
+  OpenCode config and writes no credential; you connect OpenCode to Zen
+  yourself. Those rows never pass through Goose.
 - The **code agents** row is the one deliberately unpinned job class: model choice is
   per-chat at kick-off (`docs/code-agents.md`), defaulting to `deepseek-v4-flash`. The
   hard rules still bind — the session manager refuses zen-free models for any repo not
@@ -117,8 +118,8 @@ Four levers, from most to least persistent:
   deliberately do **not** set them — recipe-pinned models (hard rule 4) must
   always win on headless runs.
 
-In OpenCode, `/models` switches interactively and `opencode.json` pins defaults; see
-`config/opencode/opencode.json`.
+In OpenCode, `/models` switches interactively and its config file pins defaults.
+The repo ships no OpenCode config — you input your own settings.
 
 ## Zen GPT-5.x models: unreachable from Goose, accepted
 

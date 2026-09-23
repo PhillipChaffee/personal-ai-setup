@@ -155,6 +155,8 @@ MAP_IGNORE: Final[dict[str, str]] = {
     "coverage.xml": "coverage artifact",
     "lcov.info": "coverage artifact",
     "htmlcov": "coverage artifact",
+    "opencode.json": "the owner's own OpenCode settings at the repo root — "
+    "gitignored, never shipped (#135: the repo sets nothing for people)",
 }
 
 # A4's roster: directories whose SIZE is a fact the README states. Every one of
@@ -193,9 +195,10 @@ PERMALINK_RE: Final = re.compile(r"^permalink:\s*(\S.*?)\s*$", re.MULTILINE)
 # no /connect step any more" into three files without adding a fourth line here,
 # which is exactly how the README came to advertise the step anyway.
 RETIRED_TERMS: Final[dict[str, str]] = {
-    "`/connect`": ("#106 -- bootstrap-mac.sh writes ~/.local/share/opencode/auth.json "
-                   "itself via scripts/mac/opencode-auth.sh, and "
-                   "config/units/opencode.yaml says connect-zen is GONE, not demoted"),
+    "`/connect`": ("#106 -- the bootstrap wrote ~/.local/share/opencode/auth.json "
+                   "itself, and the unit manifests said connect-zen is GONE, not "
+                   "demoted (the OpenCode unit has since left the catalog -- "
+                   "coding agents are the brain's, under herdr)"),
 }
 
 # A9's scope, one file. README.md is the file this engine owns and the only one
@@ -313,8 +316,6 @@ MAP_ENTRIES: Final[tuple[MapEntry, ...]] = (
         "identity, routing rules, vault path, PHI standing rules"),
     row(2, "goose/acp-contract.json", "config/goose/acp-contract.json",
         "the captured ACP method list check-connectors.sh asserts against"),
-    row(2, "opencode/opencode.json", "config/opencode/opencode.json",
-        "OpenCode: Zen models + Together provider, cheap small_model"),
     row(2, "opencode/AGENTS.md", "config/opencode/AGENTS.md",
         "global coding/workflow rules template"),
     row(2, "opencode/agents/", "config/opencode/agents",
@@ -481,7 +482,8 @@ def doc_target(runbook: str) -> str:
 
     NOT a style choice, and not laziness. units_lint's slugify() collapses runs
     of hyphens (`re.sub(r"-+", "-", ...)`); GitHub's does not, so a heading like
-    `## 3. OpenCode -> Zen`, whose arrow leaves two spaces, anchors as
+    `## 3. OpenCode -> Zen` (as 20-mac-setup.md carried it before the pivot),
+    whose arrow leaves two spaces, anchors as
     `#3-opencode--zen` on GitHub and as `#3-opencode-zen` in units_lint. Nothing
     had noticed, because no tracked .md linked to them -- units_lint is the only
     reader, and it validates them against its own slugger.
@@ -491,12 +493,15 @@ def doc_target(runbook: str) -> str:
     every anchored doc ref in config/units/:
 
       49  anchored doc refs across all manifest fields (runbook, manual_steps,
-          notes, blockers), 36 of them distinct
+          notes, blockers), 36 of them distinct -- measured on the pre-pivot
+          catalog of 18 manifests; the unit deletions (#142's opencode, #143's
+          roster) shrink these counts below
       12  of those 49 do not resolve on GitHub, 9 distinct anchors, spread
-          across 7 of the 18 manifests
+          across 7 of the then-18 manifests
        8  manifests carry a fragment on the `runbook:` field, which is the ONLY
           field this menu renders
-       2  of those 8 are among the broken ones (opencode, telegram-gateway)
+       2  of those 8 are among the broken ones (opencode and telegram-gateway
+          then; telegram-gateway alone once #142 deleted the opencode unit)
 
     So rendering the fragment here would add exactly TWO lychee errors to
     README.md, not twelve and not thirteen: the other ten live in fields the menu

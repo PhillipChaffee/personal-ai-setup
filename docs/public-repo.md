@@ -13,7 +13,7 @@ checklist you run before flipping visibility.
 - Recipe YAMLs — instructions only; delivery references `$NTFY_TOPIC`, never a value.
 - Config **templates**: `config/goose/config.yaml`, custom-provider JSONs (they carry
   `api_key_env` names like `OPENCODE_ZEN_API_KEY`, never key values),
-  `config/opencode/opencode.json`, `config/env/secrets.env.example` (variable names
+  `config/env/secrets.env.example` (variable names
   only), `config/goose/goosehints.example`.
   `config/goose/config.yaml` is **generated** from `config/goose/config.base.yaml`
   plus one fragment per extension in `config/goose/extensions.d/`, and stays

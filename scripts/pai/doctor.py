@@ -1062,8 +1062,8 @@ def projection(repo: Path, argv: list[str]) -> int:
 HOST_STORES = {"mac": "mac_keychain", "vps": "vps"}
 
 # What a machine has when nobody said otherwise: every base unit plus every
-# default_on one. NOT "tier: base" -- bootstrap-mac.sh installs opencode and
-# coding-pack too, so a base-only rule would leave a default install short.
+# default_on one. NOT "tier: base" -- bootstrap-mac.sh installs coding-pack
+# too, so a base-only rule would leave a default install short.
 DEFAULT_TIERS = frozenset({"base", "default_on"})
 
 # key, required-or-optional, the generate command or "-", and the prompt.

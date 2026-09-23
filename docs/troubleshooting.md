@@ -294,8 +294,8 @@ go stale silently.
    scripts/verify/pin-models.sh
    ```
 
-2. Update the affected IDs in `config/goose/custom_providers/*.json`,
-   `config/opencode/opencode.json`, and any recipe `settings.goose_model` that
+2. Update the affected IDs in `config/goose/custom_providers/*.json`
+   and any recipe `settings.goose_model` that
    pins the retired model; consult `docs/model-routing.md` before substituting so
    the replacement stays in the right privacy tier (never move a sensitive job
    off Together just because a model vanished).

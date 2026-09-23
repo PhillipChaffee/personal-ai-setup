@@ -128,7 +128,7 @@ secrets:
     # table anywhere: this is the text.
     prompt: >-
       Together AI key (docs/setup/10-accounts.md §2) — goose's together provider
-      and opencode.json both read it by name
+      and OpenCode configs read it by name
     # null, or exactly `openssl rand -hex N` — and then the prompt must contain
     # that command verbatim. A property of the ROW, not the key: a secret is
     # minted on one host and TRANSCRIBED on the other.
@@ -215,7 +215,8 @@ quoting is part of the schema, not a style choice. `.yamllint.yml` also sets
 The obvious alternative — a `# pai-unit: <id>` comment anchor in the installer, asserted to
 occur exactly once — was **inexpressible for the base units** when this schema landed:
 `bootstrap-mac.sh` had a single `FORMULAE` string serving `base-toolchain`, `base-goose`
-*and* `opencode`, and one cask loop serving `base-goose` *and* `base-toolchain`. No anchor
+*and* `opencode` (then a unit; since #142, `base-toolchain` and `base-goose` alone), and one
+cask loop serving `base-goose` *and* `base-toolchain`. No anchor
 could occur once and mean anything there.
 
 `status` needs no installer edit at all, which is the point: the proof that #36 changed no
@@ -433,7 +434,7 @@ would be at risk of going inert is P8 as a whole, which "a case arm that ignores
 REQUIRES_* must fail" already covers.
 
 8(e) is the totality gate. The installer enumerates skills per unit by name rather than
-globbing `config/skills/`, precisely so `--without opencode` cannot quietly install a
+globbing `config/skills/`, precisely so a selective run cannot quietly install a
 `coding-pack` skill. The cost is that a thirteenth skill directory would be installed by
 nobody, so an unclaimed one is a FAIL naming the directory.
 

@@ -34,9 +34,9 @@ secrets: []
 
 owns:
   # From FORMULAE_BASE_TOOLCHAIN, which unit_base_toolchain() is the only
-  # consumer of. `block-goose-cli` and `anomalyco/tap/opencode` used to share
-  # that one string and are now FORMULAE_BASE_GOOSE and FORMULAE_OPENCODE,
-  # installed by their own units.
+  # consumer of. `block-goose-cli` used to share that one string and is now
+  # FORMULAE_BASE_GOOSE, installed by its own unit. (FORMULAE_OPENCODE died
+  # with the opencode unit, #142.)
   - {kind: brew_formula, target: uv}
   - {kind: brew_formula, target: node}
   - {kind: brew_formula, target: jq}

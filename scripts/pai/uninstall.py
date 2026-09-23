@@ -38,13 +38,13 @@ and in the PR that shipped this file. AC #2, #3 and #4 are met in full, for all
 eighteen units, today: every one of them refuses, with its own written reason,
 and names every target it would keep regardless.
 
-THE CLASSIFICATION IS THE FEATURE. All eighteen manifests say
-`uninstall.supported: false`, so all eighteen take the same arm here; what
+THE CLASSIFICATION IS THE FEATURE. All seventeen manifests say
+`uninstall.supported: false`, so all seventeen take the same arm here; what
 differs is WHY, and every one of those reasons is in the manifest, not in this
-file, which has no vocabulary of its own to drift from the data. Two of them
-(coding-pack, opencode) name a concrete residue rather than a machine-global
+file, which has no vocabulary of its own to drift from the data. One of them
+(coding-pack) names a concrete residue rather than a machine-global
 side effect, which is where a removing half would start — but nothing in this
-file treats those two differently, and `pai remove coding-pack` prints
+file treats it differently, and `pai remove coding-pack` prints
 coding-pack.yaml's sentence and nothing else.
 
     pai remove <id>      refuse, with the manifest's reason. Writes nothing.
