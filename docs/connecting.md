@@ -10,7 +10,7 @@ services skip straight to authentication; unknown ones run the full research pat
 **leave a manifest behind**. Distinct support accrues from use instead of being hand-written
 in advance. That is why this repo does not ship a directory of thirty integrations.
 
-Facts below verified against **goose 1.46.0** (the pinned version) on **2026-08-23**, by
+Facts below verified against **goose 1.46.0** on **2026-08-23**, by
 running a real `goose serve` and reading the results back — not by reading docs. Where
 something is inferred rather than observed, it says so.
 
@@ -26,17 +26,21 @@ the **ACP custom methods**, because that is the only path a phone can drive.
 
 | Method | Does |
 |---|---|
-| `_goose/unstable/extensions/available` | goose's own bundled extension directory |
 | `_goose/unstable/config/extensions/list` | what's configured, with `configKey` and `enabled` |
 | `_goose/unstable/config/extensions/add` | persist a new extension to `config.yaml` |
 | `_goose/unstable/config/extensions/set-enabled` | toggle one |
 | `_goose/unstable/session/extensions/add` | attach to the **running** session |
 | `_goose/unstable/config/upsert` | write a config value or a secret (`is_secret`) |
 
-All eleven methods this repo relies on exist at **v1.46.0** — verified by fetching
-`crates/goose/acp-meta.json` at the tag, which lists 113 methods and is the only
-machine-readable contract goose publishes. **No version bump is required**; the
-`brew pin block-goose-cli` in `scripts/mac/bootstrap-mac.sh` stays.
+A sixth method the adapter once named, `_goose/unstable/extensions/available` (goose's own
+bundled extension directory), was deleted upstream between v1.46.0 and v1.51.0 with no
+replacement; nothing in this repo ever called it, so it left the adapter with the bump.
+
+All ten methods this repo relies on exist at **v1.51.0** (the pinned version) — asserted by
+CI against `config/goose/acp-contract.json`, captured from `crates/goose/acp-meta.json` at
+the tag (108 published methods at v1.51.0), the only machine-readable contract goose
+publishes. The capture is re-taken at every pin bump: `check-connectors.sh
+--refresh-contract` names any method that disappeared.
 
 Two caveats that follow from `_goose/unstable/`:
 
@@ -226,7 +230,8 @@ start a connection it cannot finish** rather than stranding you 40 minutes in.
 
 ### Why OAuth cannot be completed from a phone
 
-Not a limitation of this repo — a property of goose as of 1.46.0 and `main` alike. Three
+Not a limitation of this repo — a property of goose at 1.46.0, re-verified in the source at
+the pinned **v1.51.0** on 2026-09-23, and on `main` alike. Three
 independent mechanisms, each individually fatal:
 
 1. **The callback is loopback-bound on the brain.** The redirect URI is hardcoded

@@ -91,7 +91,7 @@ summary: Gmail, Calendar and Tasks through your own GCP OAuth app.
 
 manifest_version: 1
 verified_on: 2026-08-23           # when the facts below were last checked
-goose_version_verified: 1.46.0    # the goose the wire shapes were verified against
+goose_version_verified: 1.51.0    # the goose the wire shapes were verified against
 
 # ---- what it is -----------------------------------------------------------
 archetype: self_hosted_mcp_stdio  # see "Archetypes" below
@@ -313,9 +313,9 @@ rather than pretending the convention holds.
 ## Fields the validator rejects
 
 - `available_tools` absent, empty, or spelled `availableTools`
-- `scopes` set without `clientId` (a hard config error in goose)
-- `clientId` / `clientSecretKey` / `scopes` on anything but a `http` server — goose
-  restricts OAuth fields to streamable-HTTP extensions
+- `clientId` / `clientSecretKey` / `scopes` at all — they exist on the mcp variant since
+  v1.47.0, but a manifest that sets them asks goose to run its OAuth flow, which cannot be
+  completed from a phone; this repo's credential path is `envKeys`
 - `server.type: sse`
 - `privacy.tier: 3` without a `docs/privacy.md` row
 - any secret whose `key` appears with a value anywhere in the file
