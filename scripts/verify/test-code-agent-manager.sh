@@ -7,10 +7,7 @@
 #   auth · allowlist + zen-free guards · create (clone/branch/setup/config/
 #   auth seed) · base branches (list, cut-from, refusals) · max-active refusal ·
 #   proxying incl. SSE · the blocking permission flow · busy-guarded idle
-#   spin-down · wake-on-request with state intact · stop/wake/delete-purge ·
-#   the agent notifications, against a recording fake ntfy (fake-ntfy.py):
-#   each edge fires once, later passes do not re-fire, an abort is silent, and
-#   the payload is asserted content-free against the bytes that left the box
+#   spin-down · wake-on-request with state intact · stop/wake/delete-purge
 #
 # Runs anywhere with python3 + git + curl. Exits non-zero on any failure.
 #
@@ -54,7 +51,7 @@ IDLE_SECONDS="${IDLE_SECONDS:-4}"
 # three unrelated pull-request assertions failing plus a JSON traceback. Issue
 # #118 is the general version of this; this is the one line of it that this file
 # owns. The map, so a new fixture picks a free offset instead of guessing:
-#     PORT-2  ntfy         PORT-1  fake-github   PORT     the manager
+#     PORT-1  fake-github   PORT     the manager
 #     PORT+11 TLS          PORT+12..13 9e sweep  PORT+14  9f's own manager
 #     PORT+15..17 9f chats PORT+18..19 waitfor   PORT+20  the chat band
 BASE_CHAT_PORT="${BASE_CHAT_PORT:-$((PORT + 20))}"
@@ -107,7 +104,6 @@ wait_sweeps() { # wait_sweeps <advances>
 
 MANAGER_PID=""
 GITHUB_PID=""
-NTFY_PID=""
 # A standalone mock-opencode-server used by section 4b. Declared here, with the
 # others, because a fixture that outlives a failed run holds a port and turns
 # the NEXT run's unrelated assertions red -- the confusion this file's PORT
@@ -119,7 +115,6 @@ ROT_PID=""
 cleanup() {
   [ -n "$MANAGER_PID" ] && kill "$MANAGER_PID" 2>/dev/null || true
   [ -n "$GITHUB_PID" ] && kill "$GITHUB_PID" 2>/dev/null || true
-  [ -n "$NTFY_PID" ] && kill "$NTFY_PID" 2>/dev/null || true
   [ -n "$WF_PID" ] && kill "$WF_PID" 2>/dev/null || true
   [ -n "$ROT_PID" ] && kill "$ROT_PID" 2>/dev/null || true
   # Both stub state dirs: 9f's containers are mock servers holding ports too,
@@ -201,110 +196,8 @@ for _ in $(seq 1 20); do
   sleep 0.3
 done
 
-# A recording ntfy, so the agent-notification channel can be asserted on the
-# exact bytes that left the manager rather than on the manager's intentions.
-# The failure channel (NTFY_TOPIC, notify.sh) left the repo with the automations
-# removal (2026-09-23) — the agent channel (NTFY_AGENT_TOPIC) is what remains,
-# and the tests below check the notifications landed on it.
-#
-# GENERATED, not committed, for the reason the repo's workflow heredocs give:
-# a python3 heredoc is invisible to ruff and mypy --strict, and this recorder
-# replaces the committed fake-ntfy.py that died with the transport. Same shape
-# as the goose stub in test-verify-checks.sh: stdlib only, 127.0.0.1 only.
-NTFY_PORT="${NTFY_PORT:-$((PORT - 2))}"
-NTFY_LOG="$WORK/ntfy.jsonl"
-FAILURE_TOPIC="failure-topic-$$"
-AGENT_TOPIC="agent-topic-$$"
-FAKE_NTFY="$WORK/fake-ntfy.py"
-cat >"$FAKE_NTFY" <<'PYEOF'
-import json
-import sys
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
-from typing import Any
-from urllib.parse import unquote, urlparse
-
-WRITE_LOCK = threading.Lock()
-OUT_PATH = Path("/dev/null")
-MAX_BODY = 1 << 20
-RECORDED_HEADERS = (
-    "Title", "Priority", "Tags", "Click", "Actions", "Email", "Content-Type",
-)
-
-
-class Handler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-    server_version = "fake-ntfy"
-
-    def do_POST(self) -> None:
-        length = int(self.headers.get("Content-Length") or 0)
-        raw = self.rfile.read(min(length, MAX_BODY)) if length else b""
-        text = raw.decode("utf-8", "replace")
-        try:
-            body: Any = json.loads(text)
-        except json.JSONDecodeError:
-            body = text
-        record = {
-            # The path IS the topic, and recording it is how the harness
-            # proves the agent channel is not the failure channel.
-            "topic": unquote(urlparse(self.path).path).lstrip("/"),
-            "headers": {
-                name: self.headers.get(name)
-                for name in RECORDED_HEADERS
-                if self.headers.get(name) is not None
-            },
-            "body": body,
-        }
-        with WRITE_LOCK, OUT_PATH.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record) + "\n")
-        payload = b'{"id":"fake"}'
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
-
-    def do_GET(self) -> None:
-        self.send_response(200)
-        self.send_header("Content-Length", "0")
-        self.end_headers()
-
-    def log_message(self, format: str, *args: object) -> None:
-        return
-
-
-OUT_PATH = Path(sys.argv[2])
-OUT_PATH.touch()
-server = ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler)
-server.daemon_threads = True
-server.serve_forever()
-PYEOF
-python3 "$FAKE_NTFY" "$NTFY_PORT" "$NTFY_LOG" &
-NTFY_PID=$!
-for _ in $(seq 1 20); do
-  curl -sS -o /dev/null "http://127.0.0.1:$NTFY_PORT/ready" && break
-  sleep 0.3
-done
-# Every notification recorded so far, filtered to one kind.
-ntfy_count() { python3 -c '
-import json, sys
-kind = sys.argv[1]
-n = 0
-for line in open(sys.argv[2], encoding="utf-8"):
-    line = line.strip()
-    if not line:
-        continue
-    body = json.loads(line)["body"]
-    if isinstance(body, dict) and body.get("kind") == kind:
-        n += 1
-print(n)
-' "$1" "$NTFY_LOG"; }
-
 env -i PATH="$PATH" HOME="$HOME" \
-  NTFY_SERVER="http://127.0.0.1:$NTFY_PORT" \
-  NTFY_TOPIC="$FAILURE_TOPIC" \
-  NTFY_AGENT_TOPIC="$AGENT_TOPIC" \
+env -i PATH="$PATH" HOME="$HOME" \
   CODE_AGENT_BIND=127.0.0.1 \
   CODE_AGENT_PORT="$PORT" \
   CODE_AGENT_BASE_CHAT_PORT="$BASE_CHAT_PORT" \
@@ -348,116 +241,11 @@ fi
 
 echo "== test-code-agent-manager (work dir: $WORK) =="
 
-# ---- 0. the reaper's clock and the notifier's net (unit, no stack) -----------
-#
-# Everything else in this file is end-to-end, and neither of these two can be
-# reached that way: one is a race whose window is the duration of a socket walk,
-# the other only shows up on a daemon thread's stderr. Both shipped, both were
-# found by an adversarial pass reading the diff, and both are cheap to pin here.
-#
-#   * `sampled_at` must be stamped BEFORE the status walk, because it exists to
-#     answer "how old are these readings". Stamped after, it dates them to the
-#     END of a walk that is a subprocess plus a timeout=5 socket per chat, over
-#     a running set that MAX_ACTIVE does not bound (admission_count exempts
-#     blocked chats). Two wedged siblings put more than ARM_SETTLE_SECONDS
-#     between the first chat's reading and the stamp — so a turn started after
-#     that reading looks settled, buzzes "turn ended" seconds INTO the turn, and
-#     pops its own arm so the real ending never buzzes.
-#   * `_post_ntfy` runs on a daemon thread, where anything uncaught goes to
-#     threading.excepthook and prints a traceback to journald. A malformed
-#     NTFY_SERVER raises ValueError from `url.port` and a non-ASCII topic raises
-#     UnicodeEncodeError from putrequest — neither an OSError nor an
-#     HTTPException, and the second one's message quotes a character of the
-#     topic. The topic is a password. The net has to be wider than the log.
-# Written to a file, not piped: `coverage run -` refuses stdin ("No file to
-# run"), so a heredoc here would have to fall back to a bare python3 -- which
-# is exactly what it used to do, and why the coverage of everything these
-# checks exercise was silently thrown away. $WORK is outside scripts/, so
-# preflight.py is itself unmeasured, which is correct: it is test code.
-cat >"$WORK/preflight.py" <<'PY'
-import contextlib, importlib.util, io, sys, time
-
-spec = importlib.util.spec_from_file_location("cam", sys.argv[1])
-mod = importlib.util.module_from_spec(spec)
-sys.modules["cam"] = mod
-spec.loader.exec_module(mod)
-
-# --- the stamp dates the readings, not the pass ---
-CHATS = ["c1", "c2", "c3"]
-idx = mod.Index(chats={
-    c: mod.Chat(id=c, repo="r", title="t", port=1, branch="b", last_active=time.time())
-    for c in CHATS
-})
-readings = {}
-
-
-def slow_session_state(chat):
-    time.sleep(0.3)          # stands in for the timeout=5 socket, serially
-    readings[chat.id] = time.time()
-    return "idle"
-
-
-mod.Index.load = staticmethod(lambda: idx)
-mod.container_state = lambda cid: "running"
-mod.session_state = slow_session_state
-mod.pending_permissions = lambda running=None: ([], [])
-mod.spin_down_idle = lambda *a: None
-mod.notify_new_asks = lambda *a: None
-captured = {}
-mod.notify_finished_turns = lambda index, status, running, at: captured.__setitem__("at", at)
-mod.reaper_pass()
-
-assert len(readings) == len(CHATS), f"session_state ran {len(readings)}x, expected {len(CHATS)}"
-skew = captured["at"] - readings["c1"]
-assert skew <= 0, (
-    f"sampled_at is {skew:.2f}s AFTER the reading it claims to date; at "
-    f"ARM_SETTLE_SECONDS={mod.ARM_SETTLE_SECONDS} a real walk buzzes mid-turn"
-)
-
-# The consequence, stated in the domain: a turn armed one second after its chat
-# was read idle is not finished, and must keep its arm for a later pass.
-mod._reaper_memory.prev_running = frozenset(CHATS)
-fired = []
-real_notify_agent = mod.notify_agent
-mod.notify_agent = lambda kind, count, chats: fired.append((kind, count, chats))
-sampled = time.time()
-with mod._reaper_memory.armed_lock:
-    mod._reaper_memory.armed["c1"] = sampled + 1.0
-mod.notify_finished_turns(idx, dict.fromkeys(CHATS, "idle"), frozenset(CHATS), sampled)
-assert not fired, f"buzzed for a turn that had not started: {fired}"
-assert "c1" in mod._reaper_memory.armed, "the arm was eaten; the real ending can never buzz"
-
-# --- the notifier's net is wider than the log ---
-mod.notify_agent = real_notify_agent      # the stub above would swallow the whole path
-TOPIC = "sekritTopicóValue"
-mod.NTFY_AGENT_TOPIC = TOPIC
-mod.NTFY_SERVER = "http://ntfy.example:not-a-port"   # url.port raises ValueError
-out, err = io.StringIO(), io.StringIO()
-with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-    mod.notify_agent("turn", 1, ["c1"])
-    for _ in range(50):
-        time.sleep(0.05)
-        if out.getvalue() or err.getvalue():
-            break
-    time.sleep(0.2)
-o, e = out.getvalue(), err.getvalue()
-assert "Traceback" not in e, f"an uncaught daemon-thread traceback reached stderr: {e[:200]}"
-assert "agent notification lost" in o, f"the failure was not logged at all: {o!r}"
-assert TOPIC not in o + e and "ó" not in o + e, "the topic leaked into the log"
-PY
-if "${MANAGER_PY[@]}" "$WORK/preflight.py" "$REPO_ROOT/scripts/vps/code-agent-manager.py"
-then
-  ok "the reaper stamps sampled_at before the walk, and withholds an unsettled turn"
-  ok "a malformed ntfy target is logged by TYPE — no traceback, no topic"
-else
-  bad "reaper clock / notifier exception net (see the assertion above)"
-fi
-
 # ---- 0b. the shapes a hand-edited state file can take (unit, no stack) ------
 # Index.load and load_repos are written to tolerate junk -- isinstance checks at
 # every level -- and none of those arms had ever executed, because the only
 # files they ever see are ones the manager itself wrote. Same for the config
-# template guard and the handle-eviction bound: reachable in principle, never
+# template guard: reachable in principle, never
 # reached by an end-to-end run. All in-process, no wall clock.
 cat >"$WORK/preflight-shapes.py" <<'PY'
 import dis, importlib.util, inspect, json, re, sys, tempfile
@@ -499,14 +287,6 @@ mod.REPOS_PATH.write_text(json.dumps({"repos": [
 ]}))
 repos = mod.load_repos()
 assert set(repos) == {"good"}, f"malformed allowlist entries survived: {sorted(repos)}"
-
-# --- the handle memory is bounded, oldest first ---
-rm = mod.ReaperMemory()
-first = rm.mint_handle(["c1"])
-for i in range(mod.HANDLE_MEMORY + 5):
-    rm.mint_handle([f"c{i}"])
-assert len(rm.handles) <= mod.HANDLE_MEMORY, f"handle memory unbounded: {len(rm.handles)}"
-assert first not in rm.handles, "the oldest handle was not the one evicted"
 
 # --- the config template guard, and the model override ---
 bad_tpl = tmp / "bad-template.json"
@@ -990,7 +770,6 @@ if "${MANAGER_PY[@]}" "$WORK/preflight-shapes.py" "$REPO_ROOT/scripts/vps/code-a
   "$REPO_ROOT/docs/code-agents.md"
 then
   ok "a hand-mangled index.json or repos.json degrades instead of raising"
-  ok "the notification handle memory is bounded and evicts oldest-first"
   ok "a non-object config template is refused; the model override and push grant apply"
   ok "the container's AGENTS.md is rendered into the chat volume, and a missing one is survivable"
   ok "agent_authored is true/false from the PR body, and absent when GitHub sent none"
@@ -2866,60 +2645,6 @@ sleep 6
   && ok "busy chat survives the idle reaper (blocked on the ask)" \
   || bad "reaper stopped a busy chat"
 
-# ---- 5ab. the phone gets buzzed about the ask, once ------------------------
-# The ask has been parked for >6s, so the reaper has swept at least three times
-# (CODE_AGENT_REAPER_INTERVAL=2). Exactly one notification must have gone out:
-# the first pass announces it, and every pass after that must recognise the
-# same ask id and stay quiet. Getting this wrong is not a cosmetic bug — it is
-# a phone buzzing every sixty seconds until somebody answers.
-[ "$(ntfy_count ask)" = "1" ] \
-  && ok "a parked ask buzzes the phone exactly once, not once per reaper pass" \
-  || bad "expected 1 ask notification, got $(ntfy_count ask)"
-
-# And the payload. This is the assertion the whole channel rests on: the push
-# leaves the tailnet and renders on a LOCKED screen, so it must carry a kind, an
-# opaque handle and a count, and nothing else. Every field a designer reaches
-# for first is contaminated — chatId embeds the repo name, title is the first 80
-# characters of the raw prompt, and a bash ask's metadata is the shell command —
-# so the test names those actual values and demands their absence.
-python3 - "$NTFY_LOG" "$CID" "$AGENT_TOPIC" <<'EONTFY' \
-  && ok "the notification payload is content-free (kind, handle, count)" \
-  || bad "the notification carried content"
-import json, sys
-log, cid, agent_topic = sys.argv[1:4]
-records = [json.loads(l) for l in open(log, encoding="utf-8") if l.strip()]
-assert records, "nothing was sent to ntfy at all"
-# One channel now: the agent topic. The failure channel (notify.sh ->
-# NTFY_TOPIC) left the repo with the automations removal (2026-09-23), and
-# notify_failure logs instead — so every record here must be the agent topic,
-# the one that renders on a locked screen.
-for r in records:
-    assert r["topic"] == agent_topic, f"unknown topic: {r['topic']!r}"
-agent_records = records
-assert agent_records, "nothing was sent to the agent channel"
-for r in agent_records:
-    assert "Email" not in r["headers"], "an Email header would burn the ~5/day cap"
-    body = r["body"]
-    assert isinstance(body, dict), f"body is not JSON: {body!r}"
-    assert set(body) == {"kind", "handle", "count"}, f"extra fields on the wire: {sorted(body)}"
-    assert body["kind"] in ("ask", "turn"), body["kind"]
-    assert isinstance(body["count"], int) and body["count"] >= 1, body["count"]
-    assert isinstance(body["handle"], str) and body["handle"], body["handle"]
-    # The whole record, headers and all, against everything that must never
-    # travel: this chat's id (which embeds "testrepo"), the repo names, the
-    # task text that became the title, and the ask's own tool arguments.
-    blob = json.dumps(r).lower()
-    for secret in (cid.lower(), "testrepo", "throwaway", "ghrepo",
-                   "tidy the readme", "push the branch", "git push",
-                   "agent/", "release/2.x", "/chat/workspace"):
-        assert secret not in blob, f"the payload leaked {secret!r}: {r}"
-asks = [r for r in agent_records if r["body"]["kind"] == "ask"]
-assert asks, "no ask notification"
-assert asks[0]["headers"]["Priority"] == "high", asks[0]["headers"]
-title = asks[0]["headers"]["Title"]
-assert title == "A code agent is waiting on you", repr(title)
-EONTFY
-
 # ---- 5aa. a parked ask must not take the whole plane offline ----------------
 # The other horn of the same fact. A blocked chat reports busy forever, so the
 # reaper touches it on every pass and it can never go idle again — and if it
@@ -2977,28 +2702,6 @@ done
 grep -q '"delta"' "$WORK/sse.log" \
   && ok "streamed deltas passed through the proxy" || bad "no deltas in SSE"
 kill "$SSE_PID" 2>/dev/null || true
-
-# ---- 5ac. the other edge: the turn that just ended --------------------------
-# The chat was ARMED when the manager proxied the prompt above; the turn has now
-# run to completion, so the next reaper sweep must fire "a turn ended" — once.
-# Not a busy->idle edge: at a 60s cadence in production a turn that starts and
-# finishes between two samples is never observed busy and would produce no edge
-# at all, which is exactly the pocket case this feature exists for.
-TURNS="0"
-for _ in $(seq 1 30); do
-  TURNS="$(ntfy_count turn)"
-  [ "$TURNS" != "0" ] && break
-  sleep 0.5
-done
-[ "$TURNS" = "1" ] && ok "the finished turn buzzes the phone" \
-  || bad "expected 1 turn notification, got $TURNS"
-
-# Three more reaper passes with nothing new happening. The chat is disarmed, so
-# every one of them must stay silent — otherwise an idle chat buzzes forever.
-sleep 6
-[ "$(ntfy_count turn)" = "1" ] && [ "$(ntfy_count ask)" = "1" ] \
-  && ok "later reaper passes do not re-fire either edge" \
-  || bad "re-fired: turn=$(ntfy_count turn) ask=$(ntfy_count ask)"
 
 # These may cross an idle spin-down (4s in test config) and wake the chat
 # transparently — allow for the wake window.
@@ -3090,63 +2793,18 @@ assert any("second line" in p.get("text", "") for p in synth), "file body not in
 ' && ok "a text attachment round-trips, with the synthetic expansion" \
   || bad "attachment round-trip failed"
 
-# ---- 5ad. a turn you stopped yourself is not news ---------------------------
-# On the wire an abort and a natural completion are byte-identical — the mock
-# resolves the ask, discards the busy flag and publishes session.idle exactly
-# the way a finished turn does. The only thing that can tell them apart is that
-# the abort came through the manager's own proxy, so the manager disarms
-# instead of firing. You were holding the phone; you do not need telling.
-#
-# The same block proves ask dedup is keyed on the ASK ID and not on the chat:
-# this is a second push ask on a chat that has already had one announced, and
-# it must buzz again.
-ASKS_BEFORE="$(ntfy_count ask)"; TURNS_BEFORE="$(ntfy_count turn)"
-# shellcheck disable=SC2086
-$CURL --max-time 120 -X POST -H 'Content-Type: application/json' \
-  -d '{"parts":[{"type":"text","text":"push it again"}]}' \
-  "$BASE/chat/$CID/session/$SID/prompt_async" > /dev/null
-SECOND_PERM=""
-for _ in $(seq 1 20); do
-  # shellcheck disable=SC2086
-  SECOND_PERM="$($CURL "$BASE/chat/$CID/permission" | jget "d[0]['id'] if d else ''")"
-  [ -n "$SECOND_PERM" ] && break
-  sleep 0.5
-done
-# Give the reaper a sweep to notice the new ask before it is aborted away.
-sleep 3
-NEW_ASKS="$(ntfy_count ask)"
-# shellcheck disable=SC2086
-$CURL -X POST "$BASE/chat/$CID/session/$SID/abort" >/dev/null
-sleep 6
-[ "$NEW_ASKS" -gt "$ASKS_BEFORE" ] \
-  && ok "a second ask on the same chat buzzes again (dedup is per ask id)" \
-  || bad "the second ask was swallowed: $ASKS_BEFORE -> $NEW_ASKS"
-[ "$(ntfy_count turn)" = "$TURNS_BEFORE" ] \
-  && ok "an aborted turn does not buzz" \
-  || bad "abort fired a turn notification: $TURNS_BEFORE -> $(ntfy_count turn)"
-
-# ---- 5ae. the reaper's error nets and its row filters (in-process) ----------
-# reaper_pass wraps three calls in `except Exception` precisely so a buzz can
-# never cost a spin-down — this file has already shipped that failure once. The
-# only way to prove those nets hold is to make the calls raise, which no live
-# fixture can do. Same for the row filters: the running manager never produces a
-# malformed ask row, and an ntfy server that answers 503 is not something
-# fake-ntfy.py does.
+# ---- 5ae. the reaper's error nets (in-process) ------------------------------
+# reaper_pass wraps the ask probe and the parked-ask record in `except
+# Exception` precisely so neither can cost a spin-down — this file has already
+# shipped that failure once. The only way to prove those nets hold is to make
+# the calls raise, which no live fixture can do.
 cat >"$WORK/preflight-reaper.py" <<'PY'
-import contextlib, http.server, importlib.util, io, sys, threading, time
+import contextlib, importlib.util, io, sys, time
 
 spec = importlib.util.spec_from_file_location("cam", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 sys.modules["cam"] = mod
 spec.loader.exec_module(mod)
-
-real_post_ntfy = mod._post_ntfy
-
-# Stub the notifier at the TOP. This fixture does NOT run under `env -i`, so a
-# real NTFY_SERVER in the environment would otherwise send live traffic.
-fired = []
-mod.notify_agent = lambda kind, count, chats: fired.append((kind, count, sorted(chats)))
-mod._post_ntfy = lambda *a, **k: None
 
 
 def chat(cid, probe=False):
@@ -3154,44 +2812,8 @@ def chat(cid, probe=False):
                     last_active=time.time())
 
 
-# 1. notify_new_asks drops malformed rows, probe chats and unknown chats.
-idx = mod.Index(chats={"real": chat("real"), "probe1": chat("probe1", probe=True)})
-mod._reaper_memory.seen_asks.clear()
-fired.clear()
-mod.notify_new_asks(
-    idx,
-    [
-        {"chatId": 5, "id": "a"},           # chatId is not a str
-        {"chatId": "real", "id": ""},       # empty ask id
-        {"chatId": "real", "id": "a1"},     # the one real row
-        {"chatId": "probe1", "id": "p1"},   # a probe chat: nobody's pocket
-        {"chatId": "gone", "id": "g1"},     # not in the index at all
-    ],
-    [],
-    frozenset({"real", "probe1"}),
-)
-assert fired == [("ask", 1, ["real"])], fired
-# The skip happens BEFORE seen.setdefault, so a skipped chat must leave no
-# memory behind. Asserting absence from seen_asks is a real consequence; merely
-# asserting the buzz count would pass even if the rows had been remembered.
-assert "probe1" not in mod._reaper_memory.seen_asks, dict(mod._reaper_memory.seen_asks)
-assert "gone" not in mod._reaper_memory.seen_asks, dict(mod._reaper_memory.seen_asks)
-
-# 2. notify_finished_turns forgets arms whose chat is deleted or not running.
-now = time.time()
-stale = now - (mod.ARM_SETTLE_SECONDS + 10)
-mod._reaper_memory.armed.clear()
-mod._reaper_memory.armed.update({"deleted": stale, "notrun": stale, "real": stale})
-idx2 = mod.Index(chats={"real": chat("real"), "notrun": chat("notrun")})
-mod._reaper_memory.prev_running = frozenset({"real"})
-fired.clear()
-mod.notify_finished_turns(idx2, {"real": "idle"}, frozenset({"real"}), now)
-assert fired == [("turn", 1, ["real"])], fired
-assert "deleted" not in mod._reaper_memory.armed, dict(mod._reaper_memory.armed)
-assert "notrun" not in mod._reaper_memory.armed, dict(mod._reaper_memory.armed)
-
-# 3. reaper_pass, PASS 1: the ask probe raises. The spin-down must still run and
-#    notify_new_asks must be SKIPPED -- feeding it an empty map would revoke
+# 1. PASS 1: the ask probe raises. The spin-down must still run and
+#    record_parked_asks must be SKIPPED -- feeding it an empty map would revoke
 #    every blocked chat's MAX_ACTIVE exemption on a fan-out hiccup.
 idx3 = mod.Index(chats={"c1": chat("c1"), "c2": chat("c2")})
 mod.Index.load = classmethod(lambda cls: idx3)
@@ -3206,96 +2828,38 @@ def boom(*a, **k):
 calls = []
 mod.spin_down_idle = lambda *a: calls.append("spin")
 mod.pending_permissions = boom
-mod.notify_new_asks = lambda *a: calls.append("asks")
-mod.notify_finished_turns = lambda *a: calls.append("turns")
-mod._reaper_memory.prev_running = frozenset()
+mod.record_parked_asks = lambda *a: calls.append("asks")
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
     mod.reaper_pass()
 out = buf.getvalue()
 assert "reaper ask probe failed: RuntimeError" in out, out
-assert calls == ["spin", "turns"], calls
-assert mod._reaper_memory.prev_running == frozenset({"c1", "c2"})
+assert calls == ["spin"], calls
 
-# 4. PASS 2: both notifiers raise; the pass still finishes and still records
-#    prev_running. The prev_running RESET below is mandatory -- PASS 1 already
-#    left it at exactly this value, so without the reset the assertion is
-#    vacuous rather than evidence that line 1492 was reached.
-mod._reaper_memory.prev_running = frozenset()
+# 2. PASS 2: the record step raises; the pass still finishes.
 calls2 = []
 mod.spin_down_idle = lambda *a: calls2.append("spin")
 mod.pending_permissions = lambda chats: ([], [])
 
 
-def boom_asks(*a):
-    raise RuntimeError("asks exploded")
+def boom_record(*a):
+    raise RuntimeError("record exploded")
 
 
-def boom_turns(*a):
-    raise RuntimeError("turns exploded")
-
-
-mod.notify_new_asks = boom_asks
-mod.notify_finished_turns = boom_turns
+mod.record_parked_asks = boom_record
 buf2 = io.StringIO()
 with contextlib.redirect_stdout(buf2):
     mod.reaper_pass()
 out2 = buf2.getvalue()
-assert "reaper notify failed (asks): RuntimeError" in out2, out2
-assert "reaper notify failed (turns): RuntimeError" in out2, out2
+assert "reaper ask record failed: RuntimeError" in out2, out2
 assert calls2 == ["spin"], calls2
-assert mod._reaper_memory.prev_running == frozenset({"c1", "c2"})
-
-
-# 5. an ntfy server that ANSWERS, with a 4xx/5xx. Distinct from "lost".
-class Ntfy(http.server.BaseHTTPRequestHandler):
-    def do_POST(self):
-        # Drain the body FIRST. This is REQUIRED, not hygiene: answering and
-        # closing with an unread body still in the receive queue emits RST,
-        # http.client raises ConnectionResetError inside _post_ntfy's try, and
-        # the "lost" arm runs instead of the "refused" one -- the test would go
-        # red for entirely the wrong reason. fake-ntfy.py reads the body for
-        # exactly this reason.
-        n = int(self.headers.get("Content-Length") or 0)
-        if n:
-            self.rfile.read(n)
-        self.send_response(503)
-        self.send_header("Content-Length", "0")
-        self.end_headers()
-
-    def log_message(self, *a):
-        pass
-
-
-srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Ntfy)
-threading.Thread(target=srv.serve_forever, daemon=True).start()
-mod.NTFY_SERVER = "http://127.0.0.1:%d" % srv.server_address[1]
-mod.NTFY_AGENT_TOPIC = "t-fixture"
-mod._post_ntfy = real_post_ntfy
-buf3 = io.StringIO()
-with contextlib.redirect_stdout(buf3):
-    # Called directly, on THIS thread: notify_agent posts on a daemon thread and
-    # the assertion would race it.
-    mod._post_ntfy("turn", "T", "default", '{"kind":"turn"}')
-assert "agent notification refused (turn): HTTP 503" in buf3.getvalue(), buf3.getvalue()
-
-# 6. arm_from_proxy refuses to arm a probe chat or a rejected prompt.
-mod._reaper_memory.armed.clear()
-mod.arm_from_proxy(chat("probechat", probe=True), "/session/s/prompt", 200)
-mod.arm_from_proxy(chat("rejected"), "/session/s/prompt", 400)
-mod.arm_from_proxy(chat("accepted"), "/session/s/prompt", 200)
-assert list(mod._reaper_memory.armed) == ["accepted"], dict(mod._reaper_memory.armed)
 PY
 if "${MANAGER_PY[@]}" "$WORK/preflight-reaper.py" "$REPO_ROOT/scripts/vps/code-agent-manager.py"
 then
-  ok "notify_new_asks drops malformed rows, probe chats and deleted chats without remembering them"
-  ok "notify_finished_turns forgets arms whose chat vanished or stopped"
-  ok "a raising ask probe still spins down, and skips the ask buzz rather than emptying it"
-  ok "both notifiers can raise and the pass still completes and records prev_running"
-  ok "an ntfy server that answers 5xx is 'refused', not 'lost'"
-  ok "arm_from_proxy arms neither a probe chat nor a rejected prompt"
+  ok "a raising ask probe still spins down, and skips the ask record rather than emptying it"
+  ok "the ask record can raise and the pass still completes"
 else
-  bad "reaper error nets / row filters (see the assertion above)"
+  bad "reaper error nets (see the assertion above)"
 fi
 
 # ---- 5b. pull requests ------------------------------------------------------
@@ -4632,9 +4196,9 @@ EOP
 [ "$FAIL_CODE" = "502" ] && [ "$LEAKED" = "0" ] \
   && ok "a failed create rolls back: 502, and no index entry survives" \
   || bad "create rollback: HTTP $FAIL_CODE, leaked index entries $LEAKED"
-# The rollback also has to TELL someone. With the ntfy failure channel gone
-# (2026-09-23), the operational record is the journal line notify_failure
-# writes, which journald keeps and `journalctl -u code-agent-manager` reads.
+# The rollback also has to TELL someone. The operational record is the journal
+# line notify_failure writes, which journald keeps and
+# `journalctl -u code-agent-manager` reads.
 if grep -q "FAILURE (high): chat create failed" "$WORK/manager.log" 2>/dev/null; then
   ok "a failed create raises an operational record in the journal"
 else

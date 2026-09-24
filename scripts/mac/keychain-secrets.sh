@@ -10,7 +10,7 @@
 # projects it out of config/units/*.yaml -- one row per key, carrying that
 # manifest's own `prompt`. Before #39 it was a nine-name string here plus a
 # `case` of hints whose default arm was `echo ""`, so TELEGRAM_BOT_TOKEN and
-# NTFY_EMAIL prompted with an empty parenthetical, on every run, for features
+# friends prompted with an empty parenthetical, on every run, for features
 # the reader had not been told about yet. A base install now asks for
 # TOGETHER_API_KEY and OPENCODE_ZEN_API_KEY and stops; `--units <id>` adds one
 # add-on's names when you install that add-on.
@@ -44,14 +44,6 @@ MARKER_BEGIN="# >>> personal-ai keychain exports (keychain-secrets.sh) >>>"
 MARKER_END="# <<< personal-ai keychain exports <<<"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-# The literal typed at a hidden prompt to mint a value instead of pasting one.
-# Only offered for keys whose manifest row carries a `generate` command --
-# NTFY_AGENT_TOPIC today, minted on the Mac in Phase 1
-# (docs/setup/10-accounts.md §6). Keys that are generated on the BRAIN and
-# transcribed here (GOOSE_SERVER__SECRET_KEY) must never offer it: a fresh value
-# on this side unpairs the client from the server.
-GENERATE_WORD="generate"
-
 UNITS=""
 REWRITE_ONLY=0
 
@@ -70,9 +62,9 @@ Keychain, under service "$SERVICE", then rewrites the export block in
   --rewrite-only  skip every prompt and only regenerate the ~/.zshrc block.
                   This is the one mode that needs no terminal.
 
-Press Enter at any prompt to skip it (an already-stored value is kept). At a
-prompt whose key can be minted, type "$GENERATE_WORD" to have openssl mint one;
-the value is stored and never printed.
+Press Enter at any prompt to skip it (an already-stored value is kept). Keys
+the brain mints itself (GOOSE_SERVER__SECRET_KEY) are transcribed here — a
+fresh value on this side would unpair the client from the server.
 
 Roster (names and prompts only, no values):
     pai secrets --host mac [--units a,b,c]
@@ -144,21 +136,18 @@ store_secret() { # store_secret <var> <value>
 }
 
 prompt_all() {
-  local var need gen prompt state hint secret bytes stored=0
+  local var need gen prompt state secret stored=0
   echo "==> Storing secrets in the macOS Keychain (service: $SERVICE)"
   echo "    Input is hidden. Press Enter to skip a variable."
   echo
   # Read the roster on fd 3: fd 0 is where the human types, and a `read` loop
   # over stdin would eat the first answer as the second roster line.
+  # shellcheck disable=SC2034  # gen (the generate column) is parsed, unused: no Mac-side row mints
   while IFS="$(printf '\t')" read -r var need gen prompt <&3; do
     [ -n "$var" ] || continue
     state="not stored yet — Enter skips"
     if security find-generic-password -s "$SERVICE" -a "$var" >/dev/null 2>&1; then
       state="already stored — Enter keeps it"
-    fi
-    hint=""
-    if [ "$gen" != "-" ]; then
-      hint="; \"$GENERATE_WORD\" mints one"
     fi
     if [ "$need" = "optional" ]; then
       echo "  $var  [optional]  ($prompt)"
@@ -169,36 +158,20 @@ prompt_all() {
     # `|| true` is for Ctrl-D: EOF leaves `secret` empty, which reads as "skip",
     # and the remaining keys skip the same way. Without it, `set -e` would abort
     # the run mid-roster with a bare exit 1 and no explanation.
-    read -r -s -p "    value [$state$hint]: " secret || true
+    read -r -s -p "    value [$state]: " secret || true
     echo
     if [ -z "$secret" ]; then
       echo "    skipped"
       continue
     fi
-    if [ "$secret" = "$GENERATE_WORD" ] && [ "$gen" = "-" ]; then
-      # The word was typed at a key that is transcribed rather than minted --
-      # GOOSE_SERVER__SECRET_KEY is the case that matters. Storing the literal
-      # string "generate" as the shared secret would be a silent, very confusing
-      # outage, so this refuses instead.
+    if [ "$secret" = "generate" ]; then
+      # No manifest row on the Mac carries a `generate` command any more — every
+      # remaining generate happens on the BRAIN and is transcribed. The word is
+      # refused at every key: storing the literal string "generate" as a secret
+      # (the goose serve shared secret is the case that matters) would be a
+      # silent, very confusing outage.
       secret=""
-      echo "    refused: $var is transcribed, not minted here — nothing stored"
-      continue
-    fi
-    if [ "$secret" = "$GENERATE_WORD" ]; then
-      # The manifest's `generate` is NEVER evaluated as a command. check-units.sh
-      # constrains it to `openssl rand -hex N`; this reads N back out and calls
-      # openssl itself, so a manifest cannot become a shell.
-      bytes="${gen##* }"
-      case "$bytes" in
-        ''|*[!0-9]*) echo "    refused: '$gen' is not an openssl byte count" >&2; continue ;;
-      esac
-      secret="$(openssl rand -hex "$bytes")"
-      store_secret "$var" "$secret"
-      secret=""
-      # A LENGTH, never a prefix: the count is public (it is in the prompt) and
-      # says the mint worked, which "stored" alone does not.
-      echo "    minted and stored ($((bytes * 2)) hex chars)"
-      stored=$((stored + 1))
+      echo "    refused: keys are transcribed here, not minted — nothing stored"
       continue
     fi
     store_secret "$var" "$secret"

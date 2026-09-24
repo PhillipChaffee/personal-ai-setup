@@ -16,9 +16,8 @@ host: both
 tier: opt_in
 requires: []
 
-# Copied VERBATIM from README.md's budget table. The row bundled Tailscale
-# with ntfy until the automations pivot deleted the ntfy transport (2026-09-23);
-# it now names Tailscale alone.
+# Copied VERBATIM from README.md's budget table. The row names Tailscale
+# alone.
 cost:
   - line: Tailscale (personal plan)
     amount: $0

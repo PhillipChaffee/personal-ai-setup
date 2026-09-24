@@ -149,49 +149,6 @@ your threat model ever grows to include the hosting provider itself, the design 
 a homelab box unchanged — that's the exit path, documented in
 [roadmap.md](roadmap.md).
 
-## Push notifications: never PHI, never account numbers
-
-The one notification channel left is the code-agent buzz, and its rule is
-simple: **no PHI, no amounts, no repo names, no commands.**
-
-### The agent channel (`NTFY_AGENT_TOPIC`) — one choke point
-
-The phone buzzes when a code-agent turn ends, or when an agent is
-parked waiting for permission to push. It is assembled in exactly one function
-— `notify_agent()` in `scripts/vps/code-agent-manager.py` — and nothing else
-may send on it.
-
-Its payload is content-free **by construction**, not by review:
-
-```json
-{ "kind": "ask" | "turn", "handle": "<opaque random>", "count": 1 }
-```
-
-plus a fixed neutral title ("A code agent is waiting on you", "A code agent
-turn ended"). The app fetches the truth back over the tailnet once it is open;
-the push only has to say "go look". Every field an implementer reaches for
-first is contaminated, which is exactly why the list is this short: a chat id
-embeds the repository name (`f"{repo}-{suffix}"` — one private repo name per
-notification), a chat title defaults to the first 80 characters of your own raw
-prompt, and a bash ask's metadata is the literal shell command.
-`scripts/verify/test-code-agent-manager.sh` asserts their absence against the
-recorded bytes rather than against anyone's intentions.
-
-**The bar for this channel is the lock screen, not the app.** A notification
-renders on a *locked* phone, and iOS's Show Previews setting is per-device —
-the brain cannot read it and cannot enforce it. A body that is safe behind Face
-ID is not safe here, and no header we can send makes it so. For the same reason
-a notification is never itself answerable: no Allow/Deny buttons, ever. The tap
-only opens the app, and the app re-reads the real pending ask over the tailnet
-before showing anything actionable.
-
-`NTFY_AGENT_TOPIC` is a secret: it lives in the Keychain (Mac) and
-`/data/secrets.env` (brain), never in this repo. See [public-repo.md](public-repo.md).
-Subscribing a phone to it turns that topic from a read-only leak into a **write
-channel onto your lock screen** (anyone who learns it can plant "code agent
-wants to push to main" there), so rotate it on any suspicion at all — the
-rotation table is in [security.md](security.md).
-
 ## Providers beyond the ones wired in
 
 The bar any future provider must clear —

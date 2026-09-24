@@ -115,14 +115,6 @@ Tunables (optional):
                               the tailnet IP (never set on the brain)
     CODE_AGENT_REAPER_INTERVAL  idle-reaper cadence seconds, default 60
     CODE_AGENT_GITHUB_INTERVAL  github sweep cadence seconds, default 300
-    NTFY_AGENT_TOPIC          the phone's AGENT channel: buzz when a turn ends
-                              or an ask is parked. Empty (the default) disables
-                              notification entirely. An ntfy topic name is a
-                              password in BOTH directions, so subscribing a
-                              phone to this one makes it a write channel onto
-                              a lock screen.
-    NTFY_SERVER               ntfy base URL, default https://ntfy.sh. Self-hosting
-                              later is a variable change, not a code change
 
 Conventions: dataclasses + full annotations, `mypy --strict` clean and
 `ruff check` clean with the entire rule set enabled (mypy.ini, ruff.toml; CI
@@ -207,18 +199,6 @@ GH_PAT = os.environ.get("GITHUB_CODE_AGENT_PAT", "")
 GH_API = os.environ.get("GITHUB_API_BASE", "https://api.github.com")
 ZEN_KEY = os.environ.get("OPENCODE_ZEN_API_KEY", "")
 TOGETHER_KEY = os.environ.get("TOGETHER_API_KEY", "")
-
-# The phone's agent channel (docs/push-notifications.md stage 0). Read by NAME
-# and never logged: the topic IS the credential. Absent = the feature is off,
-# checked at send time rather than at startup so an existing deploy that has
-# never heard of it keeps working unchanged (deploy-vps.sh's required-vars gate
-# is deliberately NOT extended).
-NTFY_AGENT_TOPIC = os.environ.get("NTFY_AGENT_TOPIC", "")
-NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh")
-# The sender runs on the reaper thread, so a stalled ntfy delays idle
-# spin-down. notify_failure() can afford 30s because it runs on a request
-# thread and fires once per incident; this cannot.
-NTFY_TIMEOUT = 5
 
 CONFIG_TEMPLATE = Path(__file__).resolve().parents[2] / "config" / "code-agents" / "opencode.json"
 # The container's standing instructions, rendered beside the config so opencode
@@ -612,52 +592,26 @@ class ReaperMemory:
 
     In memory ON PURPOSE, never in index.json. index.json is guarded by
     `_lock`, which is non-reentrant and has already wedged this process once
-    (see wake_chat's post-mortem); hanging notification bookkeeping off the
+    (see wake_chat's post-mortem); hanging reaper bookkeeping off the
     container-lifecycle lock would be the same class of mistake, and there is
     nothing here worth a disk write.
 
     Empty after a restart is the CORRECT starting point, not merely a
-    tolerable one, and it is asymmetric in exactly the right direction. The
-    unit's ExecStopPost stops every chat container on the way down, which
-    destroys opencode's in-memory pending-ask map — so a manager that has just
-    started is looking at a plane with no parked asks on it and has nothing to
-    re-announce. `armed` is empty too, and an unarmed chat cannot fire, so no
-    phantom "turn finished" is possible on the first pass back either. (The
-    same fact scopes what stage 0 may promise: an ask survives the phone
-    sleeping and survives idle spin-down, but it does not survive a deploy or
-    a crash loop. deploy-vps.sh says so in its own comment.)
-
-    Only `armed` is touched by more than one thread — HTTP handler threads arm
-    it, the reaper drains it — so only it takes `armed_lock`. `armed_lock` is
-    its OWN lock and must never be nested with `_lock` in either order.
+    tolerable one. The unit's ExecStopPost stops every chat container on the
+    way down, which destroys opencode's in-memory pending-ask map — so a
+    manager that has just started is looking at a plane with no parked asks on
+    it, and an empty `blocked` says exactly that. (The same fact scopes what
+    the unit may promise: an ask survives idle spin-down, but it does not
+    survive a deploy or a crash loop. deploy-vps.sh says so in its own
+    comment.)
     """
 
-    #: chat id -> when the manager proxied an accepted prompt for it.
-    armed: dict[str, float] = field(default_factory=dict)
-    armed_lock: threading.Lock = field(default_factory=threading.Lock)
-    #: chat id -> ask ids already announced. Reaper thread only.
-    seen_asks: dict[str, set[str]] = field(default_factory=dict)
-    #: chats that were running at the PREVIOUS pass. Reaper thread only.
-    prev_running: frozenset[str] = frozenset()
     #: chats parked on a permission ask, as of the last completed pass.
     #: Written by the reaper thread, read by admission (admission_count) and
     #: by /api/health. It is REBOUND rather than mutated, so a reader always
     #: sees one whole pass's answer and needs no lock to do it.
     blocked: frozenset[str] = frozenset()
-    #: opaque handle -> the chats it stands for. Nothing redeems these yet —
-    #: stage 3 adds the exchange endpoint the tap needs (§7). Bounded, because
-    #: a map that only grows is a leak dressed as a feature.
-    handles: dict[str, list[str]] = field(default_factory=dict)
 
-    def mint_handle(self, chats: list[str]) -> str:
-        handle = pysecrets.token_urlsafe(12)
-        self.handles[handle] = chats
-        while len(self.handles) > HANDLE_MEMORY:
-            self.handles.pop(next(iter(self.handles)))
-        return handle
-
-
-HANDLE_MEMORY = 64
 
 _reaper_memory = ReaperMemory()
 
@@ -712,12 +666,13 @@ def load_repos() -> dict[str, RepoEntry]:
 #
 #   * nothing under `_lock` reads or writes repos.json, and nothing here
 #     touches index.json, so the two guard disjoint state;
-#   * `ReaperMemory` already records the discipline for a second lock —
-#     `armed_lock` "is its OWN lock and must never be nested with `_lock` in
-#     either order" — and `_repos_lock` joins it under the same rule.
+#   * a second lock needs two writers that actually touch the state. The
+#     reaper's `_reaper_memory.blocked` and the github sweep's snapshot need
+#     none — rebind-only, one writer — but repos.json is read AND written here,
+#     so `_repos_lock` exists.
 #
-# Nothing inside this critical section calls anything that takes `_lock`,
-# `armed_lock`, or `_repos_lock` itself, which is what keeps that rule true
+# Nothing inside this critical section calls anything that takes `_lock`
+# or `_repos_lock` itself, which is what keeps that rule true
 # rather than merely stated. (test-code-agent-manager.sh parks a thread inside
 # the section and asserts `_lock` is still free.)
 
@@ -1561,14 +1516,15 @@ def admission_count(index: Index) -> int:
 
     The alternative bound — an ask older than N minutes stops counting as busy
     — was rejected: it hands the reaper permission to stop a container holding
-    a real ask, which is the exact failure the notification exists to prevent
+    a real ask, which is the exact failure the exemption exists to prevent
     (and pending_permissions() only fans out to RUNNING containers, so the ask
     would vanish from the app at the same moment).
 
     The price is that the number of running containers can exceed MAX_ACTIVE
     by the number of unanswered asks. That is bounded by the number of tasks
     the reader started, it is visible as `blocked` on /api/health, and driving
-    it back to zero promptly is precisely what the buzz is for.
+    it back to zero promptly is what answering the ask does — the app's
+    permission poll is the loop that clears it.
     """
     blocked = _reaper_memory.blocked
     return sum(
@@ -2159,26 +2115,16 @@ def session_state(chat: Chat) -> str:
     return "busy" if ('"busy"' in blob or '"retry"' in blob) else "idle"
 
 
-def notify_new_asks(
-    index: Index,
-    asks: list[dict[str, object]],
-    unreachable: list[str],
-    running: frozenset[str],
-) -> None:
-    """Buzz once for every ask that has not been announced before.
+def record_parked_asks(asks: list[dict[str, object]]) -> None:
+    """Record which chats are parked on a permission ask, as of this pass.
 
-    NEW means "an ask id absent from what we announced last time", keyed on
-    (chat, permission id). The id is opaque server state — treat it as a
-    string, never parse it — and opencode never reuses one, so a set membership
-    test is the whole rule. No quiet window and no coalescing across passes: a
-    blocked agent is doing nothing at all until it is answered.
+    An ask id is opaque server state — treat it as a string, never parse it —
+    and opencode never reuses one. `blocked` is REBOUND whole, so a reader
+    between passes sees the last complete answer rather than half of this one.
 
-    The pruning is the subtle half. A chat only gets to REVISE the set of asks
-    we believe are parked on it if it actually answered this pass — a chat in
-    `unreachable`, or one whose container is not running, said nothing, and
-    dropping its ids on that silence would re-announce every one of them next
-    pass. A chat gone from the index entirely is dropped, or the map grows
-    forever.
+    A chat that is unreachable this pass contributes no rows and so drops out
+    of `blocked` — which errs toward ENFORCING the MAX_ACTIVE cap rather than
+    toward exempting a container the manager cannot currently see.
     """
     by_chat: dict[str, set[str]] = {}
     for row in asks:
@@ -2186,86 +2132,9 @@ def notify_new_asks(
         if isinstance(cid, str) and isinstance(ask_id, str) and ask_id:
             by_chat.setdefault(cid, set()).add(ask_id)
 
-    seen = _reaper_memory.seen_asks
-    for cid in list(seen):
-        if cid not in index.chats:
-            seen.pop(cid, None)
-        elif cid in running and cid not in unreachable:
-            seen[cid] &= by_chat.get(cid, set())
-
-    fresh = 0
-    chats: list[str] = []
-    for cid, ask_ids in sorted(by_chat.items()):
-        chat = index.chats.get(cid)
-        # A probe chat is check-code-agents.sh --probe and the verify harness:
-        # unattended verification, by definition nobody's pocket.
-        if chat is None or chat.probe:
-            continue
-        new = ask_ids - seen.get(cid, set())
-        seen.setdefault(cid, set()).update(ask_ids)
-        if new:
-            fresh += len(new)
-            chats.append(cid)
-
     # The MAX_ACTIVE exemption (admission_count), off the same fan-out, so
     # there is one definition of "parked on an ask" rather than two that drift.
-    # A chat that would not answer this pass contributes no rows and so is
-    # absent here — which errs toward ENFORCING the cap rather than toward
-    # exempting a container the manager cannot currently see.
     _reaper_memory.blocked = frozenset(by_chat)
-    if fresh:
-        notify_agent("ask", fresh, chats)
-
-
-def notify_finished_turns(
-    index: Index, status: dict[str, str], running: frozenset[str], sampled_at: float,
-) -> None:
-    """Buzz once for every chat whose turn has ended since we armed it.
-
-    NOT a busy->idle edge, which is the tempting reading and is wrong twice
-    over at a 60-second sampling interval: a turn that starts and finishes
-    between two samples is never observed busy, so it produces no edge and no
-    buzz, and a container hiccup that recovers produces an edge with no turn
-    behind it. Instead the manager ARMS a chat when it proxies an accepted
-    prompt — every prompt goes through proxy(), because the chat port is
-    published on 127.0.0.1 only — and fires when that armed chat reports idle.
-    A between-samples turn is still armed at the next sample, so it still
-    buzzes; and one prompt yields at most one buzz by construction, which is
-    why a five-tool turn needs no debounce timer to stay one notification.
-
-    Three things withhold the buzz:
-      * the chat was not running at BOTH this sample and the last one, which
-        covers a user Stop, an idle spin-down, a delete and a crash;
-      * the prompt was accepted less than ARM_SETTLE_SECONDS ago, because
-        prompt_async returns before the server has necessarily marked the
-        session busy, and reading that gap as "already finished" would buzz
-        the instant the work started;
-      * `status` is anything but the literal "idle" (see session_state).
-    An abort disarms without firing: a cancelled turn ended because you said
-    so, and it is indistinguishable from a natural completion on the wire.
-    """
-    # AGAINST `sampled_at`, NOT `time.time()`. The `status` map judged below was
-    # taken at the top of the pass, before a `pending_permissions` fan-out that
-    # can block a full 5s and before an ntfy POST. Measuring arm->NOW instead of
-    # arm->SAMPLE lets a slow pass declare a turn finished using a status read
-    # before that turn began: sample X idle at T0, press send at T0+1, notify at
-    # T0+25, and 24 >= 5 fires "turn ended" 24 seconds INTO a twenty-minute run.
-    # One bug, two symptoms — it also pops the arm, so the real ending is lost
-    # and never buzzes at all.
-    ended: list[str] = []
-    with _reaper_memory.armed_lock:
-        for cid, armed_at in sorted(_reaper_memory.armed.items()):
-            if cid not in index.chats or cid not in running:
-                _reaper_memory.armed.pop(cid, None)
-                continue
-            if sampled_at - armed_at < ARM_SETTLE_SECONDS:
-                continue
-            if status.get(cid) != "idle" or cid not in _reaper_memory.prev_running:
-                continue
-            _reaper_memory.armed.pop(cid, None)
-            ended.append(cid)
-    if ended:
-        notify_agent("turn", len(ended), ended)
 
 
 def spin_down_idle(index: Index, status: dict[str, str], running: frozenset[str]) -> None:
@@ -2283,28 +2152,15 @@ def spin_down_idle(index: Index, status: dict[str, str], running: frozenset[str]
 
 
 def reaper_pass() -> None:
-    """One sweep: sample every running chat once, notify, then spin down.
+    """One sweep: sample every running chat once, then spin down and record.
 
-    Sampling before notifying and reaping is what makes the pass cheap: the
+    Sampling before reaping and recording is what makes the pass cheap: the
     container states, the /session/status reads and the permission fan-out are
     each done ONCE and shared. Every one of those goes direct to
     127.0.0.1:<chat.port>, never through proxy() — proxying would call
     touch_maybe() and pin every container open, which is the failure mode the
     whole idle spin-down design exists to avoid.
     """
-    # STAMPED BEFORE THE SAMPLE, NOT AFTER. `sampled_at` answers "the readings
-    # below are no older than when?", and only a stamp taken first can. Taken
-    # after, it dates the readings to the END of a walk that is `container_state`
-    # plus `session_state` per chat — each a subprocess or a socket with
-    # timeout=5, serially, over a running set that is NOT bounded by MAX_ACTIVE
-    # because admission_count exempts blocked chats. Two wedged siblings put ten
-    # seconds between the first chat's reading and the stamp, which is larger
-    # than ARM_SETTLE_SECONDS, so a turn armed one second after that reading
-    # looked settled: notify_finished_turns buzzed "turn ended" nine seconds
-    # INTO the turn and popped the arm, so the real ending never buzzed at all.
-    # Stamping first can only ever be too early, and too early merely withholds
-    # a buzz until the next pass — which is what the withhold is for.
-    sampled_at = time.time()
     index = Index.load()
     states = {cid: container_state(cid) for cid in index.chats}
     running = frozenset(cid for cid, state in states.items() if state == "running")
@@ -2316,48 +2172,33 @@ def reaper_pass() -> None:
     # being the one that matters. Uncaught it would kill the reaper THREAD, not
     # just the pass, and spin-down would stop forever while every lock-free
     # route kept answering. On failure the asks are simply unknown this pass:
-    # notify_new_asks is skipped rather than fed an empty map, because it ends
-    # by assigning `_reaper_memory.blocked` and an empty map there would revoke
-    # every blocked chat's MAX_ACTIVE exemption on a fan-out hiccup.
+    # record_parked_asks is skipped rather than fed an empty map, because it
+    # ends by assigning `_reaper_memory.blocked` and an empty map there would
+    # revoke every blocked chat's MAX_ACTIVE exemption on a fan-out hiccup.
     asks: list[dict[str, object]] | None = None
-    unreachable: list[str] = []
     try:
-        asks, unreachable = pending_permissions([index.chats[cid] for cid in sorted(running)])
+        asks, _ = pending_permissions([index.chats[cid] for cid in sorted(running)])
     except Exception as e:  # noqa: BLE001 - an ask probe must never cost a spin-down
         log(f"reaper ask probe failed: {type(e).__name__}: {e}")
 
-    # SPIN DOWN BEFORE NOTIFYING, and never let notifying break the pass.
+    # SPIN DOWN FIRST, and never let the ask bookkeeping break the pass.
     #
-    # The reaper's real job is stopping idle containers; the buzz is a courtesy
-    # on top of it. Ordered the other way, an ntfy outage delayed every
-    # spin-down — and worse, `notify_agent` suppressed only OSError and
-    # HTTPException, while a malformed NTFY_SERVER raises ValueError from
-    # `url.port` and a non-ASCII topic raises UnicodeEncodeError from
-    # putrequest. Neither was caught there and both were caught by the loop, so
-    # the pass logged "reaper error" and returned BEFORE spin_down_idle — on
-    # every pass, forever. Idle spin-down would stop dead while every lock-free
-    # route kept answering, which is precisely the shape of failure this file
-    # has already shipped once.
+    # The reaper's real job is stopping idle containers; the parked-ask record
+    # is bookkeeping on top of it. Every step after the sample is wrapped so
+    # nothing in the pass can prevent the spin-down from running — precisely
+    # the shape of failure this file has already shipped once.
     #
-    # LOGGED, NEVER SUPPRESSED SILENTLY. `notify_failure` does not suppress at all
-    # (it is a log line now); this catches Exception, which is a wider net and
-    # so has to say when
-    # it caught something. A blanket silent suppress would let the buzz die
-    # permanently with no log line and no health field — and worse, an early
-    # raise inside notify_new_asks leaves `_reaper_memory.blocked` frozen at the
-    # last good pass, and `blocked` is the MAX_ACTIVE exemption that stops two
+    # LOGGED, NEVER SUPPRESSED SILENTLY. record_parked_asks catches Exception,
+    # which is a wide net and so has to say when it caught something. A blanket
+    # silent suppress would leave `_reaper_memory.blocked` frozen at the last
+    # good pass, and `blocked` is the MAX_ACTIVE exemption that stops two
     # unanswered asks taking the whole code plane offline.
     spin_down_idle(index, status, running)
     if asks is not None:
         try:
-            notify_new_asks(index, asks, unreachable, running)
-        except Exception as e:  # noqa: BLE001 - a buzz must never cost a spin-down
-            log(f"reaper notify failed (asks): {type(e).__name__}: {e}")
-    try:
-        notify_finished_turns(index, status, running, sampled_at)
-    except Exception as e:  # noqa: BLE001 - a buzz must never cost a spin-down
-        log(f"reaper notify failed (turns): {type(e).__name__}: {e}")
-    _reaper_memory.prev_running = running
+            record_parked_asks(asks)
+        except Exception as e:  # noqa: BLE001 - the ask record must never cost a spin-down
+            log(f"reaper ask record failed: {type(e).__name__}: {e}")
 
 
 def reaper_loop() -> None:
@@ -2380,7 +2221,7 @@ def reaper_loop() -> None:
 # read.
 #
 # CONCURRENCY, stated once and load-bearing. This thread takes NO LOCK — not
-# `_lock`, not `armed_lock` — and neither does the route that reads it. It
+# `_lock` — and neither does the route that reads it. It
 # publishes by REBINDING `_github_memory.snapshot`: one attribute store of one
 # frozen object, so a reader that binds it into a local sees exactly one pass's
 # answer and can never see half of one. There is no lock ORDER to get wrong here
@@ -2614,8 +2455,9 @@ def github_pass() -> None:
         except Exception as e:  # noqa: BLE001 - one chat may never cost the pass
             # gh() converts OSError and HTTPException, but not everything a
             # hand-edited index.json can cause: a non-ASCII branch raises
-            # UnicodeEncodeError out of http.client's putrequest, which is the
-            # identical escape the ntfy sender already shipped once.
+            # UnicodeEncodeError out of http.client's putrequest — the request
+            # line is built before any conversion, so nothing downstream catches
+            # it for you.
             unreachable.add(cid)
             failures.append(f"{cid}: {type(e).__name__}: {e}")
             continue
@@ -2669,151 +2511,12 @@ def github_loop() -> None:
         time.sleep(GITHUB_INTERVAL)
 
 
-# The ONE place an agent notification is assembled (docs/privacy.md). Two
-# kinds, and only two. The ask is `high` because a blocked agent is doing
-# nothing at all until it is answered; a turn end is ordinary news.
-#
-# "a turn ended", not "done": stage 0 cannot tell a clean completion from a
-# provider error or a context overflow without reading message content
-# server-side, which is exactly what it must not do. The honest title is the
-# one that does not claim success.
-NOTIFY_TITLES = {
-    "ask": ("A code agent is waiting on you", "high"),
-    "turn": ("A code agent turn ended", "default"),
-}
-# The prompt and abort subpaths, as they arrive at proxy(). Matched against the
-# subpath alone, never the query string.
-PROMPT_PATH = re.compile(r"^/session/[^/]+/prompt(_async)?$")
-ABORT_PATH = re.compile(r"^/session/[^/]+/abort$")
-# How long after an accepted prompt the chat must be armed before an "idle"
-# reading is believed. prompt_async answers 204 and the server marks the
-# session busy a moment later; without this floor a sample landing in that gap
-# would report the turn finished before it began.
-ARM_SETTLE_SECONDS = 5.0
-
-
-def notify_agent(kind: str, count: int, chats: list[str]) -> None:
-    """Buzz the phone. Content-free BY CONSTRUCTION — a kind, a handle, a count.
-
-    Nothing derived from the work travels. The traps are specific and every
-    one of them is a field a careful implementer reaches for first:
-
-      * `chat.id` is `re.sub(r"[^a-zA-Z0-9-]", "-", f"{repo}-{suffix}")` —
-        it EMBEDS the repository name, one private repo per notification.
-      * `chat.title` defaults to `(task or chat_id)[:80]`: the first eighty
-        characters of the reader's own prompt, verbatim.
-      * an ask's `metadata` is the tool's arguments — for a bash ask, the
-        literal shell command.
-
-    So the wire gets `{"kind": ..., "handle": ..., "count": N}` and a fixed
-    title, and the app fetches the truth back over the tailnet once it is open.
-    That is sufficient, not a compromise: /api/permissions is already the
-    app's authority and it reconciles on every poll. The bar here is the LOCK
-    SCREEN, not the app — a body that is safe behind Face ID is not safe
-    rendered on a locked phone, and no header we can send changes that.
-
-    `handle` is opaque random, minted per notification and kept only in
-    memory; nothing redeems it yet (stage 3 adds the exchange endpoint, and
-    the deep link it needs is dead today). It is here so the payload the app
-    will one day parse is the payload shipping now.
-
-    Delivery never touches the work — notify.sh's rule, inherited verbatim.
-    Everything is suppressed and logged; a dead ntfy costs a buzz, never a
-    turn, an ask or a spin-down. Deliberately NOT notify.sh itself: that
-    script attaches an `Email:` header whenever NTFY_EMAIL is set, which would
-    burn the ~5/day free-tier forwarding cap the failure-alert backstop
-    depends on.
-    """
-    if not NTFY_AGENT_TOPIC or count <= 0:
-        return
-    title, priority = NOTIFY_TITLES[kind]
-    body = json.dumps({"kind": kind, "handle": _reaper_memory.mint_handle(chats), "count": count})
-    # OFF THE REAPER THREAD. `NTFY_TIMEOUT` does not bound this call: http.client
-    # hands the timeout to socket.create_connection, which calls getaddrinfo()
-    # BEFORE applying it, so a stalled resolver blocks for the resolver's own
-    # budget (glibc: timeout x attempts x nameservers, tens of seconds); and once
-    # connected the timeout applies INDEPENDENTLY to connect, send, getresponse
-    # and read, so one POST can reach ~20s and a pass makes two.
-    #
-    # The payload and the handle are computed on THIS thread, so what is sent is
-    # decided by the pass that decided to send it. Only the socket work moves.
-    # Fire and forget: nothing reads the result, a daemon thread cannot hold the
-    # process open, and the alternative — joining with a timeout — reintroduces
-    # the stall it exists to remove.
-    threading.Thread(
-        target=_post_ntfy,
-        args=(kind, title, priority, body),
-        daemon=True,
-    ).start()
-
-
-def _post_ntfy(kind: str, title: str, priority: str, body: str) -> None:
-    """Send one notification. The socket half of `notify_agent`, off its thread.
-
-    CATCHES Exception, and it has to. This runs on a daemon thread, where
-    anything uncaught goes to threading.excepthook and prints a full traceback
-    to stderr and so to journald. Two live paths escape a narrower net:
-    `url.port` raises ValueError on a malformed NTFY_SERVER, and putrequest
-    raises UnicodeEncodeError on a non-ASCII topic — and that one's message
-    quotes the offending character of the topic AND its offset, verbatim, in
-    the log the topic must stay out of. Narrowing this to named types is what
-    puts the secret in the log.
-    """
-    url = urlparse(NTFY_SERVER)
-    conn_cls = http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection
-    try:
-        conn = conn_cls(url.hostname or "", url.port, timeout=NTFY_TIMEOUT)
-        conn.request(
-            "POST",
-            f"{url.path.rstrip('/')}/{NTFY_AGENT_TOPIC}",
-            body.encode(),
-            {"Title": title, "Priority": priority, "Content-Type": "application/json"},
-        )
-        resp = conn.getresponse()
-        resp.read()
-        status = resp.status
-        conn.close()
-    except Exception as e:  # noqa: BLE001 - see the docstring: a narrower net logs the topic
-        # The exception TYPE only: an ntfy error string can quote the request
-        # line, and the topic is in the request line. The topic is a password.
-        log(f"agent notification lost ({kind}): {type(e).__name__}")
-        return
-    if status >= HTTP_BAD_REQUEST:
-        log(f"agent notification refused ({kind}): HTTP {status}")
-
-
-def arm_from_proxy(chat: Chat, subpath: str, status: int) -> None:
-    """Note that a turn was started (or cancelled) on this chat.
-
-    Called from a request thread with the upstream's answer in hand, so only a
-    prompt the chat's own server ACCEPTED arms it — a prompt it rejected with a
-    400 never started a turn, and arming on it would fire "a turn ended" at the
-    next sample. Probe chats are never armed at all: they are unattended
-    verification runs, and nobody is waiting on one.
-
-    Takes `armed_lock` and nothing else. It must never be reached while `_lock`
-    is held, and it never is: proxy() has released it by here.
-    """
-    if chat.probe or status >= HTTP_BAD_REQUEST:
-        return
-    if PROMPT_PATH.match(subpath):
-        with _reaper_memory.armed_lock:
-            _reaper_memory.armed[chat.id] = time.time()
-    elif ABORT_PATH.match(subpath):
-        # Stopping the turn yourself is not news; you are holding the phone.
-        # On the wire an abort and a natural completion are byte-identical, so
-        # this is the only chance to tell them apart.
-        with _reaper_memory.armed_lock:
-            _reaper_memory.armed.pop(chat.id, None)
-
-
 def notify_failure(reason: str) -> None:
     """Record a failure in the journal — the operational record.
 
-    The ntfy failure channel (scripts/common/notify.sh) left the repo with the
-    automations removal (2026-09-23); what remains is the log, which journald
-    keeps and `journalctl -u code-agent-manager` reads. Component + failure
-    class only — never model output.
+    What remains is the log, which journald keeps and
+    `journalctl -u code-agent-manager` reads. Component + failure class only —
+    never model output.
     """
     log(f"FAILURE (high): {reason}")
 
@@ -3262,7 +2965,6 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(502, {"error": f"chat unreachable: {e}"})
             return
 
-        arm_from_proxy(chat, subpath, resp.status)
         self.send_response(resp.status)
         for k, v in resp.getheaders():
             if k.lower() in HOP_HEADERS or k.lower() == "content-length":

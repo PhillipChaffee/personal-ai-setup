@@ -126,9 +126,7 @@ agent@brain$ nano /data/secrets.env
 ```
 
 Fill every variable with the real values from your Keychain/notes:
-`OPENCODE_ZEN_API_KEY`, `TOGETHER_API_KEY`, `TAVILY_API_KEY` (optional),
-`NTFY_AGENT_TOPIC` (optional — the code-agent buzz channel,
-[10-accounts.md §6](10-accounts.md#6-an-ntfy-topic-for-code-agent-buzzes-optional)) — and
+`OPENCODE_ZEN_API_KEY`, `TOGETHER_API_KEY`, `TAVILY_API_KEY` (optional) — and
 generate the one new secret now:
 
 ```bash

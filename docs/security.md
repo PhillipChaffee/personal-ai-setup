@@ -24,15 +24,6 @@ Companion to [privacy.md](privacy.md) (which providers may see what) and
 - **A compromised Mac.** Client devices hold pairing credentials and tailnet
   membership by design; device security (FileVault, OS updates) is assumed, not
   provided by this repo.
-- **The lock screen, once `NTFY_AGENT_TOPIC` is set.** Subscribing a phone to the
-  code-agent channel puts a rendering surface outside the tailnet and outside the app
-  container: notifications arrive on a *locked* screen, and iOS's Show Previews setting is
-  per-device and unreadable from the brain. This is accepted only because the payload is
-  content-free by construction — a kind, an opaque handle and a count, never a repo name,
-  a chat title or a tool argument ([privacy.md](privacy.md)). The topic name is also a
-  **write** capability in that direction: anyone who learns it can plant a plausible-looking
-  notification there, which is why the notification is never itself answerable and why the
-  app re-reads the real ask over the tailnet before offering any button.
 
 ## Network exposure: zero public inbound ports
 
@@ -137,8 +128,7 @@ that chat's own server on its own loopback and nothing else; the gateway passwor
 never enters a container. So the callers of the write route are the ones that were
 always meant to hold that password, and the route needs **no second secret and no
 out-of-band confirmation** — the two compensating controls it would otherwise have
-required. (An `ntfy` confirmation was never available anyway: a notification is
-never itself answerable, [privacy.md](privacy.md).)
+required.
 
 **Residual, and it is the same one the proxy has.** `authed()` is still a single
 shared secret with no per-chat identity, so anything *else* holding it — the phone
@@ -305,7 +295,6 @@ new → update stores (Keychain on Mac, `/data/secrets.env` on brain) → restar
 | `TOGETHER_API_KEY` | Together dashboard → API keys | Keychain on the Mac and `/data/secrets.env` on the brain |
 | `GOOSE_SERVER__SECRET_KEY` | Generate locally (`openssl rand -hex 32`) | Update secrets.env, restart goose-serve, re-enter on the Desktop client |
 | Tailscale | Admin console → Machines / Keys | Auth keys are one-time (bootstrap); rotate device keys by re-authing; remove stale devices |
-| `NTFY_AGENT_TOPIC` | Pick a new random topic | The code-agent buzz channel. Update secrets.env + Keychain, `sudo systemctl restart code-agent-manager`, then re-subscribe the phone's ntfy app to the new topic. Unlike every other row here this is not only a read credential: whoever holds it can also SEND, i.e. put a notification on your lock screen, so rotate on any suspicion at all. Removing the phone from the tailnet does **not** revoke it — delivery goes over the public internet, never the tailnet. Leaving it empty turns the feature off outright |
 | `OPENCODE_SERVER_PASSWORD` | Generate locally (`openssl rand -hex 32`) | Update secrets.env, `sudo systemctl restart code-agent-manager`, re-enter in the app's Code settings. **No `podman rm` by hand.** Since #115 a container's password is `HMAC-SHA256(this value, "code-agent/<epoch>/<chat-id>")`, so changing this changes every derived secret; container env is baked at creation and `podman start` reuses it, so a container from before the rotation can only be *rebuilt*, never fixed. It rebuilds itself lazily, per chat, at the first wake or request after the restart: the container answers the manager 401, the manager rebuilds it from the volume and retries, and the caller sees a normal 200. Note the restart alone does NOT do it — the startup sweep only sees a bumped `CRED_EPOCH`, which a rotation does not move — so a chat you never open stays on the old secret until you open it, which is harmless. Every agent that ran before #115 held the OLD value, so rotate when deploying it |
 | `GITHUB_CODE_AGENT_PAT` | GitHub → Settings → Developer settings → Fine-grained tokens | Keep scope: allowlisted repos only, Contents + Pull requests. Update secrets.env, restart code-agent-manager; new chats get the new token immediately, existing chats after a container recreate (`podman rm` + wake, volume preserved) |
 | LUKS passphrase | `sudo cryptsetup luksChangeKey /dev/disk/by-id/<volume>` | Update the password manager first; test unlock before closing the session |

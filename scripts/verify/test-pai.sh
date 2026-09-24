@@ -2732,10 +2732,9 @@ fi
 # first acceptance criterion.
 WANT_MAC_BASE="OPENCODE_ZEN_API_KEY TOGETHER_API_KEY"
 # Every name the catalog can put in the Keychain, one add-on at a time. Same
-# shape the pre-pivot catalog had; four of its ten names (both GOOGLE_OAUTH_*,
-# NTFY_EMAIL and NTFY_TOPIC) left with the automations removal, and
-# TELEGRAM_BOT_TOKEN with the telegram gateway.
-WANT_MAC_ALL="GOOSE_SERVER__SECRET_KEY NTFY_AGENT_TOPIC OPENCODE_ZEN_API_KEY \
+# shape the pre-pivot catalog had, halved by the automations pivot (five of its
+# ten names left); TELEGRAM_BOT_TOKEN left with the telegram gateway.
+WANT_MAC_ALL="GOOSE_SERVER__SECRET_KEY OPENCODE_ZEN_API_KEY \
 TAVILY_API_KEY TOGETHER_API_KEY"
 # The three deploy-vps.sh preflight hard-requires.
 WANT_VPS_BASE="GOOSE_SERVER__SECRET_KEY OPENCODE_ZEN_API_KEY TOGETHER_API_KEY"
@@ -2757,12 +2756,23 @@ names_are() { # names_are <label> <wanted> <flags...>
 
 names_are "secrets --host mac is exactly the two names a base install needs" \
   "$WANT_MAC_BASE" --host mac
-names_are "secrets --host mac --all is the whole catalog's five" \
+names_are "the whole catalog is four names" \
   "$WANT_MAC_ALL" --host mac --all
 names_are "secrets --host vps is deploy-vps.sh's three" \
   "$WANT_VPS_BASE" --host vps
 names_are "an add-on selection is that unit's names only, not the base ones" \
-  "NTFY_AGENT_TOPIC" --host mac --units code-agents
+  "TAVILY_API_KEY" --host mac --units connectors
+# code-agents keeps NOTHING in the Keychain since the agent-buzz channel left:
+# a rowless add-on is its own golden, and it lands here rather than inside the
+# names_are family for the same three-channels reason as base-toolchain below.
+EMPTY_CA_RC=0
+EMPTY_CA_OUT="$(pai secrets "$CLEAN" --host mac --units code-agents \
+  2>"$WORK/code-agents.err")" || EMPTY_CA_RC=$?
+if [ "$EMPTY_CA_RC" = "0" ] && [ -z "$EMPTY_CA_OUT" ] && [ ! -s "$WORK/code-agents.err" ]; then
+  pass "an add-on with no Keychain rows is an empty roster, exit 0"
+else
+  fail "code-agents mac roster: rc=$EMPTY_RC out=$EMPTY_CA_OUT"$'\n'"$(cat "$WORK/code-agents.err")"
+fi
 # THE ONE GOLDEN HERE WHOSE EXPECTED VALUE IS ALSO THE FAILURE VALUE, so it does
 # not go through names_are: secret_names discards the exit code and everything on
 # stderr, and "base-toolchain keeps nothing in the Keychain" and "the command
@@ -2851,17 +2861,16 @@ with contextlib.redirect_stdout(buf):
     rc = mod.secrets(Path(work) / "norepo", ["--host", "mac"])
 assert (rc, buf.getvalue()) == (0, ""), (rc, buf.getvalue())
 
-# The generate column is the command keychain-secrets.sh parses N out of. Read
-# from the real tree, and asserted against a HAND-TYPED string: the script does
-# `bytes="${gen##* }"` and runs `openssl rand -hex "$bytes"`, so a manifest that
-# said `openssl rand 12` (no -hex) would mint raw bytes into a shell variable.
+# The generate column survives on the VPS host — it is what the human runs over
+# SSH. Read from the real tree, and asserted against a HAND-TYPED string so a
+# manifest that dropped the `-hex` would be caught here.
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
-    rc = mod.secrets(Path(repo_root), ["--host", "mac", "--units", "code-agents"])
+    rc = mod.secrets(Path(repo_root), ["--host", "vps", "--units", "brain"])
 rows = dict(line.split("\t", 1) for line in buf.getvalue().splitlines())
 assert rc == 0, rc
-assert rows["NTFY_AGENT_TOPIC"].split("\t")[1] == "openssl rand -hex 12", \
-    rows["NTFY_AGENT_TOPIC"]
+assert rows["GOOSE_SERVER__SECRET_KEY"].split("\t")[1] == "openssl rand -hex 32", \
+    rows["GOOSE_SERVER__SECRET_KEY"]
 PY
 if OUT="$("${PAI_PY[@]}" "$WORK/probe-secrets.py" "$DOCTOR" "$WORK" "$REPO_ROOT" 2>&1)"; then
   pass "secrets probe: an empty catalog, and the generate column's exact shape"
@@ -3482,27 +3491,12 @@ rm -f "$ZSHRC"
 cp "$KC_WORK/baseline" "$ZSHRC"
 chmod 644 "$ZSHRC"
 
-# ---- minting ----
-# NTFY_AGENT_TOPIC is minted ON THE MAC (10-accounts.md §6 step 1), so this is a
-# real path, not a fixture-only branch. code-agents is picked here because it is
-# the smaller roster: NTFY_AGENT_TOPIC is its only Keychain row, and it is the
-# row that carries the generate command.
-: >"$KC_LOG"
-printf 'generate\n' >"$KC_WORK/answers-mint"
-kc_prompted "$KC_WORK/answers-mint" --units code-agents
-if grep -qF "add s=personal-ai a=NTFY_AGENT_TOPIC len=24" "$KC_LOG"; then
-  pass "typing \"generate\" mints hex 12 (24 chars) and stores it without printing it"
-else
-  fail "the mint did not reach the keychain as 24 chars:"$'\n'"$(cat "$KC_LOG")"$'\n'"$KC_OUT"
-fi
-case "$KC_OUT" in
-  *"minted and stored (24 hex chars)"*) pass "the mint reports a LENGTH, never a prefix" ;;
-  *) fail "the mint said something else:"$'\n'"$KC_OUT" ;;
-esac
-
-# The same word at a key the manifest says is TRANSCRIBED must be refused:
-# storing the literal "generate" as the goose serve shared secret would be a
-# silent outage, and minting a fresh one would unpair the client.
+# ---- the mint word is refused everywhere ------------------------------------
+# Nothing on the Mac mints any more: no manifest row carries a `generate`
+# command on this host (the agent-buzz topic was the last one, and it left with
+# the agent-buzz channel). The word must store nothing at any key — storing the
+# literal string "generate" as the goose serve shared secret would be a silent
+# outage, and minting a fresh one would unpair the client from the brain.
 : >"$KC_LOG"
 printf 'generate\n' >"$KC_WORK/answers-refuse"
 kc_prompted "$KC_WORK/answers-refuse" --units brain
@@ -3512,7 +3506,7 @@ else
   pass "\"generate\" at a transcribe-only key stores nothing"
 fi
 case "$KC_OUT" in
-  *"is transcribed, not minted here"*) pass "and it says why" ;;
+  *"transcribed here, not minted"*) pass "and it says why" ;;
   *) fail "the refusal was silent:"$'\n'"$KC_OUT" ;;
 esac
 

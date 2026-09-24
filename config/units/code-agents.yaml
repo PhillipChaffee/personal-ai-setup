@@ -73,29 +73,6 @@ secrets:
       /data/code-agents/repos.json ONLY, permissions Contents + Pull requests
       (read/write)
     generate: null
-  - key: NTFY_AGENT_TOPIC
-    # The agent channel, published by code-agent-manager.py directly. Leave it
-    # empty and the feature is simply off.
-    store: vps
-    secret: true
-    optional: true
-    prompt: >-
-      SECOND ntfy topic for code-agent buzzes — TRANSCRIBE the value minted on
-      the Mac; never the same value as any other topic
-    generate: null
-  # The Mac half. Nothing on the Mac READS this one; the Keychain is where the
-  # human keeps the value they type into the phone's ntfy app, which is what
-  # docs/privacy.md already says. It is minted on the Mac in Phase 1
-  # (10-accounts.md §6a), so this is the row that carries the generate command
-  # and the brain's row above transcribes it.
-  - key: NTFY_AGENT_TOPIC
-    store: mac_keychain
-    secret: true
-    optional: true
-    prompt: >-
-      SECOND ntfy topic, the one the phone subscribes to for code-agent buzzes;
-      mint one with openssl rand -hex 12
-    generate: openssl rand -hex 12
 
 owns:
   - {kind: repo_file, target: config/code-agents/Containerfile}

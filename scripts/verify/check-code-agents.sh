@@ -275,11 +275,8 @@ if [ "$PROBE" = "yes" ] && [ -n "$AUTH" ]; then
     CN="code-agent-$CID"
 
     # Minimized environment: none of the stack's other secrets may exist.
-    # NTFY_AGENT_TOPIC is on this list for a sharper reason than the rest. It is
-    # a SEND capability onto a lock screen, so an agent that could read it out
-    # of its own environment could notify its owner in its owner's voice.
     LEAKED=""
-    for var in NTFY_AGENT_TOPIC GOOSE_SERVER__SECRET_KEY OPENCODE_ZEN_API_KEY; do
+    for var in GOOSE_SERVER__SECRET_KEY OPENCODE_ZEN_API_KEY; do
       if podman exec "$CN" sh -c "printenv $var" >/dev/null 2>&1; then LEAKED="$LEAKED $var"; fi
     done
     if [ -z "$LEAKED" ]; then
@@ -312,9 +309,9 @@ if [ "$PROBE" = "yes" ] && [ -n "$AUTH" ]; then
     # ---- the sandbox probes (issue #17 B1/B5) ------------------------------
     # SOURCED HERE, NOT AT THE TOP, for two reasons. It is needed only on the
     # --probe path, and a `.` beside lib.sh would renumber every line below it
-    # — the manifests cite this file BY LINE (config/units/{ntfy-alerts,
-    # telegram-gateway,life-vault}.yaml), and those citations are already stale
-    # by one carve. Everything this section adds is below the lines they name.
+    # — the manifests cite this file BY LINE (config/units/{brain,
+    # code-agents}.yaml), and those citations are already stale by one carve.
+    # Everything this section adds is below the lines they name.
     #
     # Until this block existed, B1's three named properties were asserted by
     # nothing: "share" matched only the auth.json path above, external_directory
@@ -429,7 +426,8 @@ cat <<'EOF'
       can make it true. `GET /api/pulls` reports agent_authored per pull, which
       is how you find out it stopped happening.
   [ ] Notification: GitHub's own PR notification email arrives (this stack
-      sends no PR email of its own); a forced failure alerts via ntfy.
+      sends no PR email of its own); a forced failure is journaled by the
+      manager (notify_failure), which `journalctl -u code-agent-manager` reads.
   [ ] Out-of-workspace read: ask a chat to read /etc/hostname — the
       external_directory=deny probe proves the policy is LOADED, only a real
       turn proves it is ENFORCED.
