@@ -88,16 +88,3 @@ pattern. What remains per provider is picking a server that clears
 the bar, a privacy.md policy row, a `docs/setup/3x-<provider>.md` runbook,
 and a check-mcp smoke test. Trigger: the day a real second provider joins
 your life (a work M365 tenant, a Fastmail migration) — not before.
-
-## Optional: self-hosted ntfy
-
-The public ntfy.sh server sees your notification traffic and rate-limits
-topics; the topic name is the only secret. Self-hosting ntfy on the brain
-(binary or container, behind Tailscale) keeps notification **content** entirely
-on your infrastructure and removes rate limits. One honest caveat from the ntfy
-docs: **instant** iOS delivery still requires forwarding poll requests through
-the central ntfy.sh server because of iOS background restrictions — so
-self-hosting improves content privacy but doesn't fully cut the third party out
-on iOS. Since the content-free push rule (`docs/privacy.md`) already guarantees
-nothing sensitive transits ntfy.sh, this is a nice-to-have, not a gap. Do it if
-notification volume grows.

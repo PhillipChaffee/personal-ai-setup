@@ -31,8 +31,7 @@ checklist you run before flipping visibility.
   `*token*.json`, OpenCode's `auth.json`, `*.tfstate*`, `*.tfvars`, `.terraform/`,
   SSH/TLS private keys.
 - **Identity and location**: your real email address, phone number, tailnet name or
-  `*.ts.net` hostnames, Tailscale IPs, the **ntfy topic name** (it is effectively a
-  password).
+  `*.ts.net` hostnames, Tailscale IPs.
 - **Life data**: `sessions.db` or session
   exports, Goose memory files, logs containing chat content.
 
@@ -93,11 +92,8 @@ git grep -nIE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}' \
 git grep -nIE '[A-Za-z0-9-]+\.ts\.net' | grep -vE '<your-tailnet>|example-tailnet'
 git grep -nIE '\b100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]{1,3}\.[0-9]{1,3}\b'
 
-# ntfy topics written as literals instead of $NTFY_AGENT_TOPIC
-git grep -nIE 'ntfy\.sh/[A-Za-z0-9_-]+' | grep -vE '\$NTFY_AGENT_TOPIC|<your'
-
 # one pass over full history for the same shapes (-i: placeholders vary in case)
-git log --all -p | grep -naiE '\.ts\.net|ntfy\.sh/[a-z0-9]|tskey-' | grep -vi '<your' | head
+git log --all -p | grep -naiE '\.ts\.net|tskey-' | grep -vi '<your' | head
 ```
 
 **3. Confirm no sensitive file is tracked** (the `.example` files are supposed to
@@ -138,7 +134,7 @@ gh repo edit <owner>/personal-ai-setup --visibility public \
 
 ## Ongoing discipline
 
-- New scripts and docs use placeholders from day one; write `$NTFY_AGENT_TOPIC`, not the topic.
+- New scripts and docs use placeholders from day one; write `$OPENCODE_ZEN_API_KEY`, not the key.
 - Re-run steps 1–3 after any large import of files (e.g. pulling configs off a machine).
 - Never `git add` from `/data` or your home config directories; the repo's templates are
   the only config that belongs here.

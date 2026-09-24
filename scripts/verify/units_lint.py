@@ -630,7 +630,7 @@ def check_secret_prompt(stem: str, key_name: str, entry: dict[str, object]) -> l
 
     `prompt` is THE hint a human sees at keychain-secrets.sh's hidden prompt.
     Before #39 the hints lived in a `case` in that script with a `*) echo ""`
-    arm, so TELEGRAM_BOT_TOKEN and NTFY_EMAIL prompted with an empty
+    arm, so TELEGRAM_BOT_TOKEN and friends prompted with an empty
     parenthetical -- a naked variable name for a feature nobody had been told to
     create. Emptiness is therefore a FAIL, and so is a single space: `( )`
     renders identically to a reader and slips past any "is it empty" grep.
@@ -1118,9 +1118,9 @@ def check_row_agreement(units: Sequence[Manifest]) -> list[str]:
     """One (key, store) pair, one prompt and one `generate`, however many rows.
 
     Duplicate rows are deliberate and load-bearing -- base-secrets and brain both
-    claim GOOSE_SERVER__SECRET_KEY, ntfy-alerts and base-secrets both claim
-    NTFY_TOPIC -- but `pai secrets` de-duplicates by key, so two rows that
-    disagree make the roster's text depend on which manifest sorts first.
+    claim GOOSE_SERVER__SECRET_KEY -- but `pai secrets` de-duplicates by key, so
+    two rows that disagree make the roster's text depend on which manifest sorts
+    first.
     """
     seen: dict[tuple[str, str], tuple[str, str, object]] = {}
     out: list[str] = []

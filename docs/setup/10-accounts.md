@@ -139,33 +139,7 @@ narrow the *token*. Revoke it in Todoist's settings if it ever leaks.
    `secrets.env`, never in `terraform.tfvars`, never in the repo — a token
    that is never written to a file cannot be committed.
 
-## 6. An ntfy topic, for code-agent buzzes (optional)
-
-Only if you want the phone to buzz when a code agent finishes a turn or parks
-waiting for permission to push ([`docs/code-agents.md`](../code-agents.md)).
-Skip it and nothing changes — the feature is off while the variable is empty.
-
-1. Generate a topic name nobody will guess: `openssl rand -hex 12`. A topic
-   on ntfy.sh exists on first POST — no account, no app to install server-side.
-2. Store it as `NTFY_AGENT_TOPIC` (Keychain now, `/data/secrets.env` in
-   Phase 3). Never commit it, never paste it into an issue or a chat.
-3. Install the ntfy app on the phone and subscribe it to *this* topic. Read the
-   value out of Keychain Access.app — never print it into a terminal, and never
-   paste it into an issue or a chat.
-
-**Subscribing a phone changes what the topic name is.** Until now it has been a
-read capability nobody exercised, and from this point anyone who learns it can
-*send* — that is, put a plausible-looking "code agent wants to push to main"
-onto your lock screen. Which is why the notification is never itself
-answerable: tapping it only opens the app, and the app re-reads the real
-pending ask over the tailnet before it offers you any button.
-
-What travels is a kind, an opaque handle and a count — never a repo name, a
-chat title, a command, or any model output
-([`docs/privacy.md`](../privacy.md)). The buzz says "go look"; the app is what
-tells you what happened.
-
-## 7. Web search key (optional)
+## 6. Web search key (optional)
 
 Optional — research jobs degrade gracefully without search, and the roadmap
 replaces this with self-hosted SearXNG anyway.
@@ -206,8 +180,7 @@ else, and `--units <id>` adds one add-on's names at a time.
 |---|---|---|---|---|---|
 | OpenCode Zen API key | `OPENCODE_ZEN_API_KEY` | yes | yes | — | §1 (now) |
 | Together AI API key | `TOGETHER_API_KEY` | yes | yes | — | §2 (now) |
-| ntfy topic for code-agent buzzes (optional) | `NTFY_AGENT_TOPIC` | yes | yes | ntfy app on the phone (subscribed) | §6 (now) |
-| Tavily key (optional) | `TAVILY_API_KEY` | yes | yes | — | §7 |
+| Tavily key (optional) | `TAVILY_API_KEY` | yes | yes | — | §6 |
 | Hetzner API token | `hcloud_token`, typed at the Terraform prompt | no | no | nowhere — never stored on disk | §5 (Phase 3) |
 | Tailscale auth key | `tailscale_authkey`, typed at the Terraform prompt | no | no | nowhere — never stored on disk | Phase 3 |
 | goose serve shared secret | `GOOSE_SERVER__SECRET_KEY` | yes (Desktop connects with it) | yes | — | Phase 3 |

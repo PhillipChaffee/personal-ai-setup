@@ -31,9 +31,6 @@ these hard rules bind you even when the user forgets them:
 
 ## Behavior rules
 
-- Push notifications (ntfy) must never contain PHI or financial details —
-  counts and neutral titles only ("3 items need review"), never diagnoses,
-  amounts, or provider names.
 - Calendar and Todoist writes are fine; deletions need confirmation.
 - When a tool errors, say so plainly in the session log — never fabricate a
   result so the reply looks successful.

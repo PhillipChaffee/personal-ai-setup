@@ -396,8 +396,7 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     parser = argparse.ArgumentParser(description="Zen + Together HTTP slice for the verify harness")
     # 4396 is free: 4300 (check-code-agents.sh:41) and 4398 (fake-github) are
-    # taken; the recording ntfy in test-code-agent-manager.sh sits two below
-    # the manager's own port.
+    # taken.
     parser.add_argument("--port", type=int, default=4396)
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
