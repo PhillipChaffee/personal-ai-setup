@@ -165,11 +165,11 @@ mut_unpin() { "${FIX_PY[@]}" - "$1" <<'PY'
 import pathlib, sys, yaml
 p = pathlib.Path(sys.argv[1]) / ".config/goose/config.yaml"
 d = yaml.safe_load(p.read_text())
-d["extensions"]["workspace-mcp"]["args"] = ["workspace-mcp", "--tools", "gmail"]
+d["extensions"]["todoist"].pop("available_tools")
 p.write_text(yaml.safe_dump(d))
 PY
 }
-mut_drop_skill() { rm -rf "$1/.agents/skills/connect-service"; }
+mut_drop_skill() { rm -rf "$1/.agents/skills/ship"; }
 mut_hints() { printf 'I am <your name>.\n' > "$1/.config/goose/.goosehints"; }
 mut_wiring() { "${FIX_PY[@]}" - "$1" <<'PY'
 import json, pathlib, sys
@@ -187,7 +187,7 @@ PY
 }
 
 drift_case "apps re-enabled (a security control)" "apps.enabled" mut_apps_on
-drift_case "workspace-mcp unpinned and un-allowlisted" "workspace-mcp.args" mut_unpin
+drift_case "todoist's allowlist dropped" "todoist.available_tools" mut_unpin
 drift_case "a shipped skill is not installed" "shipped skills are not installed" mut_drop_skill
 drift_case "goosehints still has placeholders" "placeholder" mut_hints
 drift_case "provider WIRING changed" "wiring differs" mut_wiring
@@ -211,18 +211,8 @@ note_case() { # note_case <label> <needle> <mutator...>
   fi
 }
 
-mut_personalise() { "${FIX_PY[@]}" - "$1" <<'PY'
-import pathlib, sys, yaml
-p = pathlib.Path(sys.argv[1]) / ".config/goose/config.yaml"
-d = yaml.safe_load(p.read_text())
-envs = d["extensions"]["workspace-mcp"].setdefault("envs", {})
-envs["USER_GOOGLE_EMAIL"] = "real.person@gmail.com"
-p.write_text(yaml.safe_dump(d))
-PY
-}
 mut_no_hints() { rm -f "$1/.config/goose/.goosehints"; }
 
-note_case "a personalised placeholder value" "personalised" mut_personalise
 note_case "goosehints simply not installed yet" "not installed" mut_no_hints
 
 # Provider-side failure shapes, which have distinct messages on purpose: a
@@ -1244,22 +1234,29 @@ for name, block in tpl.items():
 for extra in ("computercontroller", "scheduler", "tutorial"):
     state["extensions"][extra] = {"enabled": True,
                                   "extension": {"type": "builtin", "name": extra}}
-ws = state["extensions"]["workspace-mcp"]
+ts = state["extensions"]["todoist"]
+pw = state["extensions"]["playwright"]
 if mutation in ("drift", "restart"):
-    # The three drifts criterion 4 names, and they are the measured ones: the
-    # live Mac has workspace-mcp UNPINNED with no --permissions, an
-    # available_tools of length 0, and apps.enabled true.
-    ws["extension"]["server"]["args"] = ["workspace-mcp", "--tools", "gmail"]
-    ws["extension"]["available_tools"] = []
+    # The drifts criterion 4 names: the live extension points somewhere else
+    # with an available_tools of length 0, and apps.enabled true. (The measured
+    # shape this fixture used to model — the workspace-mcp pin — left the tree
+    # with the automations removal; the mechanism is the same for the uri.)
+    ts["extension"]["server"]["url"] = "https://evil.example/mcp"
+    ts["extension"]["available_tools"] = []
+    # ...and playwright's launch args — the stdio extension the envs-migration
+    # arm below hangs its inline `envs` on. The refusal in the no-flag run has
+    # to keep THIS drift alive for the migrate run to carry it.
+    pw["extension"]["server"]["args"] = ["--evil"]
     state["extensions"]["apps"]["enabled"] = True
 if mutation == "restart":
     # ...plus one goose put back that the first --fix had already promoted: a
     # dropped env_key. env_keys is the one field compared as a SUPERSET, so this
-    # is the arm where that comparison has to say NO.
-    ws["extension"]["envKeys"] = ws["extension"]["envKeys"][:1]
+    # is the arm where that comparison has to say NO. todoist declares exactly
+    # one key, so the drop is to empty.
+    ts["extension"]["envKeys"] = []
 if mutation == "disabled":
-    ws["enabled"] = False
-    ws["extension"]["available_tools"] = []
+    ts["enabled"] = False
+    ts["extension"]["available_tools"] = []
 out.write_text(json.dumps(state, indent=2))
 PY
 }
@@ -1272,7 +1269,7 @@ seed_home() { # seed_home <home> <envs-value-or-empty>
   if [ -z "${2:-}" ]; then
     printf 'extensions: {}\n' > "$1/.config/goose/config.yaml"
   else
-    printf 'extensions:\n  workspace-mcp:\n    envs:\n      USER_GOOGLE_EMAIL: %s\n' \
+    printf 'extensions:\n  playwright:\n    envs:\n      USER_GOOGLE_EMAIL: %s\n' \
       "$2" > "$1/.config/goose/config.yaml"
   fi
 }
@@ -1328,8 +1325,8 @@ DRY_BEFORE="$(shasum < "$FIX_STATE")"
 run_fix "$FIX_HOME" "$FIX_STATE" ok --dry-run
 DRY_AFTER="$(shasum < "$FIX_STATE")"
 fix_rc "--dry-run exits 1 while fixable drift remains" 1
-fix_says "--dry-run plans the workspace-mcp pin" 'WOULD +workspace-mcp\.args'
-fix_says "--dry-run plans the allowlist" 'WOULD +workspace-mcp\.available_tools'
+fix_says "--dry-run plans the uri" 'WOULD +todoist\.uri'
+fix_says "--dry-run plans the allowlist" 'WOULD +todoist\.available_tools'
 fix_says "--dry-run plans re-disabling apps" 'WOULD +apps\.enabled'
 fix_says "--dry-run says so, in the summary" 'NOTHING WAS WRITTEN'
 fix_silent "--dry-run fixes nothing" '^FIXED'
@@ -1343,8 +1340,8 @@ fi
 #     allowlist, and apps re-disabled — in one run, each proven by read-back.
 run_fix "$FIX_HOME" "$FIX_STATE" ok --fix
 fix_rc "--fix exits 0 when everything fixable was fixed" 0
-fix_says "--fix restores the workspace-mcp pin and --permissions" 'FIXED +workspace-mcp\.args'
-fix_says "--fix restores the allowlist" 'FIXED +workspace-mcp\.available_tools'
+fix_says "--fix restores the uri and --permissions" 'FIXED +todoist\.uri'
+fix_says "--fix restores the allowlist" 'FIXED +todoist\.available_tools'
 fix_says "--fix re-disables apps" 'FIXED +apps\.enabled'
 fix_says "goose's own extensions are a NOTE, never touched" 'not ours, never touched \(3\)'
 if "${FIX_PY[@]}" - "$FIX_STATE" "$REPO_ROOT" <<'PY'
@@ -1352,13 +1349,13 @@ import json, pathlib, sys
 import yaml
 state = json.loads(pathlib.Path(sys.argv[1]).read_text())
 tpl = yaml.safe_load((pathlib.Path(sys.argv[2]) / "config/goose/config.yaml").read_text())
-want = tpl["extensions"]["workspace-mcp"]
-ws = state["extensions"]["workspace-mcp"]
+want = tpl["extensions"]["todoist"]
+ts = state["extensions"]["todoist"]
 # The DISK side of the same claim: not "doctor printed FIXED" but "the server
 # stored the template's own bytes", read straight out of the fake's file.
-assert ws["extension"]["server"]["args"] == want["args"], ws["extension"]["server"]["args"]
-assert ws["extension"]["available_tools"] == want["available_tools"]
-assert ws["enabled"] is True, ws
+assert ts["extension"]["server"]["url"] == want["uri"], ts["extension"]["server"]["url"]
+assert ts["extension"]["available_tools"] == want["available_tools"]
+assert ts["enabled"] is False, ts
 assert state["extensions"]["apps"]["enabled"] is False, state["extensions"]["apps"]
 PY
 then
@@ -1383,10 +1380,10 @@ fix_silent "--dry-run on a repaired config plans nothing" '^WOULD'
 seed_state "$FIX_STATE" restart
 run_fix "$FIX_HOME" "$FIX_STATE" ok --fix
 fix_rc "after a simulated goose restart, --fix exits 0" 0
-fix_says "...and re-asserts the pin" 'FIXED +workspace-mcp\.args'
-fix_says "...and the allowlist" 'FIXED +workspace-mcp\.available_tools'
+fix_says "...and re-asserts the pin" 'FIXED +todoist\.uri'
+fix_says "...and the allowlist" 'FIXED +todoist\.available_tools'
 fix_says "...and apps" 'FIXED +apps\.enabled'
-fix_says "...and the env_keys goose dropped" 'FIXED +workspace-mcp\.env_keys'
+fix_says "...and the env_keys goose dropped" 'FIXED +todoist\.env_keys'
 
 # 9e. THE FAIL-OPEN ONE. goose accepts the allowlist, answers success, and
 #     stores no allowlist key at all — which means every tool is allowed. --fix
@@ -1395,9 +1392,9 @@ DROP_STATE="$FIX_WORK/drop.json"
 seed_state "$DROP_STATE" disabled
 run_fix "$FIX_HOME" "$DROP_STATE" drop-allowlist --fix
 fix_rc "a dropped allowlist is an unfixed FAIL, exit 1" 1
-fix_says "...reported as FAIL, not FIXED" '^FAIL +workspace-mcp\.available_tools'
+fix_says "...reported as FAIL, not FIXED" '^FAIL +todoist\.available_tools'
 fix_says "...naming the reason machine-readably" 'allowlist-dropped'
-if "${FIX_PY[@]}" -c 'import json,sys;s=json.load(open(sys.argv[1]));sys.exit(0 if s["extensions"]["workspace-mcp"]["enabled"] is False else 1)' "$DROP_STATE"; then
+if "${FIX_PY[@]}" -c 'import json,sys;s=json.load(open(sys.argv[1]));sys.exit(0 if s["extensions"]["todoist"]["enabled"] is False else 1)' "$DROP_STATE"; then
   pass "a failed read-back left the extension DISABLED — the safe end"
 else
   fail "--fix enabled an extension whose allowlist goose had silently dropped"
@@ -1407,7 +1404,7 @@ fi
 # rather than a list, so the set-comparison in field_matches falls through.
 run_fix "$FIX_HOME" "$DROP_STATE" ok --dry-run
 fix_rc "the unfixed drift is still reported afterwards" 1
-fix_says "...still naming the allowlist" 'WOULD +workspace-mcp\.available_tools'
+fix_says "...still naming the allowlist" 'WOULD +todoist\.available_tools'
 
 # 9f. `envs`. MEASURED: it is unreachable over ACP in both directions and ANY
 #     ACP write leaves disk `envs: {}`. The author's live machine has
@@ -1419,25 +1416,27 @@ seed_home "$ENV_HOME" "$FAKE_EMAIL"
 seed_state "$ENV_STATE" drift
 run_fix "$ENV_HOME" "$ENV_STATE" ok --fix
 fix_rc "an inline envs value does not make --fix fail" 0
-fix_says "...the extension holding it is refused by name" 'workspace-mcp NOT TOUCHED'
+fix_says "...the extension holding it is refused by name" 'playwright NOT TOUCHED'
 fix_says "...naming the KEY and the remedy" 'USER_GOOGLE_EMAIL'
 fix_says "...and pointing at the flag" '--migrate-envs'
 fix_silent "...and never printing the value" "$FAKE_EMAIL"
-fix_silent "...and not repairing it behind the refusal" 'FIXED +workspace-mcp'
-fix_says "...while still fixing what it may" 'FIXED +apps\.enabled'
+fix_silent "...and not repairing it behind the refusal" 'FIXED +playwright'
+fix_says "...while still fixing what it may" 'FIXED +todoist\.uri'
 
 # ...and with the flag, the one announced migration, proven by config/read
-# {isSecret: true} returning non-null. The VALUE is never asked for.
+# {isSecret: true} returning non-null. The VALUE is never asked for. The
+# playwright repair that carries it is the same one the no-flag run refused,
+# so the drift is still there to fix.
 run_fix "$ENV_HOME" "$ENV_STATE" ok --fix --migrate-envs
 fix_rc "--migrate-envs exits 0" 0
 fix_says "the migration is announced before it happens" 'migrating USER_GOOGLE_EMAIL'
 fix_says "...it is called one way, in those words" 'ONE WAY'
-fix_says "...and the extension is then repaired" 'FIXED +workspace-mcp\.args'
+fix_says "...and the extension is then repaired" 'FIXED +playwright\.args'
 fix_silent "...still without printing the value" "$FAKE_EMAIL"
 if "${FIX_PY[@]}" - "$ENV_STATE" <<'PY'
 import json, pathlib, sys
 state = json.loads(pathlib.Path(sys.argv[1]).read_text())
-ws = state["extensions"]["workspace-mcp"]["extension"]
+ws = state["extensions"]["playwright"]["extension"]
 # The NAME reached env_keys and the store holds the key. Nothing here looks at,
 # compares, or prints what the value is — that is the repo's rule, and it is
 # also all goose would give us (config/read masks it).
@@ -1462,9 +1461,7 @@ fi
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
 state = json.loads(path.read_text())
-state["extensions"]["workspace-mcp"]["extension"]["server"]["args"] = [
-    "workspace-mcp", "--tools", "gmail",
-]
+state["extensions"]["todoist"]["extension"]["server"]["url"] = "https://evil.example/mcp"
 path.write_text(json.dumps(state, indent=2))
 PY
 # goose has emptied inline `envs` by now -- that is what the migration did to it
@@ -1472,8 +1469,8 @@ PY
 seed_home "$ENV_HOME" ""
 run_fix "$ENV_HOME" "$ENV_STATE" ok --fix
 fix_rc "a repair AFTER the migration exits 0" 0
-fix_says "...and re-asserts the pin" 'FIXED +workspace-mcp\.args'
-if "${FIX_PY[@]}" -c 'import json,sys;s=json.load(open(sys.argv[1]));sys.exit(0 if "USER_GOOGLE_EMAIL" in s["extensions"]["workspace-mcp"]["extension"]["envKeys"] else 1)' "$ENV_STATE"; then
+fix_says "...and re-asserts the pin" 'FIXED +todoist\.uri'
+if "${FIX_PY[@]}" -c 'import json,sys;s=json.load(open(sys.argv[1]));sys.exit(0 if "USER_GOOGLE_EMAIL" in s["extensions"]["playwright"]["extension"]["envKeys"] else 1)' "$ENV_STATE"; then
   pass "the migrated env_key survived that repair, still wired to the extension"
 else
   fail "a later --fix dropped the migrated env_key: stored, and no longer delivered"
@@ -1487,7 +1484,7 @@ seed_state "$FIX_STATE" drift
 run_fix "$PLACEHOLDER_HOME" "$FIX_STATE" ok --fix
 fix_rc "a placeholder envs value does not block the repair" 0
 fix_says "...it is dropped, and said so" 'USER_GOOGLE_EMAIL still holds the template.s placeholder'
-fix_says "...and the extension is repaired anyway" 'FIXED +workspace-mcp\.args'
+fix_says "...and the extension is repaired anyway" 'FIXED +todoist\.uri'
 
 # 9g. set-enabled answers {} whatever it did, so the enabled-only path reads
 #     back too. `ignore-enable` is the mode that proves it.
@@ -1518,7 +1515,7 @@ fi
 seed_state "$FIX_STATE" drift
 HOME="$FIX_HOME" run_fix "$FIX_HOME" "$FIX_STATE" ok --dry-run
 fix_rc "--fix is allowed when PAI_HOME is \$HOME" 1
-fix_says "...and plans the same repairs" 'WOULD +workspace-mcp\.args'
+fix_says "...and plans the same repairs" 'WOULD +todoist\.uri'
 
 # 9i. no goose, and none spawnable: exit 2, not a traceback and not a silent 0.
 run_fix "$FIX_HOME" "$FIX_STATE" ok --fix
@@ -2151,18 +2148,18 @@ fi
 #
 # grep -x, WHOLE LINE. Measured: with `grep -F` the pattern `RETAIN  /data` is
 # satisfied by the line for `/data/goose`, so a retained() rewritten as a
-# blocklist of the four paths AC#4 names — which is precisely the design this
+# blocklist of the paths AC#4 names — which is precisely the design this
 # guards against — kept this assertion green while dropping /data itself.
 RM_RC=0
 RM_OUT="$(pai_remove "$RM_HOME" brain 2>&1)" || RM_RC=$?
 RM_MISSING=""
-for want in "    RETAIN  /data" "    RETAIN  /data/goose" "    RETAIN  /data/tls"; do
+for want in "    RETAIN  /data" "    RETAIN  /data/goose"; do
   printf '%s\n' "$RM_OUT" | grep -qxF "$want" || RM_MISSING="$RM_MISSING [$want]"
 done
 printf '%s\n' "$RM_OUT" | grep -qF "data_path — user data. Never removed" \
   || RM_MISSING="$RM_MISSING [the data_path reason]"
 if [ "$RM_RC" -eq 2 ] && [ -z "$RM_MISSING" ]; then
-  pass "AC#4: remove brain names /data, /data/goose and /data/tls as RETAINED"
+  pass "AC#4: remove brain names /data and /data/goose as RETAINED"
 else
   fail "remove brain (exit $RM_RC) did not say what it retains:$RM_MISSING"$'\n'"$RM_OUT"
 fi
@@ -2325,7 +2322,7 @@ manifests = {
     p.stem: yaml.safe_load(p.read_text())
     for p in sorted((REPO / "config/units").glob("*.yaml"))
 }
-assert len(manifests) >= 16, len(manifests)
+assert len(manifests) >= 9, len(manifests)
 
 # ---- 0. THE PROOF THAT IT CANNOT DELETE, over the SYNTAX and not the text ---
 # The fingerprint assertion above proves one fixture survived a handful of
@@ -2418,7 +2415,6 @@ PROSE = {
     "~/.local/share/goose (symlink into /data/goose/data)",
     "~/.local/state/goose (symlink into /data/goose/state)",
     "~/.config/goose/secrets.yaml (per-extension connector entries)",
-    "~/.ssh/life-vault-deploy (git deploy key on the brain)",
 }
 home_targets = [
     o["target"]
@@ -2479,9 +2475,9 @@ retained_pairs = [
     for r in mod.retained(mod.load_manifest(REPO, stem))
 ]
 all_retained = {t for _, t in retained_pairs}
-for path in ("/data/goose", "/data/code-agents", "/data/life-vault", "/data"):
+for path in ("/data/goose", "/data/code-agents", "/data"):
     assert path in all_retained, (path, sorted(p for p in all_retained if p.startswith("/data")))
-for ac4 in ("/data", "/data/goose", "/data/code-agents/chats", "/data/life-vault"):
+for ac4 in ("/data", "/data/goose", "/data/code-agents/chats"):
     covers = [(k, t) for k, t in retained_pairs if ac4 == t or ac4.startswith(t + "/")]
     assert covers, (ac4, sorted(all_retained))
     assert all(k == "data_path" for k, _ in covers), (ac4, covers)
@@ -2675,8 +2671,8 @@ fi
 # THE PAI_HOME SEAM, THROUGH THE CLI. The probe asserts parse_home_target
 # honours its argument; this asserts the CLI actually passes PAI_HOME to it, so
 # the resolved path in the output is the fixture's and never this Mac's.
-RM_OUT="$(pai_remove "$RM_HOME" base-skills 2>&1 || true)"
-if printf '%s\n' "$RM_OUT" | grep -qF "resolves to $RM_HOME/.agents/skills/connect-service"; then
+RM_OUT="$(pai_remove "$RM_HOME" coding-pack 2>&1 || true)"
+if printf '%s\n' "$RM_OUT" | grep -qF "resolves to $RM_HOME/.agents/skills/ship"; then
   pass "PAI_HOME retargets the resolved home_path in the output"
 else
   fail "remove did not resolve against PAI_HOME:"$'\n'"$RM_OUT"
@@ -2735,13 +2731,14 @@ fi
 # The two names a base install needs, and nothing else. This IS the ticket's
 # first acceptance criterion.
 WANT_MAC_BASE="OPENCODE_ZEN_API_KEY TOGETHER_API_KEY"
-# Every name the catalog can put in the Keychain. Same ten the deleted
-# keychain-secrets.sh:12 VARS string listed, now reachable one add-on at a time.
-WANT_MAC_ALL="GOOGLE_OAUTH_CLIENT_ID GOOGLE_OAUTH_CLIENT_SECRET GOOSE_SERVER__SECRET_KEY \
-NTFY_AGENT_TOPIC NTFY_EMAIL NTFY_TOPIC OPENCODE_ZEN_API_KEY TAVILY_API_KEY TELEGRAM_BOT_TOKEN \
-TOGETHER_API_KEY"
-# The four deploy-vps.sh:344 hard-requires.
-WANT_VPS_BASE="GOOSE_SERVER__SECRET_KEY NTFY_TOPIC OPENCODE_ZEN_API_KEY TOGETHER_API_KEY"
+# Every name the catalog can put in the Keychain, one add-on at a time. Same
+# shape the pre-pivot catalog had; four of its ten names (both GOOGLE_OAUTH_*,
+# NTFY_EMAIL and NTFY_TOPIC) left with the automations removal, and
+# TELEGRAM_BOT_TOKEN with the telegram gateway.
+WANT_MAC_ALL="GOOSE_SERVER__SECRET_KEY NTFY_AGENT_TOPIC OPENCODE_ZEN_API_KEY \
+TAVILY_API_KEY TOGETHER_API_KEY"
+# The three deploy-vps.sh preflight hard-requires.
+WANT_VPS_BASE="GOOSE_SERVER__SECRET_KEY OPENCODE_ZEN_API_KEY TOGETHER_API_KEY"
 
 secret_names() { # secret_names <flags...> -- the key column, space-separated
   pai secrets "$CLEAN" "$@" | cut -f1 | tr '\n' ' ' | sed 's/ $//'
@@ -2760,28 +2757,28 @@ names_are() { # names_are <label> <wanted> <flags...>
 
 names_are "secrets --host mac is exactly the two names a base install needs" \
   "$WANT_MAC_BASE" --host mac
-names_are "secrets --host mac --all is the whole catalog's ten" \
+names_are "secrets --host mac --all is the whole catalog's five" \
   "$WANT_MAC_ALL" --host mac --all
-names_are "secrets --host vps is deploy-vps.sh's four" \
+names_are "secrets --host vps is deploy-vps.sh's three" \
   "$WANT_VPS_BASE" --host vps
 names_are "an add-on selection is that unit's names only, not the base ones" \
-  "GOOGLE_OAUTH_CLIENT_ID GOOGLE_OAUTH_CLIENT_SECRET" --host mac --units google-workspace
+  "NTFY_AGENT_TOPIC" --host mac --units code-agents
 # THE ONE GOLDEN HERE WHOSE EXPECTED VALUE IS ALSO THE FAILURE VALUE, so it does
 # not go through names_are: secret_names discards the exit code and everything on
-# stderr, and "base-skills keeps nothing in the Keychain" and "the command
+# stderr, and "base-toolchain keeps nothing in the Keychain" and "the command
 # produced no stdout, for any reason at all" are the same empty string. A `pai
 # secrets` that started exiting 2 on a rowless unit would abort the harness here
 # with no message under `set -e`, and one that merely grumbled to stderr and
 # exited 0 would read as a pass. Assert all three channels instead.
 EMPTY_RC=0
-EMPTY_OUT="$(pai secrets "$CLEAN" --host mac --units base-skills \
-  2>"$WORK/base-skills.err")" || EMPTY_RC=$?
+EMPTY_OUT="$(pai secrets "$CLEAN" --host mac --units base-toolchain \
+  2>"$WORK/base-toolchain.err")" || EMPTY_RC=$?
 if [ "$EMPTY_RC" != "0" ]; then
-  fail "a rowless unit exited $EMPTY_RC, not 0:"$'\n'"$(cat "$WORK/base-skills.err")"
+  fail "a rowless unit exited $EMPTY_RC, not 0:"$'\n'"$(cat "$WORK/base-toolchain.err")"
 elif [ -n "$EMPTY_OUT" ]; then
-  fail "base-skills projected Keychain rows it has none of:"$'\n'"$EMPTY_OUT"
-elif [ -s "$WORK/base-skills.err" ]; then
-  fail "an empty roster arrived with a complaint on stderr:"$'\n'"$(cat "$WORK/base-skills.err")"
+  fail "base-toolchain projected Keychain rows it has none of:"$'\n'"$EMPTY_OUT"
+elif [ -s "$WORK/base-toolchain.err" ]; then
+  fail "an empty roster arrived with a complaint on stderr:"$'\n'"$(cat "$WORK/base-toolchain.err")"
 else
   pass "a unit with no secrets in that store projects to nothing: exit 0, no stdout, silent"
 fi
@@ -2792,17 +2789,20 @@ fi
 names_are "a vps-hosted unit still contributes its Mac Keychain row" \
   "GOOSE_SERVER__SECRET_KEY" --host mac --units brain
 
-# The de-duplication rule, in both argument orders. USER_GOOGLE_EMAIL is
-# optional: true in automations and optional: false in google-workspace, so a
-# "first row wins" implementation reports it differently depending on the order
-# and this is the arm that says no.
-for ORDER in "automations,google-workspace" "google-workspace,automations"; do
+# The de-duplication rule, in both argument orders. TAVILY_API_KEY is
+# optional: true in both of its rows (connectors vps, connectors mac_keychain),
+# so a "first row wins" implementation would be stable here — the real
+# requirement the loop used to test was two units disagreeing on requiredness,
+# which is what check_row_agreement now refuses at lint time. What this arm
+# still proves is that an add-on selection carrying only optional rows projects
+# them as optional, in either order.
+for ORDER in "connectors" "connectors,connectors"; do
   NEED="$(pai secrets "$CLEAN" --host vps --units "$ORDER" \
-    | awk -F'\t' '$1 == "USER_GOOGLE_EMAIL" { print $2 }')"
-  if [ "$NEED" = "required" ]; then
-    pass "USER_GOOGLE_EMAIL is required in $ORDER (a unit that needs it wins)"
+    | awk -F'\t' '$1 == "TAVILY_API_KEY" { print $2 }')"
+  if [ "$NEED" = "optional" ]; then
+    pass "TAVILY_API_KEY is optional in $ORDER"
   else
-    fail "USER_GOOGLE_EMAIL read as '$NEED' in $ORDER, wanted required"
+    fail "TAVILY_API_KEY read as '$NEED' in $ORDER, wanted optional"
   fi
 done
 
@@ -2857,11 +2857,11 @@ assert (rc, buf.getvalue()) == (0, ""), (rc, buf.getvalue())
 # said `openssl rand 12` (no -hex) would mint raw bytes into a shell variable.
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
-    rc = mod.secrets(Path(repo_root), ["--host", "mac", "--units", "ntfy-alerts"])
+    rc = mod.secrets(Path(repo_root), ["--host", "mac", "--units", "code-agents"])
 rows = dict(line.split("\t", 1) for line in buf.getvalue().splitlines())
 assert rc == 0, rc
-assert rows["NTFY_TOPIC"].split("\t")[1] == "openssl rand -hex 12", rows["NTFY_TOPIC"]
-assert rows["NTFY_EMAIL"].split("\t")[1] == "-", rows["NTFY_EMAIL"]
+assert rows["NTFY_AGENT_TOPIC"].split("\t")[1] == "openssl rand -hex 12", \
+    rows["NTFY_AGENT_TOPIC"]
 PY
 if OUT="$("${PAI_PY[@]}" "$WORK/probe-secrets.py" "$DOCTOR" "$WORK" "$REPO_ROOT" 2>&1)"; then
   pass "secrets probe: an empty catalog, and the generate column's exact shape"
@@ -3153,7 +3153,7 @@ fi
 printf 'export AFTER_THE_BLOCK=1\n' >>"$ZSHRC"
 cp "$ZSHRC" "$KC_WORK/baseline"
 
-kc_run --units ntfy-alerts
+kc_run --units code-agents
 if cmp -s "$KC_WORK/baseline" "$ZSHRC"; then
   pass "regenerating with a different selection is byte-identical (the block is the catalog)"
 else
@@ -3316,7 +3316,7 @@ fi
 # The first run appended (no markers yet); this one takes the awk replace branch,
 # which is the other half of the write path and regressed identically.
 cp "$KC_DOTFILE" "$KC_WORK/linked-baseline"
-kc_run --units ntfy-alerts
+kc_run --units code-agents
 if [ "$KC_RC" -eq 0 ] && [ -L "$ZSHRC" ] && cmp -s "$KC_WORK/linked-baseline" "$KC_DOTFILE"; then
   pass "regenerating over a symlink is idempotent and still leaves a symlink"
 else
@@ -3483,15 +3483,14 @@ cp "$KC_WORK/baseline" "$ZSHRC"
 chmod 644 "$ZSHRC"
 
 # ---- minting ----
-# NTFY_TOPIC is minted ON THE MAC (10-accounts.md §6 step 1), so this is a real
-# path, not a fixture-only branch. It is not the only one -- code-agents'
-# NTFY_AGENT_TOPIC is minted at §6a the same way -- and ntfy-alerts is picked
-# here only because it is the smaller roster. Roster order is alphabetical:
-# NTFY_EMAIL first (Enter), then NTFY_TOPIC.
+# NTFY_AGENT_TOPIC is minted ON THE MAC (10-accounts.md §6 step 1), so this is a
+# real path, not a fixture-only branch. code-agents is picked here because it is
+# the smaller roster: NTFY_AGENT_TOPIC is its only Keychain row, and it is the
+# row that carries the generate command.
 : >"$KC_LOG"
-printf '\ngenerate\n' >"$KC_WORK/answers-mint"
-kc_prompted "$KC_WORK/answers-mint" --units ntfy-alerts
-if grep -qF "add s=personal-ai a=NTFY_TOPIC len=24" "$KC_LOG"; then
+printf 'generate\n' >"$KC_WORK/answers-mint"
+kc_prompted "$KC_WORK/answers-mint" --units code-agents
+if grep -qF "add s=personal-ai a=NTFY_AGENT_TOPIC len=24" "$KC_LOG"; then
   pass "typing \"generate\" mints hex 12 (24 chars) and stores it without printing it"
 else
   fail "the mint did not reach the keychain as 24 chars:"$'\n'"$(cat "$KC_LOG")"$'\n'"$KC_OUT"

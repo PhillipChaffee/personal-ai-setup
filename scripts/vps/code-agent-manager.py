@@ -117,15 +117,12 @@ Tunables (optional):
     CODE_AGENT_GITHUB_INTERVAL  github sweep cadence seconds, default 300
     NTFY_AGENT_TOPIC          the phone's AGENT channel: buzz when a turn ends
                               or an ask is parked. Empty (the default) disables
-                              notification entirely. DELIBERATELY NOT the same
-                              topic as NTFY_TOPIC, which carries failure alerts
-                              — an ntfy topic name is a password in BOTH
-                              directions, so subscribing a phone to this one
-                              makes it a write channel onto a lock screen, and
-                              the two must be burnable independently.
-    NTFY_SERVER               ntfy base URL, default https://ntfy.sh (shared
-                              with scripts/common/notify.sh, so self-hosting
-                              later is a variable change, not a code change)
+                              notification entirely. An ntfy topic name is a
+                              password in BOTH directions, so subscribing a
+                              phone to this one makes it a write channel onto
+                              a lock screen.
+    NTFY_SERVER               ntfy base URL, default https://ntfy.sh. Self-hosting
+                              later is a variable change, not a code change
 
 Conventions: dataclasses + full annotations, `mypy --strict` clean and
 `ruff check` clean with the entire rule set enabled (mypy.ini, ruff.toml; CI
@@ -136,7 +133,6 @@ runs both). Wire boundaries (JSON in/out, subprocess) are the only places
 from __future__ import annotations
 
 import base64
-import contextlib
 import hashlib
 import hmac
 import http.client
@@ -2343,8 +2339,9 @@ def reaper_pass() -> None:
     # route kept answering, which is precisely the shape of failure this file
     # has already shipped once.
     #
-    # LOGGED, NEVER SUPPRESSED SILENTLY. `notify_failure` suppresses two NAMED
-    # types; this catches Exception, which is a wider net and so has to say when
+    # LOGGED, NEVER SUPPRESSED SILENTLY. `notify_failure` does not suppress at all
+    # (it is a log line now); this catches Exception, which is a wider net and
+    # so has to say when
     # it caught something. A blanket silent suppress would let the buzz die
     # permanently with no log line and no health field — and worse, an early
     # raise inside notify_new_asks leaves `_reaper_memory.blocked` frozen at the
@@ -2811,17 +2808,14 @@ def arm_from_proxy(chat: Chat, subpath: str, status: int) -> None:
 
 
 def notify_failure(reason: str) -> None:
-    """Send failure alerts on the standard channel (notify.sh -> ntfy).
+    """Record a failure in the journal — the operational record.
 
-    Component + failure class only — never model output (docs/automations.md).
+    The ntfy failure channel (scripts/common/notify.sh) left the repo with the
+    automations removal (2026-09-23); what remains is the log, which journald
+    keeps and `journalctl -u code-agent-manager` reads. Component + failure
+    class only — never model output.
     """
-    notify = Path(__file__).resolve().parents[1] / "common" / "notify.sh"
-    with contextlib.suppress(OSError, subprocess.SubprocessError):
-        subprocess.run(  # noqa: S603
-            [str(notify), "-t", "Code agent failure", "-p", "high", reason],
-            check=False,
-            timeout=30,
-        )
+    log(f"FAILURE (high): {reason}")
 
 
 # ------------------------------------------------------------------ HTTP
@@ -3449,8 +3443,8 @@ def main() -> None:
         sys.exit(1)
     if not have_tls:
         log(
-            "WARNING: no TLS cert at /data/tls — serving PLAIN HTTP. Run "
-            "scripts/vps/renew-tls-cert.sh (docs/setup/50-vps-brain.md).",
+            "WARNING: no TLS cert at /data/tls — serving PLAIN HTTP "
+            "(tailnet-only; HTTP Basic still applies on every route).",
         )
 
     server = ThreadingHTTPServer((host, GATEWAY_PORT), Handler)

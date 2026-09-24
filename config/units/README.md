@@ -362,9 +362,9 @@ becoming decoration.
   explanation in the one state where a reader most needs to know what is left behind.
 - **`supported: true` is refused on `tier: base`.** A base unit *is* the install; `pai
   remove` refuses it at the tier arm before it ever reads this block, so a manifest
-  claiming otherwise makes a claim the tool contradicts. `base-skills` is what makes this
-  arm non-trivial: its one `home_path` is as removable as anything in the catalogue, and
-  nothing but the tier stops it.
+  claiming otherwise makes a claim the tool contradicts. `base-goose` is what makes this
+  arm non-trivial: its `home_path` targets are as removable as anything in the catalogue,
+  and nothing but the tier stops it.
 - **`supported: true` requires a non-empty `owns`.** A unit that owns nothing has nothing
   to remove, so removing it is a no-op that reports success. P4 already fails an empty
   `owns` unless `host: checklist`, so the arm's only possible target is a checklist-host

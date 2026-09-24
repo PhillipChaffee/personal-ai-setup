@@ -120,8 +120,8 @@ PLACEHOLDER_LITERALS: Final[frozenset[str]] = frozenset({"you@example.com"})
 
 # goose serve opens a SECOND, opportunistic listener at port+1 (measured: P+1
 # 404s on /status). These are the ports this repo has already spent -- the
-# brain's goose, the local roundtrip recipe, and the code-agent manager's range
-# -- so an ephemeral server must never land on one, or on the P+1 next to one.
+# brain's goose and the code-agent manager's range -- so an ephemeral server
+# must never land on one, or on the P+1 next to one.
 RESERVED_PORTS: Final[frozenset[int]] = frozenset({3284, 3288, 4397, 4398, 4399})
 
 _SPAWN_TRIES: Final = 3

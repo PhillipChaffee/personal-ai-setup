@@ -40,7 +40,7 @@ variable "timezone" {
 }
 
 variable "data_volume_size" {
-  description = "Size in GB of the /data volume (LUKS-encrypted; holds sessions.db, secrets.env, OAuth tokens, life-vault clone). 10 GB is plenty to start; Hetzner volumes can be grown later without recreation (shrinking is not possible)."
+  description = "Size in GB of the /data volume (LUKS-encrypted; holds sessions.db, secrets.env, and the code-agent volumes). 10 GB is plenty to start; Hetzner volumes can be grown later without recreation (shrinking is not possible)."
   type        = number
   default     = 10
 }

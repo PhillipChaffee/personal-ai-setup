@@ -652,14 +652,14 @@ if leg select; then
 
   # F3 — DEPENDENCY ORDER SURVIVES AN EXCLUSION, and it survives LOUDLY. A unit
   # named on the command line is never dropped by --without's cascade, so this
-  # command line resolves to "install base-skills without the base it needs" —
+  # command line resolves to "install base-goose without the base it needs" —
   # which is a broken install that would otherwise exit 0 having copied a skill
   # onto a machine where the dependency never ran. Both ids must appear in the
   # complaint: the thing that cannot run, and the thing it needed.
-  F3_RC="$(run_bootstrap_flags f3 "$WORK/home-f3" --only base-skills --without base-goose)"
-  [ "$F3_RC" = "2" ] && grep -qF "base-skills requires base-goose" "$WORK/out/f3.log" &&
+  F3_RC="$(run_bootstrap_flags f3 "$WORK/home-f3" --only base-goose --without base-toolchain)"
+  [ "$F3_RC" = "2" ] && grep -qF "base-goose requires base-toolchain" "$WORK/out/f3.log" &&
     [ ! -e "$WORK/home-f3/.agents" ] &&
-    ok "F3: --only base-skills --without base-goose is refused (exit 2, names both, writes nothing)" || {
+    ok "F3: --only base-goose --without base-toolchain is refused (exit 2, names both, writes nothing)" || {
     bad "F3: a unit whose requirement was excluded was not refused (exit $F3_RC)"
     evidence "$WORK/out/f3.log"
   }
@@ -677,13 +677,11 @@ if leg select; then
     evidence "$WORK/out/f4.log"
   }
 
-  # F5/F6 — THE PAIR. --only X and --with X must not mean the same thing, and
-  # the single observable that separates them is base-skills: it is in the
-  # default set, it is NOT in coding-pack's requires closure (coding-pack
-  # requires nothing since the opencode unit left the catalog), and it owns
-  # exactly one file. So --only coding-pack must leave
-  # ~/.agents/skills/connect-service absent and --with coding-pack must leave it
-  # present. An assertion that passed for both would be testing neither.
+  # F5/F6 — THE PAIR. --only X and --with X must not mean the same thing. With
+  # base-skills gone (2026-09-23), the observable is the goose units: --only
+  # coding-pack must leave goose config.yaml ABSENT (the goose units were
+  # never selected) while --with coding-pack leaves it present. An assertion
+  # that passed for both would be testing neither.
   F5_RC="$(run_bootstrap_flags f5 "$WORK/home-f5" --only coding-pack)"
   F5_HOME="$WORK/home-f5"
   # THE EMPTY BREW LOG IS WHAT OBSERVES the closure's shape: coding-pack asks
@@ -702,11 +700,10 @@ if leg select; then
     [ -f "$F5_HOME/.config/opencode/AGENTS.md" ] &&
     [ ! -e "$F5_HOME/.config/goose/config.yaml" ] &&
     [ "$F5_BREW_LINES" -eq 0 ] &&
-    [ "$F5_SKIPS" -eq 3 ] &&
+    [ "$F5_SKIPS" -eq 2 ] &&
     grep -qF "==> skipping base-toolchain" "$WORK/out/f5.log" &&
     grep -qF "==> skipping base-goose" "$WORK/out/f5.log" &&
-    grep -qF "==> skipping base-skills" "$WORK/out/f5.log" &&
-    ok "F5: --only coding-pack installs exactly {coding-pack} (empty brew log) and skips the other three" || {
+    ok "F5: --only coding-pack installs exactly {coding-pack} (empty brew log) and skips the other two" || {
     bad "F5: --only coding-pack did not resolve to exactly {coding-pack} (rc=$F5_RC, $F5_SKIPS skip line(s), $F5_BREW_LINES brew line(s))"
     evidence "$WORK/out/f5.log"
   }
@@ -715,10 +712,9 @@ if leg select; then
   F6_HOME="$WORK/home-f6"
   F6_SKIPS="$(count_in "$WORK/out/f6.log" '^==> skipping ')"
   [ "$F6_RC" = "0" ] &&
-    [ -d "$F6_HOME/.agents/skills/connect-service" ] &&
-    [ -d "$F6_HOME/.agents/skills/ship" ] &&
+        [ -d "$F6_HOME/.agents/skills/ship" ] &&
     [ "$F6_SKIPS" -eq 0 ] &&
-    ok "F6: --with coding-pack ADDS to the default set — connect-service is installed, 0 skips" || {
+    ok "F6: --with coding-pack ADDS to the default set — the goose config lands too, 0 skips" || {
     bad "F6: --with coding-pack did not keep the default set (rc=$F6_RC, $F6_SKIPS skip line(s))"
     evidence "$WORK/out/f6.log"
   }
@@ -751,18 +747,17 @@ if leg select; then
   # 49 passed.
   #
   # This is also the ONLY assertion anywhere that sees coding-pack's owns
-  # lines. H4 pins a whole log too, but for `--dry-run --without base-goose`,
-  # whose plan excludes base-skills by construction.
+  # lines. H4 pins a whole log too, but for `--dry-run --without base-toolchain`,
+  # whose plan excludes base-goose by construction.
   #
   # Kebab-cased and indented, both deliberately: a column-0 unit_*() name
   # printed here would be counted as a call site by units_lint.py's P3. And
   # there is no `==> personal-ai Mac bootstrap` banner above the plan --
   # --dry-run answers before the platform guard, so nothing precedes it.
   cat >"$WORK/golden-h.txt" <<'EOF'
-==> plan (4 units, in dependency order):
+==> plan (3 units, in dependency order):
   base-toolchain
   base-goose
-  base-skills
   coding-pack
 ==> would install:
   brew formula  uv
@@ -774,7 +769,6 @@ if leg select; then
   file          ~/.config/goose/config.yaml
   file          ~/.config/goose/custom_providers
   file          ~/.config/goose/.goosehints
-  file          ~/.agents/skills/connect-service
   file          ~/.agents/skills/ci-lint-test
   file          ~/.agents/skills/clean-plan
   file          ~/.agents/skills/code-review
@@ -790,9 +784,9 @@ if leg select; then
   file          ~/.config/opencode/AGENTS.md
 EOF
   if [ "$H_RC" = "0" ] && diff -u "$WORK/golden-h.txt" "$WORK/out/h.log" >"$WORK/h1.diff" 2>&1; then
-    ok "H1: --dry-run prints exactly the 30-line four-unit plan and its 24 owned items"
+    ok "H1: --dry-run prints exactly the 29-line three-unit plan and its 23 owned items"
   else
-    bad "H1: the default --dry-run output is not the 30-line golden (rc=$H_RC)"
+    bad "H1: the default --dry-run output is not the 29-line golden (rc=$H_RC)"
     evidence "$WORK/h1.diff"
   fi
 
@@ -851,21 +845,16 @@ EOF
     evidence "$WORK/deny-h.log"
   }
 
-  # H4 — the whole output for a cascading exclusion, hand-typed. Twenty-two lines
-  # that pin, in one artifact: the cascade announcement, the two-unit plan, its
-  # order, and — by their absence — that not one base-goose or base-skills path
-  # is offered. A "no base-goose line" grep would pass on an empty file.
-  H4_RC="$(run_bootstrap_flags h-noc "$WORK/home-dry-noc" --dry-run --without base-goose)"
+  # H4 — the whole output for a cascading exclusion, hand-typed. Seventeen lines
+  # that pin, in one artifact: the cascade announcement, the one-unit plan, its
+  # order, and — by their absence — that not one base-toolchain or base-goose
+  # path is offered. A "no goose line" grep would pass on an empty file.
+  H4_RC="$(run_bootstrap_flags h-noc "$WORK/home-dry-noc" --dry-run --without base-toolchain)"
   cat >"$WORK/golden-h4.txt" <<'EOF'
-==> --without base-goose also drops: base-skills
-==> plan (2 units, in dependency order):
-  base-toolchain
+==> --without base-toolchain also drops: base-goose
+==> plan (1 units, in dependency order):
   coding-pack
 ==> would install:
-  brew formula  uv
-  brew formula  node
-  brew formula  jq
-  brew cask     tailscale
   file          ~/.agents/skills/ci-lint-test
   file          ~/.agents/skills/clean-plan
   file          ~/.agents/skills/code-review
@@ -882,9 +871,9 @@ EOF
 EOF
   if [ "$H4_RC" = "0" ] &&
      diff -u "$WORK/golden-h4.txt" "$WORK/out/h-noc.log" >"$WORK/h4.diff" 2>&1; then
-    ok "H4: --dry-run --without base-goose prints exactly the 22-line two-unit plan, cascade announced"
+    ok "H4: --dry-run --without base-toolchain prints exactly the 17-line one-unit plan, cascade announced"
   else
-    bad "H4: the cascading dry-run plan is not the 22-line golden (rc=$H4_RC)"
+    bad "H4: the cascading dry-run plan is not the 17-line golden (rc=$H4_RC)"
     evidence "$WORK/h4.diff"
   fi
 fi
@@ -1238,14 +1227,11 @@ open(sys.argv[3], "w").write("\n".join(code) + "\n")
     evidence "$A16_ERR"
   }
 
-  # A17 (#111) — THE DIFFERENTIAL'S CI PRECONDITION, asserted instead of
-  # commented. install-test.yml carries `fetch-depth: 0` twice, once per job,
-  # each under a paragraph explaining that a shallow clone costs the job its
-  # differential. Nothing checked it. actions/checkout DEFAULTS TO DEPTH 1, so
-  # deleting one line was a silent, single-symptom degradation: the deploy
-  # job's V0/V1 differential (test-deploy-vps.sh, #110) would take its shallow
-  # arm forever, the badge would stay green, and the file would still read as
-  # though history were being fetched.
+  # A17 — install-test.yml fetches full history for every actions/checkout.
+  # The differentials this used to feed (the Mac and deploy sequence
+  # differentials) are retired with the pivots that changed the trees they
+  # diffed; the invariant stands on its own now: CI ships full history or
+  # nothing checked here can see the loss.
   #
   # A HARNESS ASSERTING ON ITS OWN WORKFLOW is unusual here and deliberate: this
   # is the one precondition the harness cannot establish for itself and cannot
@@ -1288,9 +1274,9 @@ print("; ".join(bad))
   A17_SEEN="$(head -1 "$A17_OUT" 2>/dev/null || true)"
   A17_BAD="$(tail -n +2 "$A17_OUT" | tr -d '\n' || true)"
   if [ "$A17_RC" -eq 0 ] && [ "$A17_SEEN" = "2" ] && [ -z "$A17_BAD" ]; then
-    ok "A17: both actions/checkout steps in install-test.yml set fetch-depth: 0, so V1 has the history it diffs against"
+    ok "A17: both actions/checkout steps in install-test.yml set fetch-depth: 0 (history fetch)"
   else
-    bad "A17: install-test.yml no longer fetches full history for every checkout (rc=$A17_RC, checkout steps=${A17_SEEN:-none} want 2, offenders='$A17_BAD') — without it the deploy differential degrades to a SKIP on every CI run and its 'no behaviour change' claim is asserted on a laptop and nowhere else"
+    bad "A17: install-test.yml no longer fetches full history for every checkout (rc=$A17_RC, checkout steps=${A17_SEEN:-none} want 2, offenders='$A17_BAD') — without it CI stops shipping full history and the loss is invisible from a shallow checkout"
     evidence "$A17_OUT"
   fi
 fi

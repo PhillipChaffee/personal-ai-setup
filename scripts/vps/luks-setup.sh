@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # luks-setup.sh — ONE-TIME, DESTRUCTIVE: LUKS2-format the Hetzner data volume
 # and mount it at /data. Everything stateful on the brain (secrets.env, goose
-# sessions.db, the life-vault clone) lives on this volume so it is encrypted
+# sessions.db) lives on this volume so it is encrypted
 # at rest. Run ON the brain, once, right after `terraform apply`:
 #
 #   sudo scripts/vps/luks-setup.sh --device "$(terraform output -raw data_volume_linux_device)"
@@ -143,6 +143,5 @@ REMEMBER — the reboot rule:
 
 Next steps (docs/setup/50-vps-brain.md):
   1. Create $MOUNT_POINT/secrets.env from config/env/secrets.env.example (chmod 600).
-  2. Transfer the Google OAuth tokens (docs/setup/30-google-oauth.md).
-  3. Run scripts/vps/deploy-vps.sh as the $DATA_OWNER user.
+  2. Run scripts/vps/deploy-vps.sh as the $DATA_OWNER user.
 EOF

@@ -559,9 +559,9 @@ def check_uninstall(unit: Manifest) -> list[str]:
     `supported: true` is refused on `tier: base`. A base unit is the install
     itself; `pai remove` refuses it at the tier arm before it ever looks at
     this block, so a manifest claiming otherwise would be a claim the tool
-    contradicts. base-skills is the manifest that makes this arm non-trivial:
-    its one `home_path` (~/.agents/skills/connect-service) is as removable as
-    anything in the catalogue, so nothing but the tier stops it.
+    contradicts. base-goose is the manifest that makes this arm non-trivial:
+    its `home_path` targets are as removable as anything in the catalogue, so
+    nothing but the tier stops it.
     """
     value = unit.data.get("uninstall")
     if not isinstance(value, dict) or set(value) != {"supported", "reason"}:

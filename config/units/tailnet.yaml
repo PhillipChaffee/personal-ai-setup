@@ -10,33 +10,33 @@
 # repo installs, and nothing it can.
 id: tailnet
 manifest_version: 1
-verified_on: "2026-09-07"
+verified_on: "2026-09-23"
 summary: Human-only, the Tailscale account, the client sign-ins, and the MagicDNS + HTTPS-cert toggles.
 host: both
 tier: opt_in
 requires: []
 
-# Copied VERBATIM from README.md's budget table. The row bundles Tailscale
-# with ntfy, so the ntfy-alerts unit may quote the same line; both are $0, so
-# no total moves either way.
+# Copied VERBATIM from README.md's budget table. The row bundled Tailscale
+# with ntfy until the automations pivot deleted the ntfy transport (2026-09-23);
+# it now names Tailscale alone.
 cost:
-  - line: Tailscale (personal plan), ntfy failure-alert emails (free tier)
+  - line: Tailscale (personal plan)
     amount: $0
     source: README.md
 
 # NOTHING INSTALLS THIS UNIT. There is no API call and no CLI flag for
 # "create an account" or "enable HTTPS certificates" -- both toggles live at
 # https://login.tailscale.com/admin/dns. Legal only because manual_steps is
-# non-empty. deploy-vps.sh:357 asserts the CLI is present and already joined
+# non-empty. deploy-vps.sh:350 asserts the CLI is present and already joined
 # ("cloud-init should have installed and joined the tailnet") rather than
 # doing any of it.
 installer: null
 
-# NOTHING VERIFIES THIS UNIT DIRECTLY. The closest thing is renew-tls-cert.sh:19,
-# which exits 1 with "no tailnet DNS name (MagicDNS off?)" -- but that is a
-# deploy-time script on the brain, not a scripts/verify/ check, and it runs
-# long after the toggle was needed. check-brain.sh reaches the brain OVER the
-# tailnet, so it presupposes this unit instead of testing it.
+# NOTHING VERIFIES THIS UNIT DIRECTLY. check-brain.sh reaches the brain OVER
+# the tailnet, so it presupposes this unit instead of testing it. (The LE
+# cert-renew script that exited 1 on "MagicDNS off?" left the repo with the
+# phone story; goose serve runs its self-signed cert and no check renews
+# anything.)
 verify: []
 runbook: docs/setup/10-accounts.md#3-tailscale
 

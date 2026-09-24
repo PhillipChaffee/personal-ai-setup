@@ -135,12 +135,11 @@ NO_KIND_LABEL: Final = "(no `kind:` field)"
 #   ~/.local/share/goose (symlink into /data/goose/data)
 #   ~/.local/state/goose (symlink into /data/goose/state)
 #   ~/.config/goose/secrets.yaml (per-extension connector entries)
-#   ~/.ssh/life-vault-deploy (git deploy key on the brain)
 #
 # A resolver that strips the parenthetical answers `~/.zshrc` and
 # `~/.config/goose` — a whole shell profile and goose's entire config tree, for
 # targets whose text says the opposite. The character class has no space and no
-# parenthesis in it precisely so all six fall out as UNRESOLVABLE rather than as
+# parenthesis in it precisely so all five fall out as UNRESOLVABLE rather than as
 # something shorter than they say.
 HOME_TARGET_RE: Final = re.compile(r"^~/([A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*)$")
 
@@ -302,10 +301,10 @@ def kind_label(kind: str) -> str:
 def retained(manifest: Manifest) -> list[Retained]:
     """Everything this unit owns that a remover would keep even if one existed.
 
-    Kind-driven, so the answer for a nineteenth manifest is right before anyone
+    Kind-driven, so the answer for a future manifest is right before anyone
     has read it: everything outside REMOVABLE_KINDS is retained, and
     retain_reason() says why for each kind. This is where AC #4 lives — /data,
-    /data/goose, /data/code-agents, /data/life-vault and /data/tls are all
+    /data/goose, /data/secrets.env and /data/code-agents are all
     `data_path`, and `data_path` is not a removable kind.
 
     A kind nothing recognises is retained TOO, and is the reason this filter is

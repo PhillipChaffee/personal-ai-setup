@@ -4,15 +4,15 @@
 # WHY THIS FILE EXISTS. scripts/verify/ is where this repo keeps its assertions,
 # and until now nothing asserted anything ABOUT them: bootstrap-mac.sh has
 # test-base-install.sh, code-agent-manager.py has test-code-agent-manager.sh,
-# doctor.py has test-pai.sh, and the nine check-*.sh had a shellcheck pass. So
-# check-brain.sh could derive an EMPTY roster from register-schedules.sh and
-# report "all 0 schedule(s)" as a PASS, and nothing noticed.
+# doctor.py has test-pai.sh, and the check-*.sh had a shellcheck pass. So
+# check-mcp.sh could hold a smoke-test roster that no longer matched the
+# extensions it claimed to cover, and nothing noticed.
 #
 # THE FIXTURES ARE GENERATED, NOT COMMITTED — same rule as test-pai.sh:7-13. A
 # committed config.yaml would be asserting yesterday's template. Every fixture
 # here is written at run time and every one is a SHAPE, not a copy: an enabled
-# extension with no smoke test, a config with no connectors at all, an indented
-# ORDER=(. Copying the repo's own artifacts would make these assertions true by
+# extension with no smoke test, a config with no connectors at all. Copying the
+# repo's own artifacts would make these assertions true by
 # whatever the repo happens to ship this month.
 #
 # Nothing here reaches the network, opens a socket, spawns goose, or writes
@@ -171,7 +171,7 @@ PAI_GOOSE_CONFIG="$WORK/mcp-off.yaml" GOOSE_BIN="$GOOSE_STUB" \
   run_check "$HERE/check-mcp.sh"
 absent "the same extension disabled is not a finding" "no smoke test"
 saw "a connector this machine does not have is a SKIP, not a failure" \
-  "SKIP  workspace-mcp — not enabled"
+  "SKIP  todoist — not enabled"
 if [ "$RC_CODE" -eq 0 ]; then
   pass "...and a machine with no connectors passes check-mcp"
 else
@@ -194,21 +194,20 @@ PAI_GOOSE_CONFIG="$WORK/mcp-noserver.yaml" GOOSE_BIN="$GOOSE_STUB" \
 absent "an enabled extension declaring no cmd/uri is not an MCP server" "notaserver"
 
 # The enabled one WITH a smoke test actually runs it, through the seam.
-write_config "$WORK/mcp-ws.yaml" <<'EOF'
+write_config "$WORK/mcp-todoist.yaml" <<'EOF'
 extensions:
-  workspace-mcp:
-    name: workspace-mcp
+  todoist:
+    name: todoist
     type: stdio
-    cmd: uvx
+    uri: https://ai.todoist.net/mcp
     enabled: true
 EOF
 : > "$WORK/goose-argv.log"
-PAI_GOOSE_CONFIG="$WORK/mcp-ws.yaml" GOOSE_BIN="$GOOSE_STUB" USER_GOOGLE_EMAILS="a@b.test,c@d.test" \
+PAI_GOOSE_CONFIG="$WORK/mcp-todoist.yaml" GOOSE_BIN="$GOOSE_STUB" \
   run_check "$HERE/check-mcp.sh"
-saw "one smoke run per account in USER_GOOGLE_EMAILS" "PASS  Gmail (a@b.test)"
-saw "...including the second account" "PASS  Gmail (c@d.test)"
-if [ "$(grep -c . "$WORK/goose-argv.log")" = "2" ]; then
-  pass "...and exactly two goose runs happened, not one"
+saw "an enabled extension with a known smoke test runs it" "PASS  Todoist (ai.todoist.net)"
+if [ "$(grep -c . "$WORK/goose-argv.log")" = "1" ]; then
+  pass "...and exactly one goose run happened"
 else
   fail "goose ran $(grep -c . "$WORK/goose-argv.log") time(s):"$'\n'"$(cat "$WORK/goose-argv.log")"
 fi
@@ -236,12 +235,11 @@ extensions:
     name: apps
     type: platform
     enabled: false
-  workspace-mcp:
-    name: workspace-mcp
+  todoist:
+    name: todoist
     type: stdio
-    cmd: uvx
-    args: [workspace-mcp, --permissions]
-    available_tools: [search_gmail_messages]
+    uri: https://ai.todoist.net/mcp
+    available_tools: [get-tasks, add-task]
     enabled: true
 EOF
 PAI_MODE=local PAI_HOME="$WORK/sec-home" HOME="$WORK/sec-home" \
@@ -258,8 +256,8 @@ else
 fi
 
 # THE ACCEPTANCE CRITERION: a machine with no connectors is not penalised for
-# the connector rule. Before, `workspace-mcp` missing was an unconditional
-# finding, so a brain that simply never installed google-workspace was red.
+# the connector rule. Before, a missing allowlist entry was an unconditional
+# finding, so a brain that simply never enabled a connector was red.
 #
 # `developer` and `computercontroller` carry a `cmd:` for the same reason
 # check-mcp's fixture does: check-security.sh's `declared` loop applies the same
@@ -289,10 +287,10 @@ PAI_MODE=local PAI_HOME="$WORK/sec-none" HOME="$WORK/sec-none" \
   run_check "$HERE/check-security.sh" --local
 saw "no connectors: the policy section SKIPs instead of failing" \
   "SKIP  no enabled extension in"
-# Not "no FAIL line": workspace-mcp must not be MENTIONED. The section returns
-# before the entry even exists as a subject, and under the rule this replaces
-# its absence was an unconditional finding on exactly this fixture.
-absent "...and does not mention workspace-mcp at all" "workspace-mcp"
+# Not "no FAIL line": the enabled connector must not be MENTIONED. The section
+# returns before the entry even exists as a subject, and under the rule this
+# replaces its absence was an unconditional finding on exactly this fixture.
+absent "...and does not name a connector at all" "todoist"
 if printf '%s\n' "$RC_OUT" | grep -q "^  connector policy  *0 passed, 0 failed, 1 skipped"; then
   pass "...and the recap row says so"
 else
@@ -339,54 +337,7 @@ else
   note "defaults and deploy-vps.sh's SERVE_PORT."
 fi
 
-# ---- 3. check-brain.sh's derived schedule roster ---------------------------
-echo
-echo "-- check-brain.sh --"
-
-# check-brain.sh reads register-schedules.sh from a path relative to its OWN
-# location, so the fixture is a two-file copy of that layout: the check, lib.sh
-# beside it, and a register-schedules.sh whose ORDER=( is malformed.
-BR="$WORK/brainrepo"
-mkdir -p "$BR/scripts/verify" "$BR/scripts/vps"
-cp "$HERE/check-brain.sh" "$BR/scripts/verify/check-brain.sh"
-cp "$HERE/lib.sh" "$BR/scripts/verify/lib.sh"
-chmod +x "$BR/scripts/verify/check-brain.sh"
-
-# Indented by one space. Under the column-0 anchor this produced an EMPTY roster
-# and the loop then reported "all 0 schedule(s) this brain should have" as a
-# PASS -- a derived check going green because its source stopped resolving.
-#
-# THE ASSERTION IS THE DERIVED IDS, NOT THE ABSENCE OF THAT OLD SENTENCE. The
-# `absent "shows all 0 schedule(s)"` that stood here could not fail: the empty-
-# ROSTER `die 2` added in the same commit makes that sentence unreachable
-# whatever the anchor does, so restoring the column-0 anchor left this file at
-# 28 passed, 0 failed -- verified by making that exact mutation. Naming both
-# schedules is what separates "derived two" from "derived nothing": under the
-# column-0 anchor this run is instead exit 2 about a roster it could not read.
-printf 'declare -A PREREQ=(\n)\n ORDER=(morning-brief inbox-triage)\n' \
-  > "$BR/scripts/vps/register-schedules.sh"
-PAI_MODE=remote BRAIN_HOST=brain.invalid run_check "$BR/scripts/verify/check-brain.sh"
-# The verdict prefix is part of the needle, for the reason the sec-bad fixture
-# below records: without it the same sentence emitted as a SKIP would match.
-saw "an indented ORDER=( is still derived, and every id it found is named" \
-  "FAIL  goose schedule list is missing: morning-brief inbox-triage"
-if [ "$RC_CODE" -eq 1 ]; then
-  pass "...so the check reaches its own verdict instead of the roster refusal"
-else
-  fail "check-brain exited $RC_CODE on the indented-ORDER=( fixture:"$'\n'"$RC_OUT"
-fi
-
-# Removed outright: nothing to derive, so exit 2 rather than a green sweep.
-printf 'declare -A PREREQ=(\n)\n' > "$BR/scripts/vps/register-schedules.sh"
-PAI_MODE=remote BRAIN_HOST=brain.invalid run_check "$BR/scripts/verify/check-brain.sh"
-if [ "$RC_CODE" -eq 2 ]; then
-  pass "no ORDER=( at all is exit 2, naming what it could not read"
-else
-  fail "check-brain exited $RC_CODE with no roster to derive:"$'\n'"$RC_OUT"
-fi
-saw "...and says which file and which anchor" "ORDER=("
-
-# ---- 4. nothing leaked into a log ------------------------------------------
+# ---- 3. nothing leaked into a log ------------------------------------------
 # The stub goose records every argv it saw. No credential is ever passed to
 # these checks, and none may appear in what they run: the standing rule that
 # a credential reaches a process through the environment, never argv.
@@ -396,7 +347,7 @@ else
   fail "the goose argv log is empty or holds a credential-shaped word"
 fi
 
-# ---- 5. the code-agent sandbox probes (issue #17 B1/B5) --------------------
+# ---- 4. the code-agent sandbox probes (issue #17 B1/B5) --------------------
 echo
 echo "-- code-agent-probes.sh --"
 

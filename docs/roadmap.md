@@ -14,14 +14,14 @@ but metered, key-gated, and a third party sees every query. The upgrade is a
 aggregates 70+ engines, holds no account, keeps no logs under your control) with
 [ihor-sokoliuk/mcp-searxng](https://github.com/ihor-sokoliuk/mcp-searxng) wired
 into Goose as a stdio extension pointing at `http://127.0.0.1:8080`. Result:
-unlimited, keyless, private search for every recipe and interactive session, and
+unlimited, keyless, private search for every interactive session, and
 `TAVILY_API_KEY` can be deleted from `secrets.env`. Do it when you start hitting
 the free-tier ceilings — the container is one compose file on the VPS and the
 extension swap is one block in `config/goose/config.yaml`. Bind SearXNG to
 localhost only (the brain's zero-public-inbound rule applies; see
 `docs/security.md`).
 
-## Basic Memory over the vault
+## Basic Memory (local-first knowledge graph)
 
 Goose's built-in Memory extension loads **every** saved memory into **every**
 prompt — cost grows linearly with what the agent knows about you, and on paid
@@ -30,50 +30,47 @@ inference that's a per-request tax.
 (AGPL, ~3.3k stars, actively maintained) replaces that with a local-first
 markdown knowledge graph: plain files with wikilinks and observations, semantic
 and hybrid search, retrieval on demand instead of blanket injection. Because it
-operates over ordinary markdown, it can sit directly on top of (or alongside)
-the life-vault clone at `/data/life-vault` — the agent's long-term memory and
-your canonical records become the same reviewable, git-versioned files. Do it
+operates over ordinary markdown, it can sit directly on a directory you keep on
+the encrypted `/data` volume — the agent's long-term memory becomes reviewable,
+git-versioned files like everything else in the stack. Do it
 when the Memory extension's contents stop fitting in a screenful, or when you
-notice memory tokens dominating small requests. Migration is low-risk: keep the
-built-in extension for standing preferences, move facts/notes into the vault.
+notice memory tokens dominating small requests.
 
 ## Pick a todo app (none wired in yet)
 
 No task manager is part of the stack yet — the `todoist` extension in
-`config/goose/config.yaml` ships `enabled: false` as a worked example, and the
-morning-brief/weekly-review recipes deliberately have no Tasks section.
+`config/goose/config.yaml` ships `enabled: false` as a worked example, and
+nothing depends on tasks.
 Criteria when choosing: a real API or first-party MCP server (Todoist has
 `https://ai.todoist.net/mcp`, OAuth, zero key management — still the
 lowest-friction option), export path, and no-training data posture. To adopt
-one: flip the extension on (or swap its `uri`), add a Tasks step back to the
-two recipes, and re-run `scripts/verify/check-mcp.sh`.
+one: flip the extension on (or swap its `uri`) and re-run
+`scripts/verify/check-mcp.sh`.
 
-## Budgeting app with a real API (replace the ledger.csv flow)
+## Budgeting app with a real API
 
-Phase 4 starts finance tracking deliberately simple: `finance/ledger.csv` +
-`budget.md` in the private vault, with the monthly `budget-checkin` recipe
-reading them. The upgrade is a proper budgeting app the agent can query.
-Selection criteria, in order: **(1) official, documented API** the agent can
+Finance tracking is deliberately not built in — the automations pivot removed
+the ledger/CSV flow with everything else it scheduled (2026-09-23), and any
+restart of it is a fresh decision. The bar a budgeting integration must clear:
+**(1) official, documented API** the agent can
 read without scraping; **(2) full data export** so leaving is always possible
 (no lock-in); **(3) a no-training / no-data-sale policy** compatible with the
 finance tier in `docs/privacy.md`. Candidates: **YNAB** (mature official REST
 API, strong export), **Actual Budget** (open source, self-hostable on this same
-VPS — the best privacy fit if its API surface covers what the recipes need),
+VPS — the best privacy fit if its API surface covers what you need),
 and **Lunch Money** (developer-friendly API, indie, US-centric). Once picked:
-add its key to `secrets.env`, point `budget-checkin.yaml` at the API instead of
-`ledger.csv`, and keep the CSV as an export target rather than the source of
-truth. Trigger: the first month manual CSV upkeep gets skipped is the sign the
-flow needs to be automatic.
+add its key to `secrets.env`, write a connector manifest against the registry
+contract, and add its privacy.md row before the first session touches it.
 
-## Vault RAG with Together embeddings
+## RAG with Together embeddings
 
-`vault-qa` currently answers by stuffing documents into DeepSeek V4 Flash's 1M
-context — simple and surprisingly durable, but it re-reads everything on every
-question. When the vault outgrows that (hundreds of documents, or answers start
-missing things), add retrieval: embed the vault with Together's
-**M2-BERT-80M-32K** retrieval model (~$0.01 per 1M tokens — embedding the whole
-vault costs pennies), store vectors in SQLite/sqlite-vec on `/data` (encrypted
-at rest like everything else), and have `vault-qa` retrieve top-k chunks before
+Stuffing whole documents into DeepSeek V4 Flash's 1M
+context — the simple approach this setup used before the pivot — re-reads
+everything on every question. When your long-document corpus outgrows that
+(hundreds of documents, or answers start missing things), add retrieval: embed
+the corpus with Together's
+**M2-BERT-80M-32K** retrieval model (~$0.01 per 1M tokens), store vectors in SQLite/sqlite-vec on `/data` (encrypted
+at rest like everything else), and retrieve top-k chunks before
 answering. Embeddings stay inside the Together privacy tier, so no new
 provider-classification work is needed (`docs/privacy.md` already covers it).
 This pairs naturally with Basic Memory above — same files, two access paths
@@ -81,16 +78,13 @@ This pairs naturally with Basic Memory above — same files, two access paths
 
 ## Non-Google email/calendar providers (Outlook, Fastmail/IMAP, Proton)
 
-Multi-account Google is done: a `USER_GOOGLE_EMAILS` roster sweeps N Gmail
-accounts through the one workspace-mcp instance
-([30-google-oauth.md §8](setup/30-google-oauth.md)). The remaining half of
-the "whole communication surface" goal is other providers — Outlook /
+No provider is wired in today; the "whole communication surface" goal still has
+other providers on it — Outlook /
 Microsoft 365 via an MS Graph MCP server, Fastmail-style hosts via generic
 IMAP/SMTP + CalDAV servers, Proton via Bridge. The doorway is already built:
-[providers.md](providers.md) fixes the vetting bar (the one workspace-mcp
-passed), the extension/env naming conventions, the per-provider roster
-pattern, and the rule that delivery stays a single self-addressed email from
-the Google primary. What remains per provider is picking a server that clears
+[providers.md](providers.md) fixes the vetting bar, the extension/env naming
+conventions, the per-provider roster
+pattern. What remains per provider is picking a server that clears
 the bar, a privacy.md policy row, a `docs/setup/3x-<provider>.md` runbook,
 and a check-mcp smoke test. Trigger: the day a real second provider joins
 your life (a work M365 tenant, a Fastmail migration) — not before.
@@ -104,6 +98,6 @@ on your infrastructure and removes rate limits. One honest caveat from the ntfy
 docs: **instant** iOS delivery still requires forwarding poll requests through
 the central ntfy.sh server because of iOS background restrictions — so
 self-hosting improves content privacy but doesn't fully cut the third party out
-on iOS. Since the PHI-free push rule (`docs/privacy.md`) already guarantees
+on iOS. Since the content-free push rule (`docs/privacy.md`) already guarantees
 nothing sensitive transits ntfy.sh, this is a nice-to-have, not a gap. Do it if
 notification volume grows.

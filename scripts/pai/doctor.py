@@ -445,9 +445,8 @@ def plan_envs(
     whole feature: `envs` is unreadable over ACP in BOTH directions, and ANY ACP
     write leaves disk `envs: {}`. So re-asserting an extension that carries an
     inline value DESTROYS that value -- silently, as a side effect of fixing
-    something else entirely. The author's own machine has
-    `workspace-mcp.envs.USER_GOOGLE_EMAIL` populated, so this is the common case,
-    not the corner.
+    something else entirely. The author's own machine carried a populated
+    inline `envs` value, so this is the common case, not the corner.
 
     Re-sending the value as `server.env` does not preserve it either: goose
     PROMOTES it into its secret store, appends the name to `env_keys`, and still

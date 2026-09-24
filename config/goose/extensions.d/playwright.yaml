@@ -4,14 +4,14 @@ extensions:
   # workflows that actually drive the web.
   #
   # BEFORE YOU FLIP enabled: true — add a non-empty snake_case `available_tools`
-  # list, the way workspace-mcp and todoist above have one. An extension with no
+  # list, the way todoist above has one. An extension with no
   # allowlist can call EVERY tool its server registers; for a browser driver that
   # is the whole machine's web surface. Derive the real list instead of guessing:
   #   scripts/verify/check-connectors.sh --smoke <id>   (or a raw tools/list)
   # scripts/verify/check-security.sh FAILS on any enabled extension missing one,
   # so this is enforced rather than merely advised.
   #
-  # Version pinned for the same reason workspace-mcp is: `@latest` lets an
+  # Version pinned for the same reason todoist's uri is upstream-hosted: `@latest` lets an
   # upstream release widen the tool surface between two runs of the same config.
   # 0.0.79 was current on 2026-08-23; bump deliberately.
   playwright:

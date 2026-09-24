@@ -175,7 +175,7 @@ Three listening situations, worth keeping apart because they fail differently:
 | **Tailnet** (WireGuard) | reachable from your devices | `goose serve --host "$TS_IP" --port 3284` — how your phone reaches the brain at all |
 | **Loopback** (`127.0.0.1`) | never crosses a network interface | the OAuth callback listener; Proton Bridge's IMAP on `127.0.0.1:1143` |
 
-Per connector: `workspace-mcp` dials out to `googleapis.com`; Todoist's remote MCP is an
+Per connector: Todoist's remote MCP is an
 outbound HTTPS call to `ai.todoist.net`; IMAP/CalDAV is outbound TLS to the host; and Proton
 Bridge dials out to Proton, then serves loopback only, so the MCP server's connection to it
 never touches a network interface.

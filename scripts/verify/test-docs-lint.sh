@@ -188,7 +188,7 @@ expect_same() {
 }
 
 # ---- the hand-typed budget golden --------------------------------------------
-# Typed from README.md by hand, on purpose. Seven `cost` entries across six
+# Typed from README.md by hand, on purpose. Five `cost` entries across four
 # manifests quote these rows verbatim; units_lint.check_cost is what enforces
 # that, and this is what notices if the rewrite moved a character.
 budget_rows() {
@@ -196,7 +196,7 @@ budget_rows() {
 | Hetzner cpx21-class VPS + encrypted volume | ~€6–9/mo |
 | OpenCode Zen inference (PAYG — **disable auto-reload, set a cap**) | ~$5–20/mo typical |
 | Together AI inference (min $5 top-up; sensitive tier + default hub) | ~$5–10/mo |
-| Tailscale (personal plan), ntfy failure-alert emails (free tier) | $0 |
+| Tailscale (personal plan) | $0 |
 | Code agents on the brain (containers) | no new account — bills to the Zen/Together lines above, plus disk |
 | **Total** | **~$15–35/mo** |
 EOF
@@ -229,7 +229,7 @@ expect_ok "an unmutated copy of the working tree passes check-docs.sh"
 assert_budget "$TREE"
 probe
 if [ -z "$BUDGET_MISS" ]; then
-  pass "all 6 hand-typed budget rows are in README.md verbatim (7 cost entries quote them)"
+  pass "all 6 hand-typed budget rows are in README.md verbatim (5 cost entries quote them)"
 else
   fail "budget rows missing from README.md — units_lint.check_cost will be red:$BUDGET_MISS"
 fi
@@ -256,9 +256,9 @@ run_docs
 expect_fail "A1: a new skill directory makes the repo map STALE" \
   "README.md region 'repo-map' is STALE"
 # And the count really came from the filesystem rather than from a literal: the
-# render says 13 where the committed file says 12.
-expect_line "A1: the stale render counts the 13 skills that are on disk" \
-  "13 skills, Claude-compatible"
+# render says 12 where the committed file says 11.
+expect_line "A1: the stale render counts the 12 skills that are on disk" \
+  "12 skills, Claude-compatible"
 
 # The other region, driven by the other source. A summary is data no glob can
 # see, so this also proves the menu is rendered from the manifests.

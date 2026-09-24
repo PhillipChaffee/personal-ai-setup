@@ -3,7 +3,7 @@
 Your stance, decided up front: cloud inference is acceptable **with strict no-training /
 zero-retention policies**, and sensitive material may live on the VPS brain **given
 full-disk encryption at rest and encrypted communications everywhere**. This document
-turns that stance into rules you (and every recipe) can follow mechanically.
+turns that stance into rules you can follow mechanically.
 
 The operational counterpart is [model-routing.md](model-routing.md) — the routing table is
 this policy compiled into model choices.
@@ -17,18 +17,14 @@ medical sentence is Tier 3, whole.
 |---|---|---|---|
 | 1 — Public / general | Nothing about you beyond what you'd post publicly | Code without personal context, public research, drafting a blog post, general Q&A | Any **paid** model (Zen or Together). Zen free models are additionally allowed only for throwaway, non-personal code |
 | 2 — Personal, not sensitive | Your life's logistics | Email triage, calendar, todos, travel plans, non-sensitive journal notes, contacts | Zen **paid** models or Together. Never Zen free models |
-| 3 — Sensitive (health / finance) | Anything from the life vault or that belongs there | Medical records Q&A, appointment and follow-up notes, insurance/billing, budget, ledger, account details | **Together (ZDR default, HIPAA/BAA posture) or Zen paid open models only.** Never Claude/GPT via Zen (30-day retention), never free models |
+| 3 — Sensitive (health / finance) | Anything medical or financial about you | Medical records Q&A, appointment and follow-up notes, insurance/billing, budget, ledger, account details | **Together (ZDR default, HIPAA/BAA posture) or Zen paid open models only.** Never Claude/GPT via Zen (30-day retention), never free models |
 
 Two rules of thumb that catch most edge cases:
 
-- Inbox triage is Tier 2 but can surface Tier 3 content (a bill, a lab result). That's why
-  `inbox-triage` runs on `minimax-m2.7` — a Zen **paid open** model (zero retention, no
-  training), which is acceptable even when Tier 3 content drifts through. It must never be
-  moved to `claude-sonnet-5` or a free model.
 - If you're unsure which tier something is, it's the higher one.
 - **Code-agent chats** (`docs/code-agents.md`) are classified **at the allowlist gate**,
   not per message: `/data/code-agents/repos.json` may only contain repos you classify
-  Tier 1 or 2 — the life vault and anything Tier 3 never enter it. Zen-free models are
+  Tier 1 or 2 — anything Tier 3 never enters it. Zen-free models are
   refused unless a repo is explicitly flagged `public_throwaway` (hard rule 1). If a chat
   trips over sensitive content anyway, abort it — never continue the session. Chat
   transcripts live in per-chat volumes on the encrypted `/data` — consistent with the
@@ -77,11 +73,9 @@ gate is concerned.
 
 | Connector | What it can surface | Tier | Route and delivery rule |
 |---|---|---|---|
-| **Google Workspace** <!-- connector: google-workspace --> | Gmail message bodies and attachments' metadata, Calendar events and attendees, Tasks — across every account on the `USER_GOOGLE_EMAILS` roster | 2, routinely surfaces 3 | Zen **paid open** models or Together. Never Zen free; never Claude/GPT via Zen for a sweep, because a bill or a lab result drifts through inbox triage by design. Digests carry subjects and summaries, never bodies |
 | **Todoist** <!-- connector: todoist --> | Task and project names, notes, due dates, labels. Doist hosts the MCP server itself, so this text transits Doist — the party that already stores it, and no fourth one | 2 | Tier 1–2 routes (Zen paid, Together). Never free models. If health or money detail ends up in a task title, that session is Tier 3 and routes as Tier 3 |
-| **IMAP + CalDAV (generic)** <!-- connector: imap-caldav --> | Whole message bodies from any mailbox it is pointed at, plus CalDAV event titles, times and attendees. Scope is whatever the account can read — there is no server-side filter | 2, routinely surfaces 3 | Same as Google Workspace: Zen paid open or Together, never free, never a 30-day-retention route for a sweep |
+| **IMAP + CalDAV (generic)** <!-- connector: imap-caldav --> | Whole message bodies from any mailbox it is pointed at, plus CalDAV event titles, times and attendees. Scope is whatever the account can read — there is no server-side filter | 2, routinely surfaces 3 | Zen **paid open** models or Together. Never Zen free; never Claude/GPT via Zen for a sweep, because a bill or a lab result drifts through by design |
 | **Proton Mail** <!-- connector: proton-mail --> | Read-only Proton mailbox contents, message bodies included, decrypted by a Proton Bridge running on the brain — so the plaintext exists on the encrypted `/data` volume and nowhere else at rest | 2, routinely surfaces 3 | Same as above. The Bridge adds no third party; the mail content itself is what sets the tier |
-| **Health Records** <!-- connector: health-records --> | Clinical documents exported from your own patient portal and committed to the life vault: visit notes, lab results, medication lists, diagnoses, insurance and billing | **3** | **Together (ZDR, HIPAA/BAA posture) or a Zen paid open model only**, pinned before the first call — never Claude/GPT via Zen, never free models. Delivery stays PHI-free: counts and neutral titles only, no condition, medication, provider or dollar amount |
 
 Two things this table deliberately does *not* do. It does not re-tier per message: a
 connector is classified by the most sensitive content it **can** surface, so "2, routinely
@@ -92,8 +86,8 @@ the bar for that provider is in [providers.md](providers.md).
 ## The encryption model
 
 **At rest.** Everything stateful on the brain lives on a dedicated Hetzner Volume
-encrypted with LUKS2 and mounted at `/data`: goose's own state, the private life-vault
-clone, `/data/secrets.env`, and the Google OAuth tokens. Hetzner snapshots, disk reuse,
+encrypted with LUKS2 and mounted at `/data`: goose's own state and
+`/data/secrets.env`. Hetzner snapshots, disk reuse,
 and hardware disposal therefore never expose plaintext state. Details in
 [security.md](security.md).
 
@@ -103,12 +97,12 @@ while, the hole in this section:
 | goose dir | Default location | What is in it |
 |---|---|---|
 | config | `~/.config/goose` | `config.yaml`, `.goosehints`, `memory/`, and `secrets.yaml` (mode 0600) — where a credential goes when there is no keyring |
-| data | `~/.local/share/goose` | `sessions.db` — your entire chat history, including every tool result — and `schedule.json` |
+| data | `~/.local/share/goose` | `sessions.db` — your entire chat history, including every tool result |
 | state | `~/.local/state/goose` | `logs/llm_request.*.jsonl` — described by goose's own documentation as the raw request and response data sent to language-model providers |
 
 Only **data** was relocated originally, by a `~/.local/share/goose → /data/goose-data`
 symlink. Config and state stayed where they defaulted, on the **unencrypted root disk** —
-which meant `llm_request` logs holding verbatim email bodies and life-vault text, and a
+which meant `llm_request` logs holding verbatim session content, and a
 `secrets.yaml` holding connector credentials, sat outside the LUKS volume. Until this was
 fixed, this document's claim that the root disk "holds only the OS and this public repo's
 code" was **false**, and it is recorded here rather than quietly deleted because the class
@@ -155,33 +149,17 @@ your threat model ever grows to include the hosting provider itself, the design 
 a homelab box unchanged — that's the exit path, documented in
 [roadmap.md](roadmap.md).
 
-## Delivery channels: never PHI, never account numbers
+## Push notifications: never PHI, never account numbers
 
-Content delivery is a self-addressed email per recipe (your own Gmail, end to
-end). Failure alerts go through ntfy (`https://ntfy.sh/$NTFY_TOPIC`) and its
-email gateway. The public ntfy server sees every alert message, and the topic
-name is only a shared secret — treat alert content as if it could
-be read. The rule:
+The one notification channel left is the code-agent buzz, and its rule is
+simple: **no PHI, no amounts, no repo names, no commands.**
 
-- **Sensitive jobs report counts and neutral titles only.** Good: `health-followups: 3
-  items appended`. Bad: anything naming a condition, medication, provider, dollar amount,
-  or account. The detail lives in the vault on the encrypted volume; the message just tells
-  you to go look.
-- Non-sensitive jobs (morning brief, inbox triage) may email digests, but keep them to
-  subjects/summaries — no message bodies.
-- All failure alerts go through `scripts/common/notify.sh` — one choke point, so the rule is
-  enforced in one place. Recipes never assemble their own ntfy requests.
+### The agent channel (`NTFY_AGENT_TOPIC`) — one choke point
 
-### The agent channel (`NTFY_AGENT_TOPIC`) — a second choke point, not a second rule
-
-There are now **two** ntfy channels, and the rule is one choke point *per
-channel* rather than one for the whole box. The second is the code-agent
-channel: the phone buzzes when a code-agent turn ends, or when an agent is
+The phone buzzes when a code-agent turn ends, or when an agent is
 parked waiting for permission to push. It is assembled in exactly one function
 — `notify_agent()` in `scripts/vps/code-agent-manager.py` — and nothing else
-may send on it. It deliberately does **not** call `notify.sh`, which attaches
-an `Email:` header whenever `NTFY_EMAIL` is set and would burn the ~5/day
-forwarding cap the failure alerts depend on.
+may send on it.
 
 Its payload is content-free **by construction**, not by review:
 
@@ -207,34 +185,15 @@ a notification is never itself answerable: no Allow/Deny buttons, ever. The tap
 only opens the app, and the app re-reads the real pending ask over the tailnet
 before showing anything actionable.
 
-Both `NTFY_TOPIC` and `NTFY_AGENT_TOPIC` are secrets: they live in the Keychain
-(Mac) and `/data/secrets.env` (brain), never in this repo. See
-[public-repo.md](public-repo.md). They are separate values on purpose —
-subscribing a phone to the agent topic turns that topic from a read-only leak
-into a **write channel onto your lock screen** (anyone who learns it can plant
-"code agent wants to push to main" there), so it has to be rotatable without
-taking the failure-alert backstop down with it.
+`NTFY_AGENT_TOPIC` is a secret: it lives in the Keychain (Mac) and
+`/data/secrets.env` (brain), never in this repo. See [public-repo.md](public-repo.md).
+Subscribing a phone to it turns that topic from a read-only leak into a **write
+channel onto your lock screen** (anyone who learns it can plant "code agent
+wants to push to main" there), so rotate it on any suspicion at all — the
+rotation table is in [security.md](security.md).
 
-## Multiple accounts (and, later, multiple providers)
+## Providers beyond the ones wired in
 
-With a `USER_GOOGLE_EMAILS` roster ([30-google-oauth.md §8](setup/30-google-oauth.md)),
-the sweep recipes read every listed account. Two things change, and one rule keeps
-everything honest:
-
-- **Classification doesn't care which account content came from.** A second Gmail's
-  inbox is Tier 2 like the first, and can surface Tier 3 content the same way — the
-  tier table above applies per *content*, not per account. Nothing about the model
-  routing changes.
-- **Digests aggregate across accounts into the primary inbox.** The one self-addressed
-  delivery email (always sent from and to the **primary** account) now carries
-  subjects/summaries from every account on the roster — so a secondary account's
-  content ends up stored in the primary account's mailbox. If that crossing is
-  unacceptable for some account, leave it off the roster; it stays reachable
-  interactively without ever appearing in a digest.
-- **The send rule tightens rather than loosens:** the single self-addressed email from
-  the primary is still the *only* send; secondary accounts are never sent from at all
-  (inbox-triage's drafts stay inside the account that owns the thread).
-
-Non-Google providers are not wired in yet; the bar any future provider must clear —
+The bar any future provider must clear —
 including a policy row in this document *before* adoption — is defined in
 [providers.md](providers.md).

@@ -144,7 +144,7 @@ CONTRACT_FILE="$REPO_ROOT/config/goose/acp-contract.json"
 
 # A non-interactive SSH shell on the brain does not source the profile that
 # puts ~/.local/bin on PATH, so fall back to the known install location the way
-# check-mcp.sh and register-schedules.sh do. Unlike those, a missing goose is
+# check-mcp.sh does. Unlike those, a missing goose is
 # NOT fatal here: manifest validation is text work and must run in CI on a
 # machine that has never installed goose.
 GOOSE_BIN="$(resolve_goose_bin)"
@@ -2199,7 +2199,7 @@ else
   done
   if [ "$MANIFEST_COUNT" -eq 0 ]; then
     skip "no manifests in config/connectors/ yet — the directory fills as services are connected"
-    echo "      Run /connect-service (or recipes/connect-service.yaml); it writes one."
+    echo "      Write one by hand against config/connectors/README.md (docs/connecting.md)."
   fi
 fi
 
@@ -2226,7 +2226,7 @@ if [ -n "$SMOKE_ID" ]; then
       fail "smoke $SMOKE_ID asserted nothing — it was requested explicitly, so a skip is a failure"
       echo "      Usually a credential missing from this shell (the SKIP lines above name it)."
       echo "      tools/list needs no REAL credential; a placeholder is enough to launch the"
-      echo "      server, e.g.  USER_GOOGLE_EMAIL=smoke@example.com $0 --smoke $SMOKE_ID"
+      echo "      server, e.g.  TODOIST_API_KEY=smoke@example.com $0 --smoke $SMOKE_ID"
     fi
   fi
 fi

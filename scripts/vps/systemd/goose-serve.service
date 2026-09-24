@@ -1,5 +1,5 @@
 # goose-serve.service — the always-on brain: `goose serve` (ACP server for
-# Desktop clients + the native recipe scheduler).
+# Desktop clients).
 # Installed to /etc/systemd/system/ by scripts/vps/deploy-vps.sh.
 #
 # Binding mechanism: docs/security.md requires the listener to exist on the
@@ -14,7 +14,7 @@
 # staying correct instead of on the socket never existing publicly.)
 
 [Unit]
-Description=goose serve (personal AI brain: ACP server + scheduler)
+Description=goose serve (personal AI brain: ACP server)
 Wants=network-online.target
 After=network-online.target tailscaled.service
 # /data (LUKS volume) holds secrets.env and goose's whole path root. After a
@@ -25,11 +25,11 @@ RequiresMountsFor=/data
 [Service]
 User=agent
 # The brain's entire secret store: GOOSE_SERVER__SECRET_KEY, provider API
-# keys, NTFY_TOPIC — all injected from the encrypted volume, nowhere else.
+# keys — all injected from the encrypted volume, nowhere else.
 EnvironmentFile=/data/secrets.env
 WorkingDirectory=/home/agent
-# goose spawns MCP servers as children: uvx (workspace-mcp) lives in
-# ~/.local/bin, npx (todoist/playwright-style servers) in /usr/bin.
+# goose spawns MCP servers as children: npx (todoist/playwright-style servers)
+# in /usr/bin.
 Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Headless server — no Secret Service keyring exists, so goose falls back to
 # a plaintext <config_dir>/secrets.yaml (mode 0600) for anything it is asked
@@ -40,9 +40,9 @@ Environment=GOOSE_DISABLE_KEYRING=1
 # (verified against goose 1.46.0). All three matter and they default to three
 # different places on the UNencrypted root disk:
 #   config/  config.yaml, .goosehints, memory/, secrets.yaml
-#   data/    sessions.db — the entire chat history — and schedule.json
+#   data/    sessions.db — the entire chat history
 #   state/   logs/llm_request.*.jsonl — the RAW request and response bodies
-#            exchanged with inference providers (whole emails, vault text)
+#            exchanged with inference providers (whole emails)
 # Only data/ was on /data before this line existed; docs/privacy.md's claim
 # that the root disk holds nothing sensitive was false until it did.
 #
@@ -58,7 +58,10 @@ Environment=GOOSE_PATH_ROOT=/data/goose
 # Belt and braces with RequiresMountsFor: refuse to start over a stale,
 # unmounted /data directory.
 ExecStartPre=/usr/bin/mountpoint -q /data
-ExecStart=/bin/bash -o pipefail -c 'TS_IP="$$(/usr/bin/tailscale ip -4 | head -n1)"; [ -n "$$TS_IP" ] || { echo "goose-serve: no Tailscale IPv4 yet, retrying" >&2; exit 1; }; TLS_ARGS=""; [ -f /data/tls/cert.pem ] && TLS_ARGS="--tls-cert-path /data/tls/cert.pem --tls-key-path /data/tls/key.pem"; exec /home/agent/.local/bin/goose serve --host "$$TS_IP" --port 3284 --platform desktop --tls $$TLS_ARGS --enable-scheduler'
+# --tls: a self-signed cert goose generates; clients (Goose Desktop) pin its
+# SHA-256 fingerprint on first connect. No LE/cert-renew machinery any more —
+# the phone client it existed for is gone (2026-09-23).
+ExecStart=/bin/bash -o pipefail -c 'TS_IP="$$(/usr/bin/tailscale ip -4 | head -n1)"; [ -n "$$TS_IP" ] || { echo "goose-serve: no Tailscale IPv4 yet, retrying" >&2; exit 1; }; exec /home/agent/.local/bin/goose serve --host "$$TS_IP" --port 3284 --platform desktop --tls'
 Restart=always
 RestartSec=5
 NoNewPrivileges=true

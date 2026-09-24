@@ -6,11 +6,12 @@
 #
 # WHAT A GREEN RUN HERE MEANS, exactly, and nothing beyond it:
 #
-#   "deploy-vps.sh issues the privileged invocations it issued before the carve,
-#    IN THE SAME ORDER, with two enumerated edits -- one `daemon-reload` moved
-#    below the tls-cert-renew installs and one added inside
-#    unit_telegram_gateway -- writes the same file tree byte for byte, and
-#    issues a strictly smaller sequence when a unit is deselected."
+#   "deploy-vps.sh stops goose-serve before the first move into the path root,
+#    installs then reloads then restarts the manager, always links with -T,
+#    runs the migration once per host per deploy whatever is selected, honours
+#    --with/--without/--only, exits 0 on a re-run without re-installing or
+#    superseding anything, blocks on a dead /status, attributes a failing unit
+#    by name, and refuses a unit id that is not in the catalog."
 #
 # WHAT IT CANNOT MEAN. There is no CI on earth that can run this script against
 # a real brain, so the following stay a human's job on a real VPS and are
@@ -18,29 +19,35 @@
 #   * that podman, apt-get, systemd and loginctl behave as fake-host.sh models
 #     them on Ubuntu;
 #   * that `podman build` succeeds, or that code-agent:local runs;
-#   * that `systemctl enable --now` on a stale unit file is a no-op -- V2b/V2b'
-#     assert only that the daemon-reload was ISSUED between the install and the
-#     enable, which is the fix, not the symptom;
+#   * that `systemctl enable --now` on a stale unit file is a no-op -- V2c
+#     asserts only that the daemon-reload was ISSUED between the install and
+#     the restart, which is the fix, not the symptom;
 #   * that rootless subuid ranges or `loginctl enable-linger agent` work;
-#   * that goose serve reads schedule.json only at startup (constraint 4's
-#     premise -- a goose 1.46.0 fact verified by hand, and a comment in
-#     deploy-vps.sh, not an assertion here);
 #   * check-code-agents.sh's checks 3/5/6 and --probe, which talk to a live TLS
 #     gateway. deploy-vps.sh's own summary already prints them as a manual step.
 #
-# LINUX ONLY, and it dies 2 saying so. `ln -sfnT` (GNU -T), `stat -c %a` and
-# register-schedules.sh's `declare -A` rule out stock macOS, and a partial pass
+# WHERE THE DIFFERENTIAL WENT. V0/V1/V1b — a sequence-and-file-tree
+# differential against the pre-carve seam commit — retired with the automations
+# removal (#143, 2026-09-23), which DELETED three units, the gateway stop, the
+# tls-cert-renew installs, the schedules and the workspace-mcp token link. A
+# deliberate behaviour change of that size is not a two-edit allowlist; it is
+# dozens of enumerated edits, which is the same as no assertion. What carries
+# the guarantee forward is the constraint set below (V2a/V2c/V2e/V2f/V3/V6)
+# plus the selection, idempotence and /status legs, which assert the
+# properties that survived the removal rather than the sequence it replaced.
+#
+# LINUX ONLY, and it dies 2 saying so. `ln -sfnT` (GNU -T) and `stat -c %a`
+# rule out stock macOS, and a partial pass
 # would be worse than no pass: half these assertions are ABOUT the GNU-only
 # behaviour. This is a deliberate departure from test-base-install.sh's
 # laptop-friendliness. Develop it in CI or in a container.
 #
 # ASSERTION IDS carry through from the design so a failure names the claim:
-#   V0      the pinned baseline is real         V5/V5b/V5c  selection + dry run
-#   V1/V1b  the pre-carve differential          V7          idempotence
-#   V2a-f   ordering constraints                V8          the /status gate
-#   V3/V3b  the -T constraint, both directions  V9          ERR attribution
-#   V4a/V4b the EXIT trap                       V11         check-code-agents
-#   V6      the migration runs once
+#   V2a      stop before the first move        V5/V5b/V5c  selection + dry run
+#   V2c/V2e/V2f  manager reload/restart rules  V7          idempotence
+#   V3/V3b   the -T constraint, both directions V8         the /status gate
+#   V4a      the EXIT trap                     V9          ERR attribution
+#   V6       the migration runs once           V11         check-code-agents
 #
 # NOTHING HERE MAY CONTAIN A LITERAL SECRET-SHAPED CONSTANT. The fixture
 # secrets.env is generated with `openssl rand -hex 32` at run time, and no
@@ -58,15 +65,12 @@ REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 
 usage() {
   cat <<'EOF'
-Usage: test-deploy-vps.sh [--only differential|constraints|select|rerun|status] [--help]
+Usage: test-deploy-vps.sh [--only constraints|select|rerun|status] [--help]
 
 Runs scripts/vps/deploy-vps.sh against scripts/verify/fake-host.sh inside a
 throwaway directory. Linux only. Exits non-zero if any assertion fails.
 
-  --only differential  V0/V1/V1b: the pinned baseline, then the
-                       pre-carve/post-carve invocation-SEQUENCE and file-tree
-                       differential, with a two-edit allowlist
-  --only constraints   V2a-f, V3, V3b, V4a/V4b, V6: the four documented
+  --only constraints   V2a, V2c/V2e/V2f, V3, V3b, V4a, V6: the documented
                        constraints on this deploy, plus the reload orderings
   --only select        V5/V5b/V5c/V11: --with/--without/--only/--dry-run
   --only rerun         V7: a second deploy into the same sandbox
@@ -86,7 +90,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 case "$ONLY" in
-  ""|differential|constraints|select|rerun|status) ;;
+  ""|constraints|select|rerun|status) ;;
   *) echo "test-deploy-vps.sh: unknown --only leg: $ONLY" >&2; usage >&2; exit 2 ;;
 esac
 
@@ -110,20 +114,19 @@ case "$(uname -s)" in
 esac
 
 # NOT ROOT, and refused rather than reported. deploy-vps.sh's own preflight
-# (deploy-vps.sh:315) exits 1 on `id -u` == 0, so under root EVERY run of it
-# dies on its first line and every assertion below fails for that one reason.
-# Measured before this guard existed, in ubuntu:24.04 as root: 1 pass, 13
-# failures saying things like "the brain would be left offline", and then the
-# harness died inside V4b without printing a summary at all. Not one of those
-# failures was about the code under test, and the count is environment-dependent
-# — which is the point: a root run reports the wrong cause 13 different ways.
-# The obvious way to hit it is a bare `docker run ubuntu:24.04`.
+# exits 1 on `id -u` == 0, so under root EVERY run of it dies on its first line
+# and every assertion below fails for that one reason. Measured before this
+# guard existed, in ubuntu:24.04 as root: 1 pass, 13 failures saying things
+# like "the brain would be left offline", and then the harness died inside V4b
+# without printing a summary at all. Not one of those failures was about the
+# code under test, and the count is environment-dependent — which is the point:
+# a root run reports the wrong cause 13 different ways. The obvious way to hit
+# it is a bare `docker run ubuntu:24.04`.
 [ "$(id -u)" -ne 0 ] || die "refusing to run as root: deploy-vps.sh's preflight refuses root, so every assertion here would fail for that one reason and name the wrong cause. Run as an unprivileged user (in a container: 'useradd -m tester' then run as tester)."
 
-# THE BRAIN INTERLOCK. register-schedules.sh reads the LITERAL /data/secrets.env
-# and the literal /data/life-vault paths (it has no seam of its own, and giving
-# it one is #39's job, not this one's). On a real brain that would make this
-# harness read the owner's secrets and branch on their vault. Refuse.
+# THE BRAIN INTERLOCK. deploy-vps.sh reads the LITERAL /data/secrets.env in its
+# preflight (it has no seam for the file itself — the seam roots are what move).
+# On a real brain that would make this harness read the owner's secrets. Refuse.
 [ ! -r /data/secrets.env ] || die "/data/secrets.env is readable — this looks like the brain itself. This harness must not run there."
 
 REQUIRED_TOOLS="bash env openssl git diff comm sort grep sed awk find head tail wc tr cut cmp ls stat id date basename readlink mktemp seq install ln mv cp rm rmdir mkdir chmod cat sha256sum uname"
@@ -156,23 +159,13 @@ DENY_NAMES="podman apt-get usermod loginctl"
 # ---- 2b. the fixture secrets ------------------------------------------------
 # GENERATED, never typed: a literal here would be a secret-shaped constant in a
 # public repo and gitleaks would be right to reject it.
-#
-# Generated ONCE and copied into every sandbox, not once per sandbox. V1b
-# compares the two sides of the differential byte for byte, and a per-sandbox
-# secrets.env differs by construction -- which is a difference in the FIXTURE,
-# not in the installer, and exactly the kind of noise that gets a real
-# differential switched off. (Measured: this is how it failed first.)
 SECRETS_FIXTURE="$WORK/secrets.env"
 {
   echo "OPENCODE_ZEN_API_KEY=$(openssl rand -hex 32)"
   echo "TOGETHER_API_KEY=$(openssl rand -hex 32)"
   echo "GOOSE_SERVER__SECRET_KEY=$(openssl rand -hex 32)"
-  echo "NTFY_TOPIC=pai-test-$(openssl rand -hex 8)"
-  echo "TELEGRAM_BOT_TOKEN=$(openssl rand -hex 32)"
   echo "OPENCODE_SERVER_PASSWORD=$(openssl rand -hex 32)"
   echo "GITHUB_CODE_AGENT_PAT=$(openssl rand -hex 32)"
-  echo "GOOGLE_OAUTH_CLIENT_ID=$(openssl rand -hex 16)"
-  echo "GOOGLE_OAUTH_CLIENT_SECRET=$(openssl rand -hex 32)"
 } >"$SECRETS_FIXTURE"
 chmod 600 "$SECRETS_FIXTURE"
 
@@ -190,13 +183,12 @@ mksandbox() {
   : >"$sb/etc/subuid"
 
   # The repo the deploy pulls and copies templates out of. Symlinks to the real
-  # thing: config/, scripts/ and recipes/ are INPUTS to both sides of the
-  # differential and must be the same inputs. `.git` is a real directory so
+  # thing: config/ and scripts/ are INPUTS to both sides of every assertion and
+  # must be the same inputs. `.git` is a real directory so
   # deploy-vps.sh's `[[ -d "$REPO_DIR/.git" ]]` (a bash builtin test, not
   # routed) takes the pull branch.
   ln -sfn "$REPO_ROOT/config" "$sb/repo/config"
   ln -sfn "$REPO_ROOT/scripts" "$sb/repo/scripts"
-  ln -sfn "$REPO_ROOT/recipes" "$sb/repo/recipes"
   mkdir -p "$sb/repo/.git"
 
   cp "$SECRETS_FIXTURE" "$sb/data/secrets.env"
@@ -230,16 +222,10 @@ mksandbox() {
     echo "existing hint" >"$sb/home/agent/.config/goose/.goosehints"
     echo "sessions" >"$sb/home/agent/.local/share/goose/sessions.db"
     echo "llm request" >"$sb/home/agent/.local/state/goose/logs/llm_request.0.jsonl"
-    echo "{}" >"$sb/data/goose-data/schedule.json"
-    local u
-    for u in goose-serve.service goose-telegram-gateway.service \
-             tls-cert-renew.service tls-cert-renew.timer; do
-      cp "$REPO_ROOT/scripts/vps/systemd/$u" "$sb/etc/systemd/system/$u"
-    done
-    printf 'goose-serve.service\ngoose-telegram-gateway.service\ntls-cert-renew.timer\n' \
-      >"$aux/state/systemd-enabled"
-    printf 'goose-serve.service\ngoose-telegram-gateway.service\ntls-cert-renew.timer\n' \
-      >"$aux/state/systemd-active"
+    cp "$REPO_ROOT/scripts/vps/systemd/goose-serve.service" \
+       "$sb/etc/systemd/system/goose-serve.service"
+    printf 'goose-serve.service\n' >"$aux/state/systemd-enabled"
+    printf 'goose-serve.service\n' >"$aux/state/systemd-active"
   fi
 }
 
@@ -287,31 +273,19 @@ first_idx_after() {
 n() { [ -n "${1:-}" ] && echo "$1" || echo 0; }
 
 # inventory <root> — type, mode, relative path and (for symlinks) the target,
-# with the sandbox root collapsed. `diff -r` is NOT used: the two sides of the
-# differential live at different absolute paths, so every symlink target
+# with the sandbox root collapsed. `diff -r` is NOT used: the two sides of a
+# comparison live at different absolute paths, so every symlink target
 # differs textually while the trees are identical, and `diff -r` dereferences
 # and hides exactly the thing this repo's -T constraint is about.
 inventory() {
   # inventory <sandbox-root> <part>. The sandbox root is normalised out of
-  # SYMLINK TARGETS, which are absolute and therefore name the sandbox: the
-  # first version of this normalised the part root instead, so every target
-  # under a sibling part came through un-normalised and the two sides differed
-  # on four lines that were in fact identical.
+  # SYMLINK TARGETS, which are absolute and therefore name the sandbox.
   local sb="$1" part="$2"
   find "$sb/$part" -mindepth 1 \
     \( -type d -printf 'd %m %P\n' \) -o \
     \( -type f -printf 'f %m %P\n' \) -o \
     \( -type l -printf 'l --- %P -> %l\n' \) \
     | sed "s|$sb|@ROOT@|g" | sort
-}
-# checksums <root> — content, for regular files only, so "the same tree" means
-# the same bytes and not just the same names.
-checksums() {
-  # checksums <sandbox-root> <part>
-  local root="$1/$2" f
-  find "$root" -type f -printf '%P\n' | sort | while IFS= read -r f; do
-    printf '%s  %s\n' "$f" "$(sha256sum <"$root/$f" | cut -d' ' -f1)"
-  done
 }
 
 # ---- 5. the deny wall must be able to fire ----------------------------------
@@ -331,213 +305,7 @@ if leg select; then
 fi
 
 # ============================================================================
-# V0/V1/V1b — THE DIFFERENTIAL
-# ============================================================================
-if leg differential; then
-  # PINNED, and it pins the SEAM COMMIT, not some earlier revision: the seam is
-  # what makes the pre side runnable at all (before it, deploy-vps.sh wrote to
-  # the literal /data and /etc/systemd/system and no harness could touch it).
-  # The seam commit is deliberately zero-behaviour-change, so it is a valid
-  # baseline for "the carve moved nothing".
-  #
-  # THE TAG refs/tags/vps-pre-carve IS LOAD-BEARING. DO NOT DELETE IT.
-  #
-  # The sha below is NOT an ancestor of main and is not guaranteed to become
-  # one. This repo's history is MIXED: #101-#104 landed as `Merge pull request
-  # #NN` commits, while #105-#108 — including the directly analogous Mac carve —
-  # were SQUASHED. A squash makes the seam commit unreachable from every branch,
-  # `cat-file -e` starts failing, and the differential stops asserting. That is
-  # not a skip: a differential that silently stops asserting is the failure this
-  # whole file exists to prevent, so the only arm that may skip is a genuinely
-  # SHALLOW clone (which a `git fetch --unshallow` fixes), and everything else is
-  # a FAILURE with a runbook.
-  #
-  # The tag is what makes that impossible, whatever the merge strategy:
-  #   git push origin 06b04ca39669e8efbfa29fb6f6fefdab37987493:refs/tags/vps-pre-carve
-  # A tag is a ref, so the object stays reachable through any squash, rebase or
-  # branch deletion, and actions/checkout with `fetch-depth: 0` fetches tags
-  # (getRefSpecForAllHistory includes `+refs/tags/*:refs/tags/*`), so CI sees it
-  # too. Deleting the tag re-arms exactly the failure it was pushed to prevent.
-  #
-  # PINNED BY SHA RATHER THAN BY TAG NAME, deliberately. A sha is
-  # content-addressed: `vps-pre-carve` could be moved onto a post-carve revision
-  # by anyone with push access and the comparison would quietly become the tree
-  # against itself. (V0 below also checks the blob's shape, so that has two
-  # guards, not one.) The tag's job is REACHABILITY; the sha's job is IDENTITY.
-  #
-  # AND NO OLDER SHA CAN REPLACE IT. The obvious hardening — pin something that
-  # is already an ancestor of main, the way test-base-install.sh's A14b used to
-  # pin the merge commit 5f016b3 before the pivot retired that differential —
-  # is not available here: the seam is introduced by
-  # this branch's own first commit, and every earlier revision of
-  # deploy-vps.sh writes to the literal /data and /etc/systemd/system, so it
-  # cannot be run against a fake host at all. Failing the tag, GitHub keeps
-  # refs/pull/110/head forever, so the blob is still recoverable — see the
-  # failure text below, which says how.
-  #
-  # THAT HARDENING TURNED OUT NOT TO BE ONE (#111). 5f016b3 is an ancestor of
-  # main only because it happens to be a MERGE commit and the squashes landed
-  # around it; nothing enforced that, and the Mac differential was one merge
-  # strategy away from the failure this tag prevents. It now carries a tag of
-  # its own, refs/tags/mac-pre-carve, for the same reason this one does.
-  #
-  # RE-PIN THIS IF THE BRANCH IS EVER REBASED. A rebase rewrites every commit on
-  # the branch, so the seam gets a new sha and V0 goes red on "UNREACHABLE in a
-  # full clone" — correctly. Re-pin to the rebased seam commit and re-push the
-  # tag at it; do not reach for `--depth 1` to make the red go away.
-  PRE_CARVE_SHA="06b04ca39669e8efbfa29fb6f6fefdab37987493"
-
-  HAVE_GIT=0; SHALLOW=0; HAVE_BLOB=0
-  if git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
-    HAVE_GIT=1
-    [ "$(git -C "$REPO_ROOT" rev-parse --is-shallow-repository 2>/dev/null)" != "true" ] || SHALLOW=1
-    git -C "$REPO_ROOT" cat-file -e "$PRE_CARVE_SHA:scripts/vps/deploy-vps.sh" 2>/dev/null && HAVE_BLOB=1 || true
-  fi
-
-  # V0 — THE BASELINE ITSELF. Two ways of losing this differential are silent
-  # and neither is hypothetical:
-  #   * the pinned commit goes unreachable (see above), or
-  #   * a future author re-pins to a POST-carve sha to make the red go away,
-  #     which compares the working tree against itself and passes for free.
-  # So the extracted blob is checked for the seam it must have and for the unit
-  # functions it must NOT have, and V1/V1b do not run unless V0 passes.
-  BASELINE=""
-  if [ "$HAVE_BLOB" -eq 1 ]; then
-    mkdir -p "$WORK/pre-carve"
-    git -C "$REPO_ROOT" show "$PRE_CARVE_SHA:scripts/vps/deploy-vps.sh" >"$WORK/pre-carve/deploy-vps.sh"
-    chmod 755 "$WORK/pre-carve/deploy-vps.sh"
-    V0_SEAM="$(count_in "$WORK/pre-carve/deploy-vps.sh" '^PAI_FAKE_ROOT=')"
-    V0_UNITS="$(count_in "$WORK/pre-carve/deploy-vps.sh" '^unit_[a-z_]+\(\) \{')"
-    if [ "$V0_SEAM" -ge 1 ] && [ "$V0_UNITS" -eq 0 ]; then
-      BASELINE="$WORK/pre-carve/deploy-vps.sh"
-      ok "V0: the pinned baseline ${PRE_CARVE_SHA:0:9} is reachable, carries the seam and defines no unit function"
-    else
-      bad "V0: ${PRE_CARVE_SHA:0:9} is reachable but is not a pre-carve seam revision (PAI_FAKE_ROOT=$V0_SEAM want >=1, unit_*() definitions=$V0_UNITS want 0) — V1/V1b did not run. Re-pinning the baseline to a post-carve sha compares the tree with itself."
-    fi
-  elif [ "$HAVE_GIT" -eq 1 ] && [ "$SHALLOW" -eq 1 ]; then
-    # The ONLY skip. Distinguishable by construction, and self-repairing:
-    # `git fetch --unshallow` (or actions/checkout's fetch-depth: 0) restores it.
-    skipped "V0/V1/V1b: this is a SHALLOW clone and the pre-carve blob was never fetched — run 'git fetch --unshallow' (CI uses fetch-depth: 0)"
-  elif [ "$HAVE_GIT" -eq 1 ]; then
-    bad "V0: ${PRE_CARVE_SHA:0:9}:scripts/vps/deploy-vps.sh is UNREACHABLE in a full clone, so V1/V1b asserted nothing. The tag refs/tags/vps-pre-carve exists to make this impossible, so it has most likely been DELETED (or this branch was rebased and the sha above was not re-pinned). Fix it, do not skip it: 'git fetch origin refs/tags/vps-pre-carve' first; failing that recover the object with 'git fetch origin refs/pull/110/head' (GitHub keeps that ref forever) and re-push the tag with 'git push origin ${PRE_CARVE_SHA}:refs/tags/vps-pre-carve'; failing THAT, retire V1/V1b deliberately and say in this file what replaces them. Do NOT re-pin to a post-carve revision — V0 checks for that and it compares the tree with itself."
-  else
-    bad "V0: $REPO_ROOT is not a git work tree, so the pre-carve baseline cannot be read and V1/V1b asserted nothing. Run this harness from a clone, not from a 'git archive' export."
-  fi
-
-  if [ -n "$BASELINE" ]; then
-    mksandbox pre existing
-    mksandbox post existing
-    arm pre curl-ok
-    arm post curl-ok
-    V1_PRE_RC="$(run_deploy pre "$WORK/out/pre.log" "$BASELINE")"
-    V1_POST_RC="$(run_deploy post "$WORK/out/post.log" "$REPO_ROOT/scripts/vps/deploy-vps.sh")"
-
-    # V1 — THE PRIVILEGED SEQUENCE, IN ORDER.
-    #
-    # The first version of this sorted both logs and compared MULTISETS, and it
-    # was inert in the one direction that matters. Ordering is this script's
-    # entire risk model — stop-before-move, register-before-restart,
-    # install-reload-enable — and a pure reordering is invisible to a multiset.
-    # Measured: moving the whole `unit_google_workspace` / `completed
-    # google-workspace` call site from above the systemd block to below
-    # `completed code-agents` left the sorted comparison GREEN. V2a-f pin six
-    # specific pairs; the other ~2300 pairs were pinned by nothing.
-    #
-    # So the comparison is SEQUENCE-EXACT, and the allowlist is an EDIT SCRIPT
-    # applied to the pre-carve log rather than a set of permitted lines. Two
-    # edits, and both are defended in deploy-vps.sh:
-    #
-    #   E1  MOVE  the unconditional `daemon-reload` moved from ABOVE the two
-    #             tls-cert-renew installs to BELOW them (deploy-vps.sh:618-633).
-    #   E2  ADD   unit_telegram_gateway got a reload of its own, immediately
-    #             after its install, because that install is GATED and an
-    #             unconditional reload would have to run before it
-    #             (deploy-vps.sh:641-648).
-    #
-    # The counts are asserted too ("1 1 1"): an anchor that stopped matching
-    # would otherwise degrade this into an identity transform and report the
-    # move as a plain difference, blaming the wrong line.
-    #
-    # WHAT IS NOT ORDERED HERE, stated rather than assumed: nothing in this log
-    # is emitted by a loop whose order the source leaves open. The two loops
-    # that reach the log iterate literal word lists (`for t in morning-brief
-    # inbox-triage weekly-review health-followups` and register-schedules.sh's
-    # ORDER=() — its `declare -A` maps are lookups, never iterated). The one
-    # glob, config/goose/custom_providers/*.json, is sorted by bash, and BOTH
-    # SIDES EXPAND THE SAME GLOB from the same repo in the same environment, so
-    # a collation difference moves the two logs together and cancels. Nothing
-    # here runs in parallel. Measured: both logs are byte-identical across
-    # repeated runs, so a total order does not flap.
-    RELOAD='sudo systemctl daemon-reload'
-    awk -v reload="$RELOAD" -v countfile="$WORK/out/edits" '
-      { line[NR] = $0 }
-      END {
-        for (i = 1; i <= NR; i++) {
-          # E1, delete half: the reload immediately above the tls installs.
-          if (line[i] == reload && line[i+1] ~ /^sudo install .*\/tls-cert-renew\.service$/) {
-            e1del++
-            continue
-          }
-          print line[i]
-          # E1, insert half: below the LAST of the two tls installs.
-          if (line[i] ~ /^sudo install .*\/tls-cert-renew\.timer$/) { print reload; e1ins++ }
-          # E2: the reload added inside unit_telegram_gateway.
-          if (line[i] ~ /^sudo install .*\/goose-telegram-gateway\.service$/) { print reload; e2++ }
-        }
-        printf "%d %d %d\n", e1del + 0, e1ins + 0, e2 + 0 > countfile
-      }
-    ' "$WORK/out/pre.log" >"$WORK/out/expected"
-    V1_EDITS="$(tr -d '\n' <"$WORK/out/edits")"
-
-    if [ "$V1_PRE_RC" = "0" ] && [ "$V1_POST_RC" = "0" ] && [ "$V1_EDITS" = "1 1 1" ] &&
-       diff -u "$WORK/out/expected" "$WORK/out/post.log" >"$WORK/out/seq.diff" 2>&1; then
-      ok "V1: the carve issues the pre-carve sequence IN ORDER, with two enumerated edits ($(wc -l <"$WORK/out/pre.log" | tr -d ' ') pre-carve invocations)"
-    else
-      # Diagnosis, not assertion: the multiset comparison the sequence one
-      # replaced still answers the first question a failure raises — did a call
-      # appear or vanish, or did the deploy merely REORDER?
-      sort "$WORK/out/pre.log"  >"$WORK/out/pre.sorted"
-      sort "$WORK/out/post.log" >"$WORK/out/post.sorted"
-      comm -23 "$WORK/out/pre.sorted" "$WORK/out/post.sorted" >"$WORK/out/removed"
-      comm -13 "$WORK/out/pre.sorted" "$WORK/out/post.sorted" >"$WORK/out/added"
-      V1_REM="$(wc -l <"$WORK/out/removed" | tr -d ' ')"
-      V1_ADD="$(wc -l <"$WORK/out/added" | tr -d ' ')"
-      # 0 removed / 1 added is the multiset the OLD sorted V1 called a pass:
-      # the one allowlisted reload and nothing else. Saying so names the class.
-      V1_SHAPE="calls appeared or vanished"
-      [ "$V1_REM" -ne 0 ] || [ "$V1_ADD" -ne 1 ] || V1_SHAPE="a PURE REORDER — same calls, different order"
-      bad "V1: the privileged sequence moved (pre rc=$V1_PRE_RC, post rc=$V1_POST_RC, edits='$V1_EDITS' want '1 1 1'; against the pre-carve multiset $V1_REM removed / $V1_ADD added, i.e. $V1_SHAPE)"
-      evidence "$WORK/out/seq.diff"
-    fi
-
-    # V1b — the FILE TREE, which the invocation log cannot see: install/cp/ln
-    # are real, so this is the assertion that the same bytes landed in the same
-    # places. The floor exists because two empty trees also compare equal, and
-    # a pre run that died on its first line would satisfy the comparison while
-    # proving nothing.
-    : >"$WORK/out/inv-pre"; : >"$WORK/out/inv-post"
-    : >"$WORK/out/sum-pre"; : >"$WORK/out/sum-post"
-    for part in home data etc; do
-      inventory "$WORK/sb-pre" "$part"  >>"$WORK/out/inv-pre"
-      inventory "$WORK/sb-post" "$part" >>"$WORK/out/inv-post"
-      checksums "$WORK/sb-pre" "$part"  >>"$WORK/out/sum-pre"
-      checksums "$WORK/sb-post" "$part" >>"$WORK/out/sum-post"
-    done
-    V1B_FILES="$(grep -c '^f ' "$WORK/out/inv-pre" || true)"
-    if [ "${V1B_FILES:-0}" -ge 20 ] &&
-       diff -u "$WORK/out/inv-pre" "$WORK/out/inv-post" >"$WORK/out/inv.diff" 2>&1 &&
-       diff -u "$WORK/out/sum-pre" "$WORK/out/sum-post" >"$WORK/out/sum.diff" 2>&1; then
-      ok "V1b: the carve writes the same $V1B_FILES-file tree, byte for byte, with the same modes and symlink targets"
-    else
-      bad "V1b: the installed tree differs from pre-carve ${PRE_CARVE_SHA:0:9} (files=${V1B_FILES:-0}, want >=20)"
-      evidence "$WORK/out/inv.diff"
-      evidence "$WORK/out/sum.diff"
-    fi
-  fi
-fi
-
-# ============================================================================
-# V2/V3/V4/V6 — THE FOUR DOCUMENTED CONSTRAINTS, AND THE RELOAD ORDERINGS
+# V2/V3/V4/V6 — THE DOCUMENTED CONSTRAINTS, AND THE RELOAD ORDERINGS
 # ============================================================================
 if leg constraints; then
   mksandbox full existing
@@ -556,28 +324,6 @@ if leg constraints; then
     ok "V2a: goose-serve is stopped before the first move into the path root" ||
     bad "V2a: stop=$V2A_STOP, first move=$V2A_MV — the migration ran under a live goose"
 
-  # V2b — the gateway install/reload/enable ordering. THE FIX. Before the
-  # carve the only reload covering this install was the one inside the
-  # code-agents block, i.e. AFTER the enable, so this assertion fails on the
-  # pre-carve script.
-  V2B_INS="$(n "$(first_idx "$FULL_LOG" '^sudo install -m 644 .*/goose-telegram-gateway\.service ')")"
-  V2B_RLD="$(n "$(first_idx_after "$FULL_LOG" '^sudo systemctl daemon-reload$' "$V2B_INS")")"
-  V2B_EN="$(n "$(first_idx "$FULL_LOG" '^sudo systemctl enable --now goose-telegram-gateway\.service$')")"
-  [ "$V2B_INS" -gt 0 ] && [ "$V2B_RLD" -gt 0 ] && [ "$V2B_EN" -gt 0 ] &&
-  [ "$V2B_INS" -lt "$V2B_RLD" ] && [ "$V2B_RLD" -lt "$V2B_EN" ] &&
-    ok "V2b: goose-telegram-gateway.service is installed, THEN reloaded, THEN enabled" ||
-    bad "V2b: install=$V2B_INS reload=$V2B_RLD enable=$V2B_EN — the gateway is enabled against a cached unit definition"
-
-  # V2b' — the same for tls-cert-renew, which is the half the first audit
-  # missed. Move the reload back above the two installs and this goes red.
-  V2C_INS="$(n "$(last_idx "$FULL_LOG" '^sudo install -m 644 .*/tls-cert-renew\.(service|timer) ')")"
-  V2C_RLD="$(n "$(first_idx_after "$FULL_LOG" '^sudo systemctl daemon-reload$' "$V2C_INS")")"
-  V2C_EN="$(n "$(first_idx "$FULL_LOG" '^sudo systemctl enable --now tls-cert-renew\.timer$')")"
-  [ "$V2C_INS" -gt 0 ] && [ "$V2C_RLD" -gt 0 ] && [ "$V2C_EN" -gt 0 ] &&
-  [ "$V2C_INS" -lt "$V2C_RLD" ] && [ "$V2C_RLD" -lt "$V2C_EN" ] &&
-    ok "V2b': tls-cert-renew is installed, THEN reloaded, THEN enabled" ||
-    bad "V2b': install=$V2C_INS reload=$V2C_RLD enable=$V2C_EN — the timer is armed against a cached unit definition"
-
   # V2c — code-agent-manager keeps its own reload.
   V2D_INS="$(n "$(first_idx "$FULL_LOG" '^sudo install -m 644 .*/code-agent-manager\.service ')")"
   V2D_RLD="$(n "$(first_idx_after "$FULL_LOG" '^sudo systemctl daemon-reload$' "$V2D_INS")")"
@@ -586,14 +332,6 @@ if leg constraints; then
   [ "$V2D_INS" -lt "$V2D_RLD" ] && [ "$V2D_RLD" -lt "$V2D_RST" ] &&
     ok "V2c: code-agent-manager.service is installed, THEN reloaded, THEN restarted" ||
     bad "V2c: install=$V2D_INS reload=$V2D_RLD restart=$V2D_RST"
-
-  # V2d — CONSTRAINT: schedules are registered BEFORE the goose-serve restart,
-  # because the scheduler reads schedule.json once at startup.
-  V2E_ADD="$(n "$(last_idx "$FULL_LOG" '^goose schedule add ')")"
-  V2E_RST="$(n "$(last_idx "$FULL_LOG" '^sudo systemctl restart goose-serve\.service$')")"
-  [ "$V2E_ADD" -gt 0 ] && [ "$V2E_RST" -gt 0 ] && [ "$V2E_ADD" -lt "$V2E_RST" ] &&
-    ok "V2d: every schedule is registered before goose-serve is restarted" ||
-    bad "V2d: last add=$V2E_ADD, restart=$V2E_RST — schedules registered after the restart stay dormant"
 
   # V2e — CONSTRAINT: RESTART, never `enable --now`, for the manager. `--now`
   # is a no-op on a running unit and shipped a new manager to disk while the
@@ -625,46 +363,33 @@ if leg constraints; then
   # legacy /data/goose-data compatibility link) and exactly one stop.
   V6_LINKS="$(count_in "$FULL_LOG" '^ln -sfnT @ROOT@/data/goose/')"
   V6_STOPS="$(count_in "$FULL_LOG" '^sudo systemctl stop goose-serve\.service$')"
-  mksandbox onlyauto existing
-  arm onlyauto curl-ok
-  V6_RC="$(run_deploy onlyauto "$WORK/out/onlyauto.log" "$REPO_ROOT/scripts/vps/deploy-vps.sh" --only automations)"
-  V6_LINKS2="$(count_in "$WORK/out/onlyauto.log" '^ln -sfnT @ROOT@/data/goose/')"
-  V6_STOPS2="$(count_in "$WORK/out/onlyauto.log" '^sudo systemctl stop goose-serve\.service$')"
+  mksandbox onlyunit existing
+  arm onlyunit curl-ok
+  V6_RC="$(run_deploy onlyunit "$WORK/out/onlyunit.log" "$REPO_ROOT/scripts/vps/deploy-vps.sh" --only code-agents)"
+  V6_LINKS2="$(count_in "$WORK/out/onlyunit.log" '^ln -sfnT @ROOT@/data/goose/')"
+  V6_STOPS2="$(count_in "$WORK/out/onlyunit.log" '^sudo systemctl stop goose-serve\.service$')"
   [ "$V6_LINKS" -eq 4 ] && [ "$V6_STOPS" -eq 1 ] &&
   [ "$V6_LINKS2" -eq 4 ] && [ "$V6_STOPS2" -eq 1 ] && [ "$V6_RC" = "0" ] &&
-    ok "V6: the migration is 4 links and 1 stop, identical under --only automations" ||
-    bad "V6: full=($V6_LINKS links,$V6_STOPS stops) --only automations=($V6_LINKS2 links,$V6_STOPS2 stops, rc=$V6_RC)"
+    ok "V6: the migration is 4 links and 1 stop, identical under --only code-agents" ||
+    bad "V6: full=($V6_LINKS links,$V6_STOPS stops) --only code-agents=($V6_LINKS2 links,$V6_STOPS2 stops, rc=$V6_RC)"
 
-  # V3b — the two `|| fail` arms, which are UNREACHABLE through the script's
-  # own control flow: a successful mv/rm always removes the source. Reached
-  # here with a lying mv and a lying rm. This proves the guard is LIVE. It does
-  # not prove the situation arises.
+  # V3b — the `|| fail` arm, which is UNREACHABLE through the script's own
+  # control flow: a successful mv always removes the source. Reached here with
+  # a lying mv. This proves the guard is LIVE. It does not prove the situation
+  # arises.
   mksandbox lie1 existing
   arm lie1 curl-ok
   arm lie1 lie-mv
   LIE1_RC="$(run_deploy lie1 "$WORK/out/lie1.log" "$REPO_ROOT/scripts/vps/deploy-vps.sh")"
   [ "$LIE1_RC" != "0" ] && grep -q 'config/goose is still a real directory' "$WORK/out/lie1.log.err" &&
-    ok "V3b-1: a mv that copies without unlinking makes migrate_into_root fail loudly, naming the directory" || {
-    bad "V3b-1: rc=$LIE1_RC — the run nested a symlink inside a surviving directory and did not say so"
+    ok "V3b: a mv that copies without unlinking makes migrate_into_root fail loudly, naming the directory" || {
+    bad "V3b: rc=$LIE1_RC — the run nested a symlink inside a surviving directory and did not say so"
     evidence "$WORK/out/lie1.log.err"
   }
 
-  mksandbox lie2 fresh
-  arm lie2 curl-ok
-  mkdir -p "$WORK/sb-lie2/home/agent/.google_workspace_mcp"
-  echo "token" >"$WORK/sb-lie2/home/agent/.google_workspace_mcp/creds.json"
-  arm lie2 lie-rm
-  LIE2_RC="$(run_deploy lie2 "$WORK/out/lie2.log" "$REPO_ROOT/scripts/vps/deploy-vps.sh")"
-  [ "$LIE2_RC" != "0" ] && grep -q 'google_workspace_mcp is still a real directory' "$WORK/out/lie2.log.err" &&
-    ok "V3b-2: an rm that does not remove makes the OAuth-token link fail loudly, naming the directory" || {
-    bad "V3b-2: rc=$LIE2_RC — the OAuth tokens would have stayed on the unencrypted root disk with every check reporting success"
-    evidence "$WORK/out/lie2.log.err"
-  }
-
   # V4a — CONSTRAINT: the EXIT trap brings goose back on ANY failure path.
-  # Gateway NOT enabled here, so the trap must start goose-serve and nothing
-  # else. Armed at `podman build`, which is the real-world case the trap's
-  # comment names.
+  # Armed at `podman build`, which is the real-world case the trap's comment
+  # names.
   mksandbox trapa fresh
   arm trapa curl-ok
   arm trapa podman-build-fails
@@ -674,23 +399,6 @@ if leg constraints; then
     ok "V4a: a failed podman build still leaves goose-serve started by the EXIT trap" || {
     bad "V4a: rc=$TRAPA_RC, last systemctl line was '$TRAPA_LAST' — the brain would be left offline"
     evidence "$WORK/out/trapa.log"
-  }
-
-  # V4b — the same trap with the gateway ENABLED, in its own sandbox. This is
-  # the arm that dies silently if GATEWAY_WAS_ENABLED is ever made `local`:
-  # under `set -u` the trap would abort AFTER starting goose-serve and BEFORE
-  # starting the gateway, and V4a would still pass.
-  mksandbox trapb fresh
-  arm trapb curl-ok
-  TRAPB_RC1="$(run_deploy trapb "$WORK/out/trapb1.log" "$REPO_ROOT/scripts/vps/deploy-vps.sh")"
-  arm trapb podman-build-fails
-  TRAPB_RC2="$(run_deploy trapb "$WORK/out/trapb2.log" "$REPO_ROOT/scripts/vps/deploy-vps.sh")"
-  TRAPB_TAIL="$(grep -E 'systemctl ' "$WORK/out/trapb2.log" | tail -n2 | tr '\n' '|')"
-  [ "$TRAPB_RC1" = "0" ] && [ "$TRAPB_RC2" != "0" ] &&
-  [ "$TRAPB_TAIL" = "sudo systemctl start goose-serve.service|sudo systemctl start goose-telegram-gateway.service|" ] &&
-    ok "V4b: with the gateway enabled, the trap restores goose-serve AND the gateway, in that order" || {
-    bad "V4b: run1 rc=$TRAPB_RC1 run2 rc=$TRAPB_RC2, trap tail was '$TRAPB_TAIL'"
-    evidence "$WORK/out/trapb2.log"
   }
 fi
 
@@ -717,39 +425,31 @@ if leg select; then
     evidence "$WORK/out/nocode.log.err"
   fi
 
-  # V5b — the other three gates, one sandbox each. No acceptance criterion
-  # covers these, but the Scope wraps them, and a gate nobody tests is a gate
-  # somebody deletes.
-  mksandbox notg fresh
-  arm notg curl-ok
-  V5B1_RC="$(run_deploy notg "$WORK/out/notg.log" "$REPO_ROOT/scripts/vps/deploy-vps.sh" --without telegram-gateway)"
-  [ "$V5B1_RC" = "0" ] &&
-  [ ! -e "$WORK/sb-notg/etc/systemd/system/goose-telegram-gateway.service" ] &&
-  [ "$(count_in "$WORK/out/notg.log" 'enable --now goose-telegram-gateway')" -eq 0 ] &&
-    ok "V5b: --without telegram-gateway installs and enables no gateway unit" ||
-    bad "V5b: --without telegram-gateway rc=$V5B1_RC and the unit file or the enable survived"
+  # V5b — the removed units are no longer selectable at all, and --only works.
+  # The three pre-removal ids (google-workspace, telegram-gateway, automations)
+  # are gone from UNIT_IDS, so naming one must exit 2 with "unknown unit" —
+  # the same refusal a typo earns, because a flag naming a unit that no longer
+  # exists should not silently deploy anyway.
+  mksandbox gone fresh
+  arm gone curl-ok
+  V5B_RC="$(run_deploy gone "$WORK/out/gone.log" "$REPO_ROOT/scripts/vps/deploy-vps.sh" --without telegram-gateway)"
+  [ "$V5B_RC" = "2" ] &&
+  grep -q "unknown unit 'telegram-gateway'" "$WORK/out/gone.log.err" &&
+    ok "V5b: a removed unit id is refused with exit 2 and named, not silently ignored" ||
+    bad "V5b: --without telegram-gateway exited $V5B_RC (want 2, unknown unit)"
 
-  mksandbox nogw fresh
-  arm nogw curl-ok
-  V5B2_RC="$(run_deploy nogw "$WORK/out/nogw.log" "$REPO_ROOT/scripts/vps/deploy-vps.sh" --without google-workspace)"
+  mksandbox onlyunit fresh
+  arm onlyunit curl-ok
+  V5B2_RC="$(run_deploy onlyunit "$WORK/out/onlyunit.log" "$REPO_ROOT/scripts/vps/deploy-vps.sh" --only code-agents)"
   [ "$V5B2_RC" = "0" ] &&
-  [ ! -e "$WORK/sb-nogw/home/agent/.google_workspace_mcp" ] &&
-  [ ! -e "$WORK/sb-nogw/data/workspace-mcp" ] &&
-    ok "V5b: --without google-workspace creates neither the token link nor its target" ||
-    bad "V5b: --without google-workspace rc=$V5B2_RC and the token directory was still created"
-
-  mksandbox noauto fresh
-  arm noauto curl-ok
-  V5B3_RC="$(run_deploy noauto "$WORK/out/noauto.log" "$REPO_ROOT/scripts/vps/deploy-vps.sh" --without automations)"
-  [ "$V5B3_RC" = "0" ] &&
-  [ "$(count_in "$WORK/out/noauto.log" '^goose schedule add ')" -eq 0 ] &&
-  [ "$(count_in "$WORK/out/noauto.log" '^sudo install -m 644 .*/goose-recipe@morning-brief\.timer$')" -eq 1 ] &&
-    ok "V5b: --without automations registers no schedule, and STILL installs the fallback timers (they are the escape hatch for a broken deploy)" ||
-    bad "V5b: --without automations rc=$V5B3_RC — either a schedule was registered or the fallback timers went missing"
+  [ -e "$WORK/sb-onlyunit/etc/systemd/system/code-agent-manager.service" ] &&
+  [ "$(count_in "$WORK/out/onlyunit.log" '^podman build ')" -eq 1 ] &&
+    ok "V5b: --only code-agents installs the plane, still runs the brain core" ||
+    bad "V5b: --only code-agents rc=$V5B2_RC"
 
   # V5c — --dry-run writes NOTHING. Not "the gates return early": the brain
-  # core is ungateable, so a dry-run that only silenced the four unit bodies
-  # would still stop goose, migrate three directories and install seven units.
+  # core is ungateable, so a dry-run that only silenced the unit body would
+  # still stop goose, migrate three directories and install the systemd unit.
   mksandbox dry existing
   arm dry curl-ok
   inventory "$WORK/sb-dry" home >"$WORK/out/dry-before"
@@ -760,27 +460,19 @@ if leg select; then
   inventory "$WORK/sb-dry" data >>"$WORK/out/dry-after"
   inventory "$WORK/sb-dry" etc  >>"$WORK/out/dry-after"
   V5C_CALLS="$(wc -l <"$WORK/out/dry.log" | tr -d ' ')"
-  V5C_NAMED=0
-  for id in google-workspace telegram-gateway code-agents automations; do
-    grep -q -- "$id" "$WORK/out/dry.log.out" && V5C_NAMED=$((V5C_NAMED + 1)) || true
-  done
-  if [ "$V5C_RC" = "0" ] && [ "$V5C_CALLS" -eq 0 ] && [ "$V5C_NAMED" -eq 4 ] &&
+  grep -q -- 'code-agents' "$WORK/out/dry.log.out" && V5C_NAMED=1 || V5C_NAMED=0
+  if [ "$V5C_RC" = "0" ] && [ "$V5C_CALLS" -eq 0 ] && [ "$V5C_NAMED" -eq 1 ] &&
      diff -u "$WORK/out/dry-before" "$WORK/out/dry-after" >"$WORK/out/dry.diff" 2>&1; then
-    ok "V5c: --dry-run invokes nothing, writes nothing, names all 4 units and exits 0"
+    ok "V5c: --dry-run invokes nothing, writes nothing, names the 1 selectable unit and exits 0"
   else
-    bad "V5c: rc=$V5C_RC, $V5C_CALLS host calls, $V5C_NAMED/4 units named, tree changed?"
+    bad "V5c: rc=$V5C_RC, $V5C_CALLS host calls, $V5C_NAMED/1 units named, tree changed?"
     evidence "$WORK/out/dry.diff"
   fi
 
   # V11 — check-code-agents.sh must SKIP (exit 2), not FAIL, on a brain that
-  # deliberately has no code-agents plane. Without this, AC1 ships a
-  # permanently-red check: cli.sh:201-217 — cmd_verify's `case "$rc" in`, the
-  # `2)` arm through the `*) fail` arm — maps exit 2 to SKIP and everything else
-  # to FAIL. (Re-anchored past #108, which rewrote cli.sh and gave that arm a
-  # `--require` escalation, and past #43, which added four lines to cli.sh's
-  # usage block and shifted this range by +4 from the 197-213 written here
-  # first. The mapping itself is unchanged. Nothing in CI resolves a citation
-  # from one script to another — see the note on this in #43.)
+  # deliberately has no code-agents plane. Without this, a deselected plane
+  # ships a permanently-red check: cli.sh's cmd_verify maps exit 2 to SKIP and
+  # everything else to FAIL.
   V11_RC=0
   PAI_MODE=local \
   PAI_DATA_ROOT="$WORK/sb-nocode/data" \
@@ -826,7 +518,7 @@ fi
 # V8/V9 — THE /status GATE AND ERR ATTRIBUTION
 # ============================================================================
 if leg status; then
-  # V8 (AC6a) — the deploy BLOCKS on /status. curl is unarmed, so every probe
+  # V8 — the deploy BLOCKS on /status. curl is unarmed, so every probe
   # fails and the real 45-attempt loop runs. `sleep` is shimmed to return
   # immediately, so this costs milliseconds instead of 90 seconds.
   mksandbox down fresh
@@ -844,18 +536,20 @@ if leg status; then
     evidence "$WORK/out/down.log.err"
   fi
 
-  # V9 (AC6b, amended) — the deploy does NOT continue past a failed unit, and
-  # should not: the brain core is a prerequisite for everything after it. What
+  # V9 — the deploy does NOT continue past a failed unit, and should not: the
+  # brain core is a prerequisite for everything after it. What
   # it does instead is ATTRIBUTE. Without `set -E` neither line below prints,
-  # because an ERR trap is not inherited by shell functions.
+  # because an ERR trap is not inherited by shell functions. The failing unit
+  # is code-agents, via the podman-build-fails arm; with one selectable unit
+  # the attribution line also proves nothing was skipped past.
   mksandbox errattr fresh
   arm errattr curl-ok
-  arm errattr goose-add-fails
+  arm errattr podman-build-fails
   V9_RC="$(run_deploy errattr "$WORK/out/errattr.log" "$REPO_ROOT/scripts/vps/deploy-vps.sh")"
   if [ "$V9_RC" != "0" ] &&
-     grep -q "unit 'automations' failed" "$WORK/out/errattr.log.err" &&
-     grep -qE '^ *completed:.*code-agents' "$WORK/out/errattr.log.err"; then
-    ok "V9: a failing unit is named, with the units that completed before it"
+     grep -q "unit 'code-agents' failed" "$WORK/out/errattr.log.err" &&
+     grep -q "not reached: (none)" "$WORK/out/errattr.log.err"; then
+    ok "V9: a failing unit is named, with nothing silently skipped past it"
   else
     bad "V9: rc=$V9_RC — the failure was not attributed to a unit"
     evidence "$WORK/out/errattr.log.err"

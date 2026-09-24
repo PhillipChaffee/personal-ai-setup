@@ -3,8 +3,8 @@
 One table decides which model handles which job. It exists for two reasons: cost stays
 predictable, and — more importantly — each class of your data only ever reaches providers
 whose retention policy is allowed to hold it. The policy behind the tiers lives in
-[privacy.md](privacy.md); this file is the operational reference you consult when wiring a
-recipe, starting a session, or wondering why a job is pinned to a given provider.
+[privacy.md](privacy.md); this file is the operational reference you consult when starting a
+session or wondering why a job is pinned to a given provider.
 
 All prices are per 1M tokens (input/output), **verified as of 2026-08-20** against the
 provider catalogs ([opencode.ai/docs/zen](https://opencode.ai/docs/zen) and Together's
@@ -21,8 +21,6 @@ pricing/model pages). Both catalogs churn — re-verify at signup and monthly vi
 | Hub daily driver (brain) — **default** | Goose → `together` | `Qwen/Qwen3.5-397B-A17B` | $0.60/$3.60 (ZDR — private by default) |
 | Hub premium alternative (non-sensitive) | Goose → `zen-anthropic` | `claude-sonnet-5` | $2/$10 (30-day retention) |
 | Hub cost-saver | Goose → `zen-openai` | `kimi-k2.6` | $0.95/$4.00 |
-| Scheduled automations | Goose → `zen-openai` | `minimax-m2.7` | $0.30/$1.20 |
-| Automation fallback | Goose → `together` | `openai/gpt-oss-120b` | $0.15/$0.60 (verified tool-caller) |
 | Sensitive doc Q&A | Goose → `together` | `Qwen3.5-397B-A17B` | $0.60/$3.60 (ZDR/HIPAA) |
 | Sensitive long-context (big PDFs) | Goose → `together` | DeepSeek V4 Flash | $0.14/$0.28, 1M ctx |
 | Code agents (brain, per-chat containers) | OpenCode in container → Zen/Together | **owner's choice at kick-off** — default `deepseek-v4-flash` | Zen: peak/off-peak; Together alt $0.14/$0.28 |
@@ -73,7 +71,7 @@ Notes on reading the table:
    1.3 Contributor Free) are explicitly
    exempt from Zen's zero-retention/no-training policy — they may train on your prompts
    ([Zen docs](https://opencode.ai/docs/zen)). Free tier is for throwaway, non-personal
-   code only. Nothing from email, calendar, the vault, or any chat that mentions your life.
+   code only. Nothing personal — no email, calendar, or any chat that mentions your life.
    Zen additionally refuses the free tier from any non-OpenCode client with a 403
    `FreeTierError` (verified 2026-09-23), so a free pick requires an OpenCode session —
    no other coding agent can reach a free model even by accident.
@@ -84,17 +82,14 @@ Notes on reading the table:
    work, but the moment a session touches medical records, insurance, billing, or the
    budget, it belongs on the sensitive tier.
 3. **Sensitive tier = Together (ZDR default, HIPAA/BAA posture) or Zen paid open models
-   only.** The vault recipes (`vault-qa`, `health-followups`, `budget-checkin`) pin
-   Together. Zen's paid open models (Kimi, GLM, MiniMax, DeepSeek, Qwen — zero retention,
+   only.** Any session that touches health or finance data belongs on `together` — switch
+   the session there. Zen's paid open models (Kimi, GLM, MiniMax, DeepSeek, Qwen — zero retention,
    no training) are the acceptable fallback if Together is down or rate-limited. Never
    Claude/GPT via Zen, never a free model.
-4. **Recipes pin their model.** Every recipe in `recipes/` carries an explicit
-   `goose_provider`/`goose_model` in its settings so a changed session default can never
-   silently reroute a sensitive job.
 
 ## How to switch models
 
-Four levers, from most to least persistent:
+Three levers, from most to least persistent:
 
 - **Default provider/model** — `goose configure` (interactive) sets `GOOSE_PROVIDER` and
   `GOOSE_MODEL` in `~/.config/goose/config.yaml`. This is what interactive sessions use
@@ -106,20 +101,10 @@ Four levers, from most to least persistent:
   goose run --provider together --model "Qwen/Qwen3.5-397B-A17B" -t "..."
   ```
 
-- **Per recipe** — recipes pin their own model in the settings block, which beats the
-  session default whenever that recipe runs (interactively or scheduled):
-
-  ```yaml
-  settings:
-    goose_provider: together
-    goose_model: "Qwen/Qwen3.5-397B-A17B"
-  ```
-
 - **Environment** — `GOOSE_PROVIDER`/`GOOSE_MODEL` env vars: a manual override
   lever only. They outrank config for the process they're set in, which is
-  exactly why `scripts/common/run-recipe.sh` and the systemd fallback units
-  deliberately do **not** set them — recipe-pinned models (hard rule 4) must
-  always win on headless runs.
+  why the deploy script and the verify scripts deliberately do **not** set
+  them — a session's pinned model must always win on a headless run.
 
 In OpenCode, `/models` switches interactively and its config file pins defaults.
 The repo ships no OpenCode config — you input your own settings.
@@ -131,17 +116,17 @@ behind `https://opencode.ai/zen/v1/responses` — the OpenAI **Responses API** �
 custom providers speak only OpenAI chat-completions, Anthropic messages, or Ollama
 formats. So GPT-5.x via Zen is simply not addressable from Goose, and no route in the
 table uses it. If you ever want a GPT model for coding, OpenCode reaches it natively; for
-the hub, the Claude/Kimi/MiniMax lineup covers the same ground. This is an accepted
+the hub, the Claude/Kimi lineup covers the same ground. This is an accepted
 limitation, not a bug to fix.
 
 ## Model drift
 
 Zen deprecates aggressively (18 models retired in the seven months before 2026-08-20,
 including Kimi K2, GLM 4.x, and Qwen3 Coder) and Together's catalog churns almost as fast.
-A pinned ID that 404s is the most likely way an automation dies quietly.
+A pinned ID that 404s is the most likely way a model pick dies quietly.
 
-`scripts/verify/pin-models.sh` diffs every model ID pinned in `config/` and `recipes/`
+`scripts/verify/pin-models.sh` diffs every model ID pinned in `config/`
 against the live catalogs (`https://opencode.ai/zen/v1/models` and
 `https://api.together.xyz/v1/models`) and reports anything missing or renamed. Run it
-monthly and after any provider announcement. When a model disappears, update this table,
-the custom-provider JSONs, and any recipe that pinned it — in the same commit.
+monthly and after any provider announcement. When a model disappears, update this table
+and the custom-provider JSONs — in the same commit.

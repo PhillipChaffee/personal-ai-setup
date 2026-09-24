@@ -70,8 +70,8 @@ file's `_readme`; the rules that matter:
 
 - **Only repos you own or trust** — cloned repo content (AGENTS.md, .claude/)
   steers the agent, and the allowlist is the trust boundary.
-- **Only Tier 1/2 repos** ([`docs/privacy.md`](../privacy.md)) — never the
-  life vault. The verify script fails if it sees it.
+- **Only Tier 1/2 repos** ([`docs/privacy.md`](../privacy.md)) — never
+  anything Tier 3. The verify script fails if it sees it.
 - `allow_push: true` only where you're happy for pushes to skip the
   permission ask. Default (`false`) = every push asks on your device.
 - Keep `setup` commands light (2 vCPU / 4 GB) or set `edit_only: true`.

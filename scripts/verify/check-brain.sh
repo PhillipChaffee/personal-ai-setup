@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # check-brain.sh — Phase 3 verification of the VPS brain: goose-serve service,
-# /status over TLS, the schedule roster, an optional live run-now, and the
-# manual cross-device checklist. Run it on the brain itself (over SSH) or from
-# the Mac across the tailnet — it detects which side it's on.
+# /status over TLS, and the manual cross-device checklist. Run it on the brain
+# itself (over SSH) or from the Mac across the tailnet — it detects which side
+# it's on.
 set -euo pipefail
 
 # shellcheck source=scripts/verify/lib.sh
@@ -10,15 +10,12 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: check-brain.sh [--insecure] [--run-now] [--local] [--help]
+Usage: check-brain.sh [--insecure] [--local] [--help]
 
   --insecure  pass -k to curl for the /status check. goose serve's TLS cert
               is self-signed (clients pin its fingerprint instead of using a
               CA), so plain curl may refuse it; -k only skips verification
               for THIS smoke test — never weaken the clients.
-  --run-now   fire a real morning-brief run without prompting (synchronously,
-              via scripts/common/run-recipe.sh — costs one recipe run and
-              sends a real email).
   --local     force local mode (default: auto-detected via /data/goose).
 
 Remote mode needs BRAIN_HOST set to the brain's tailnet name, e.g.:
@@ -29,12 +26,10 @@ EOF
 }
 
 INSECURE="no"
-RUN_NOW="ask"
 FORCE_LOCAL="no"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --insecure) INSECURE="yes" ;;
-    --run-now)  RUN_NOW="yes" ;;
     --local)    FORCE_LOCAL="yes" ;;
     -h|--help)  usage; exit 0 ;;
     *) die_usage "unknown argument: $1" ;;
@@ -99,7 +94,7 @@ CURL_OPTS="-sS --max-time 10 -o /dev/null -w %{http_code}"
 if [ "$INSECURE" = "yes" ]; then
   CURL_OPTS="$CURL_OPTS -k"
   echo "WARNING: --insecure skips TLS verification for this probe only. The"
-  echo "         real clients (Desktop/iOS) must keep pinning the cert fingerprint."
+  echo "         real clients (Goose Desktop) must keep pinning the cert fingerprint."
 fi
 STATUS_URL="https://$STATUS_HOST:3284/status"
 if [ -n "${GOOSE_SERVER__SECRET_KEY:-}" ]; then
@@ -134,120 +129,7 @@ case "$HTTP_STATUS" in
     ;;
 esac
 
-# ---- 3. schedule roster -----------------------------------------------------
-if [ "$MODE" = "local" ]; then
-  SCHEDULES="$("$GOOSE_BIN" schedule list 2>&1 || true)"
-else
-  SCHEDULES="$(brain_exec /home/agent/.local/bin/goose schedule list 2>&1 || true)"
-fi
-# DERIVED from register-schedules.sh, never restated. A second hardcoded roster
-# here is what made this check fail permanently and unfixably on a brain with no
-# life vault: register-schedules.sh deliberately refuses to register
-# health-followups and budget-checkin until their vault inputs exist — and
-# actively UNREGISTERS them if an earlier deploy added them — so the remedy this
-# check printed ("run register-schedules.sh") removed them again.
-#
-# Deriving rather than duplicating follows pin-models.sh, which reads every
-# pinned model out of the files that declare them instead of keeping a list.
-REGISTER_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../vps" && pwd)/register-schedules.sh"
-# The anchor tolerates leading whitespace. Pinned to column 0, indenting
-# `ORDER=(` by one space made this derivation return NOTHING -- and an empty
-# roster then walked an empty loop and printed "shows all 0 schedule(s) this
-# brain should have" as a PASS. A derived check that reports a pass when its
-# source stopped resolving is worse than the duplicated literal it replaced.
-ROSTER="$(sed -n 's/^[[:space:]]*ORDER=(\(.*\))$/\1/p' "$REGISTER_SH")"
-if [ -z "$ROSTER" ]; then
-  # die, not fail: with no roster there is nothing left in this check to run,
-  # and exit 2 is this repo's "the precondition is missing" -- `pai verify`
-  # renders it as a skip and `--require brain` escalates it back to a failure.
-  die 2 "could not read the schedule roster from $REGISTER_SH" \
-    "Expected a line matching \`ORDER=( ... )\`. If that array was renamed or" \
-    "reformatted, this check derives from it and has to be re-anchored."
-fi
-
-# The prerequisite map, read out of the same file's `declare -A PREREQ=(...)`.
-prereq_for() { # prereq_for <schedule-id>
-  awk -v want="$1" '
-    /^declare -A PREREQ=\(/ { inblock = 1; next }
-    inblock && /^\)/        { exit }
-    inblock && index($0, "[" want "]") {
-      sub(/^[^=]*="/, ""); sub(/"[[:space:]]*$/, ""); print; exit
-    }
-  ' "$REGISTER_SH"
-}
-
-MISSING=""; SKIPPED=""; FOUND=0; WANTED=0
-for id in $ROSTER; do
-  PREREQ="$(prereq_for "$id")"
-  # A schedule gated on a vault file that does not exist is CORRECTLY absent.
-  # Asked on the brain, not here: /data/life-vault only exists there.
-  if [ -n "$PREREQ" ] && ! brain_exec test -e "$PREREQ" 2>/dev/null; then
-    SKIPPED="$SKIPPED $id"
-    continue
-  fi
-  WANTED=$((WANTED + 1))
-  if printf '%s' "$SCHEDULES" | grep -q "$id"; then
-    FOUND=$((FOUND + 1))
-  else
-    MISSING="$MISSING $id"
-  fi
-done
-if [ -z "$MISSING" ]; then
-  pass "goose schedule list shows all $WANTED schedule(s) this brain should have"
-  echo "      (budget-checkin ships disabled/paused — that still counts; enable it"
-  echo "       when finance/ledger.csv is real: docs/automations.md)"
-else
-  fail "goose schedule list is missing:$MISSING"
-  echo "      Register them: scripts/vps/register-schedules.sh (idempotent). Raw list:"
-  printf '%s\n' "$SCHEDULES" | sed 's/^/      | /'
-fi
-if [ -n "$SKIPPED" ]; then
-  # Not a finding. Phase 3 without Phase 4 is a documented resting point, and
-  # these are absent BY DESIGN until the vault is real.
-  note "not expected yet (life-vault inputs absent):$SKIPPED"
-  for id in $SKIPPED; do
-    echo "      $id needs $(prereq_for "$id")"
-  done
-  echo "      Phase 4 creates them (docs/setup/60-vault-setup.md). REGISTER_ALL=1"
-  echo "      registers them anyway, which schedules a weekly failure until then."
-fi
-
-# ---- 4. live fire: run-now morning-brief (optional) -------------------------
-if [ "$RUN_NOW" = "ask" ] && [ -t 0 ]; then
-  read -r -p "Fire a real morning-brief run now? (synchronous, ~2 min; one real email) [y/N] " ANSWER
-  case "$ANSWER" in y|Y|yes|YES) RUN_NOW="yes" ;; *) RUN_NOW="no" ;; esac
-elif [ "$RUN_NOW" = "ask" ]; then
-  RUN_NOW="no"
-fi
-if [ "$RUN_NOW" = "yes" ]; then
-  # Deliberately NOT `goose schedule run-now` (verified live, goose 1.46.0):
-  # run-now executes the job inside the CLI process — synchronously, so it
-  # does report failures inline, but the process (or SSH session) exiting
-  # kills the run, and it neither loads /data/secrets.env nor retries. The
-  # wrapper runs the same recipe with the secrets env loaded and the failure
-  # watchdog attached, which is also exactly the fallback-timer path.
-  if [ "$MODE" = "local" ]; then
-    RC=0; /home/agent/personal-ai-setup/scripts/common/run-recipe.sh morning-brief >/dev/null || RC=$?
-  else
-    RC=0; brain_exec /home/agent/personal-ai-setup/scripts/common/run-recipe.sh morning-brief >/dev/null || RC=$?
-  fi
-  if [ "$RC" -eq 0 ]; then
-    pass "run-now morning-brief triggered"
-    echo "      NOW CONFIRM BY HAND: the digest email ('Morning brief — <date>',"
-    echo "      self-addressed, sent by the recipe's own final Gmail step) arrives"
-    echo "      in your inbox within ~1-3 minutes."
-    echo "      No email => inspect the run's session (Desktop Scheduler UI, or"
-    echo "      'goose schedule sessions --schedule-id morning-brief') — a run that"
-    echo "      crashes before its delivery step sends nothing — and check that the"
-    echo "      Gmail tool works from the brain (docs/setup/30-google-oauth.md)."
-  else
-    fail "run-now morning-brief (exit $RC)"
-  fi
-else
-  echo "SKIP  run-now morning-brief (re-run with --run-now to fire it)"
-fi
-
-# ---- 5. manual checklist -----------------------------------------------------
+# ---- 3. manual checklist -----------------------------------------------------
 cat <<'EOF'
 
 == manual checklist — the milestone (one history, on the brain) ==
@@ -255,9 +137,6 @@ Nothing can verify this for you; do it once, now:
 
   [ ] Goose Desktop (connected to the brain) -> start a session, send one
       message, and see the reply land in the brain's history.
-  [ ] Desktop Scheduler UI -> the schedules check 3 listed are visible (three
-      before the life vault exists, five after); the run-now run from check 4
-      shows up in its per-schedule session history.
 
 All boxes ticked = shared sessions.db confirmed on Desktop.
 EOF
