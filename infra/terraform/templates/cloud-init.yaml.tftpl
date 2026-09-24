@@ -43,7 +43,7 @@ runcmd:
   - ufw default allow outgoing
   - ufw allow in on tailscale0
   - ufw --force enable
-  # 3) Toolchain for MCP servers: uv (Python, e.g. workspace-mcp via uvx) for
+  # 3) Toolchain for MCP servers: uv for future Python-based stdio servers
   #    the agent user, and Node.js LTS system-wide (npx-launched servers).
   - su - agent -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
   - curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -

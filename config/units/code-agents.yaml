@@ -3,8 +3,8 @@
 # podman, the code-agent:local image, /data/code-agents and the session
 # manager on port 4300.
 #
-# DESCRIBES TODAY. deploy-vps.sh:661-720 is the second-largest region in
-# either installer - only brain's path-root migration at deploy-vps.sh:390-516
+# DESCRIBES TODAY. deploy-vps.sh:561-613 is the second-largest region in
+# either installer - only brain's path-root migration at deploy-vps.sh:383-486
 # is bigger - and, unusually for this catalog, this unit has a real verify
 # script that probes a live plane. It is now unit_code_agents(), gated by
 # `deploy-vps.sh --with/--without/--only code-agents`, which is the one
@@ -13,7 +13,7 @@
 # build on EVERY deploy, both of which every brain used to pay for.
 id: code-agents
 manifest_version: 1
-verified_on: "2026-09-07"
+verified_on: "2026-09-23"
 summary: Rootless podman, the code-agent image, and the per-chat session manager.
 host: vps
 tier: opt_in
@@ -51,7 +51,7 @@ secrets:
     # HTTP Basic for the manager gateway, AND the root key each per-chat
     # server's password is derived from (issue #115) -- the containers get
     # HMAC-SHA256(this, "code-agent/<epoch>/<chat-id>"), never this value.
-    # deploy-vps.sh:690-691 enables the unit only when this and the PAT are
+    # deploy-vps.sh:582-583 enables the unit only when this and the PAT are
     # both non-empty.
     store: vps
     secret: true
@@ -74,17 +74,14 @@ secrets:
       (read/write)
     generate: null
   - key: NTFY_AGENT_TOPIC
-    # The agent channel, published by code-agent-manager.py directly rather
-    # than through notify.sh. A SECOND topic on purpose: this is the one a
-    # phone subscribes to, so it must be burnable without taking the failure
-    # channel (ntfy-alerts' NTFY_TOPIC) with it. Empty means the feature is
-    # simply off.
+    # The agent channel, published by code-agent-manager.py directly. Leave it
+    # empty and the feature is simply off.
     store: vps
     secret: true
     optional: true
     prompt: >-
       SECOND ntfy topic for code-agent buzzes — TRANSCRIBE the value minted on
-      the Mac; never the same value as NTFY_TOPIC
+      the Mac; never the same value as any other topic
     generate: null
   # The Mac half. Nothing on the Mac READS this one; the Keychain is where the
   # human keeps the value they type into the phone's ntfy app, which is what
@@ -112,14 +109,14 @@ owns:
   - {kind: repo_file, target: scripts/vps/systemd/code-agent-manager.service}
   - {kind: container_image, target: "code-agent:local"}
   - {kind: systemd_unit, target: code-agent-manager.service}
-  # deploy-vps.sh:686-687. The directory holds one volume per chat; repos.json
+  # deploy-vps.sh:578-579. The directory holds one volume per chat; repos.json
   # is seeded from the example by install_template, which never clobbers an
   # existing file.
   - {kind: data_path, target: /data/code-agents}
   - {kind: data_path, target: /data/code-agents/repos.json}
   # Host-level side effects with no file to name, all from deploy-vps.sh:
-  # deploy-vps.sh:672-675 installs the packages, deploy-vps.sh:679-680 grants
-  # agent a subordinate id range, and deploy-vps.sh:681 keeps /run/user/1000
+  # deploy-vps.sh:564-567 installs the packages, deploy-vps.sh:571-572 grants
+  # agent a subordinate id range, and deploy-vps.sh:573 keeps /run/user/1000
   # alive so a system unit can drive rootless podman as agent.
   - {kind: manual, target: "apt packages: podman, uidmap, slirp4netns"}
   - {kind: manual, target: "subuid/subgid range 100000-165535 for user agent"}
@@ -149,7 +146,7 @@ manual_steps:
 blockers:
   - id: deploy-stops-every-running-chat
     severity: warn
-    detail: deploy-vps.sh:710 restarts the manager rather than starting it, and
+    detail: deploy-vps.sh:602 restarts the manager rather than starting it, and
       the unit's ExecStopPost stops everything labelled code-agent=1, which
       runs during the stop half of a restart. Volumes, agent branches and
       transcripts survive; an in-flight turn and OpenCode's in-memory
@@ -186,7 +183,7 @@ blockers:
     severity: note
     detail: The gate and the enable answer different questions and both still
       apply. `--without code-agents` means "do not provision this at all";
-      the two-secret test at deploy-vps.sh:690-691 means "the credentials are
+      the two-secret test at deploy-vps.sh:582-583 means "the credentials are
       not there yet". Selecting the unit with an empty OPENCODE_SERVER_PASSWORD
       or GITHUB_CODE_AGENT_PAT still installs everything and leaves the manager
       disabled, exactly as before.
@@ -244,7 +241,7 @@ blockers:
   - id: image-build-is-unpinned-at-the-base
     severity: note
     detail: podman build pulls the OpenCode base image on first run
-      (deploy-vps.sh:682-685). config/pins.yaml has exactly one top-level key,
+      (deploy-vps.sh:575-577). config/pins.yaml has exactly one top-level key,
       goose, so whatever the Containerfile's base resolves to on the day of a
       deploy is what ships - the same class of drift the workspace-mcp
       fragment pins away, on a surface nothing here pins.

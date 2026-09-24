@@ -45,7 +45,7 @@ providers:
     configured: true
     model: claude-sonnet-5
 
-  # Cost-saver + scheduled-automation tier (Zen zero-retention open models).
+  # Cost-saver tier (Zen zero-retention open models).
   zen-openai:
     enabled: true
     configured: true
@@ -92,9 +92,9 @@ extensions:
   # goose's `apps` platform extension — ENABLED BY DEFAULT upstream in 1.46.0,
   # turned off here deliberately. Tool calls an app initiates are dispatched
   # WITHOUT passing through the permission manager, so an imported app is an
-  # unreviewed route to every other extension's tools: gmail send, the shell,
-  # the life vault. The brain gives up nothing — its clients are Goose Desktop,
-  # the iOS app and the scheduler, none of which need the apps surface
+  # unreviewed route to every other extension's tools: shell commands and
+  # every MCP tool there is. The brain gives up nothing — its client is Goose
+  # Desktop, which does not need the apps surface
   # (`_goose/unstable/apps/{list,export,import,delete}` over ACP).
   # docs/security.md. Verify it took on an older brain: `goose configure` ->
   # Toggle Extensions, or the ACP call _goose/unstable/config/extensions/list.

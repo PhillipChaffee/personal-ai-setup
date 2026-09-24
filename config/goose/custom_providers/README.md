@@ -75,7 +75,7 @@ whenever `scripts/verify/pin-models.sh` (the read-only drift checker) warns.
 After `--write`: re-copy the changed files into
 `~/.config/goose/custom_providers/`, restart goose (brain:
 `systemctl restart goose-serve`), and update any renamed ID pinned in
-`recipes/` or `docs/model-routing.md`.
+or `docs/model-routing.md`.
 
 To add a single model by hand instead: append
 `{ "name": "<exact-id>", "context_limit": <tokens> }` to the right file,

@@ -36,8 +36,7 @@ secrets: []
 
 owns:
   # The eleven Cursor-ported skills, enumerated rather than claimed as
-  # config/skills/ wholesale: connect-service in that same directory is
-  # base-skills'. These eleven names are also unit_coding_pack()'s install
+  # config/skills/ wholesale. These eleven names are also unit_coding_pack()'s install
   # list (SKILLS_CODING_PACK in bootstrap-mac.sh), by name and not as a
   # complement -- a twelfth skill neither unit claims installs nowhere rather
   # than silently landing here.

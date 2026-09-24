@@ -5,10 +5,8 @@ external service — which MCP server (if any), which credentials, which *exact*
 agent may call, which privacy tier the data falls in, and whether the whole thing can be
 finished from a phone.
 
-Manifests are the accruing half of the design in [`docs/connecting.md`](../../docs/connecting.md).
-The generic connect workflow ([`config/skills/connect-service/SKILL.md`](../skills/connect-service/SKILL.md))
-reads a manifest when one exists and **writes a new one when it doesn't** — so every service
-you connect leaves behind the artifact that makes the next connection to it a no-op.
+Manifests are the accruing half of the design in [`docs/connecting.md`](../../docs/connecting.md):
+every service you connect leaves behind the artifact that makes the next connection to it a no-op.
 
 Nothing here is a template you fill in blind: every field below exists because getting it
 wrong has a specific, observed consequence.
@@ -302,9 +300,8 @@ rather than pretending the convention holds.
 
 ## Adding a connector
 
-1. Run the workflow (`/connect-service` from the phone, or
-   `recipes/connect-service.yaml`). If no manifest exists it researches one and writes it here.
-2. Whatever it produces, **the vetting bar is not self-certifying** — a human confirms
+1. Write the manifest by hand, against the field contract below.
+2. **The vetting bar is not self-certifying** — a human confirms
    `maintenance` and `self_hosted_auth` before the manifest is committed.
 3. Add the `docs/privacy.md` row. `privacy.row_added: true` is a lie until you do; the
    validator checks the row exists.

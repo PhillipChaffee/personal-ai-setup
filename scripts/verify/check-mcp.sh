@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # check-mcp.sh — Phase 2 verification: exercise the MCP extensions this machine
 # ACTUALLY HAS ENABLED with one real goose run each. Run it on the Mac after
-# docs/setup/30-google-oauth.md; it also works on the brain once tokens are
-# transferred there.
+# enabling a connector (docs/connecting.md); it also works on the brain once
+# the extension is enabled there.
 #
 # THE ROSTER IS THE LIVE CONFIG'S, not a list in this file. It used to be three
 # hardcoded services, and the hardcoding pointed both ways: Gmail ran
@@ -19,8 +19,8 @@
 # been a hand-maintained roster inside the fix whose whole point is deleting
 # hand-maintained rosters; `cmd`/`uri` is a property of the thing itself.
 #
-# First-run OAuth dances may open a browser window (workspace-mcp) or print an
-# auth URL (Todoist) — that's expected; complete them and re-run.
+# First-run consent may print an auth URL (Todoist) — that's expected; complete
+# it and re-run.
 set -euo pipefail
 
 # shellcheck source=scripts/verify/lib.sh
@@ -31,11 +31,7 @@ usage() {
 Usage: check-mcp.sh [--help]
 
 One smoke test per ENABLED MCP extension in the live goose config.yaml. The
-three this script knows prompts for:
-  workspace-mcp — subjects of the 3 most recent inbox emails.
-     With USER_GOOGLE_EMAILS set (comma-separated multi-account roster,
-     docs/setup/30-google-oauth.md §8) the check runs once PER account so
-     every stored consent is exercised, not just the default account's.
+two this script knows prompts for:
   todoist       — today's tasks (first-party remote MCP)
   playwright    — title of https://example.com
 
@@ -44,9 +40,9 @@ FAILS, naming itself: nothing else in this repo would notice it. One that has a
 smoke test but is not enabled SKIPs — a machine without that connector is not
 penalised for it.
 
-All runs are pinned to zen-openai/kimi-k2.6 (cheap, Tier-2-safe — email
-subjects must not go to free models; docs/privacy.md). Verify the printed
-output looks like YOUR real inbox/tasks — the script can only check that the
+All runs are pinned to zen-openai/kimi-k2.6 (cheap, Tier-2-safe — connector
+content must not go to free models; docs/privacy.md). Verify the printed
+output looks like YOUR real tasks/pages — the script can only check that the
 runs completed. Exits non-zero if a non-skipped check fails.
 
   PAI_GOOSE_CONFIG  read this config.yaml instead of resolving one (fixtures).
@@ -98,8 +94,8 @@ run_check() {
     --provider "$PROVIDER" --model "$MODEL" \
     >"$OUT_FILE" 2>&1 || rc=$?
   # goose exits 0 even when an extension fails to start or every model call
-  # dies (same behavior run-recipe.sh compensates for), so a zero exit alone is
-  # not success — a per-account check that never reached Gmail must not PASS.
+  # dies, so a zero exit alone is not success — a check that never reached the
+  # tools must not PASS.
   if [ "$rc" -eq 0 ] && grep -qE 'Failed to start extension|^(Network error|Server error|Request failed)|Please resend your message to try again' "$OUT_FILE"; then
     fail "$name — the run completed but never reached the tools:"
     grep -oE 'Failed to start extension [^)]*\)|^(Network error|Server error|Request failed)[^\n]*' "$OUT_FILE" | head -n 3 | sed 's/^/      | /'
@@ -107,16 +103,11 @@ run_check() {
     summary_row "FAIL  $name (tools/provider unreachable)"
   elif [ "$rc" -eq 0 ] && grep -qiE 'authentication is required|complete the (sign-in|authorization)' "$OUT_FILE"; then
     # The tool answered with an auth prompt, not data — and this one-shot run
-    # has already exited, taking the localhost OAuth callback listener with
-    # it, so consent clicked NOW lands on a dead port. The consent must
-    # complete while a session is alive; see docs/setup/30-google-oauth.md §6
-    # for the retry-loop one-liner that holds the session open.
-    # Counted as a failure, and now says so in the prefix. The distinct
-    # AUTH PENDING recap row survives because the remedy is specific.
+    # has already exited, so consent clicked NOW lands on a dead callback
+    # port. Approve the connector's consent, then re-run this script.
     fail "$name — AUTH PENDING: consent flow triggered but not completed."
-    note "Do NOT just re-click the browser tab: run the §6 retry-loop"
-    note "command from docs/setup/30-google-oauth.md, consent while it"
-    note "runs, then re-run this script."
+    note "Do NOT just re-click the browser tab: approve the consent in a"
+    note "fresh browser session, then re-run this script."
     summary_row "AUTH PENDING  $name"
   elif [ "$rc" -eq 0 ]; then
     pass "$name — output (verify it matches reality):"
@@ -170,65 +161,14 @@ PYEOF
 # The smoke prompts. THIS IS A ROSTER TOO, and the difference that matters is
 # that its gaps are now reported: an enabled MCP extension missing from here
 # FAILs below, naming itself. Adding one is adding a case arm.
-KNOWN="workspace-mcp todoist playwright"
+KNOWN="todoist playwright"
 
 echo "== check-mcp: extension smoke tests via $PROVIDER/$MODEL =="
 echo "   live config: $CONFIG"
 echo "   enabled MCP extensions: ${ROSTER:-(none)}" | tr '\n' ' '
 echo
-echo "NOTE: first-run auth may open a browser (Google OAuth consent) or print"
-echo "      an auth URL (Todoist). Complete it, then re-run this script."
-
-# On the brain the Google roster lives in /data/secrets.env — load it like the
-# other brain-side scripts (register-schedules.sh, check-brain.sh) so an SSH
-# shell without the exports still sweeps every account.
-if [ -z "${GOOGLE_OAUTH_CLIENT_ID:-}" ] && [ -r /data/secrets.env ]; then
-  # Gate on the OAuth client id, not the roster: secrets.env is also the only
-  # source of GOOGLE_OAUTH_CLIENT_ID/SECRET, which workspace-mcp needs to start
-  # at all. Gating on the roster meant that exporting USER_GOOGLE_EMAILS by hand
-  # skipped the file and left the extension unable to launch.
-  load_secrets GOOGLE_OAUTH_CLIENT_ID
-fi
-
-# ---- workspace-mcp: one smoke test PER ACCOUNT ------------------------------
-# USER_GOOGLE_EMAILS (falls back to USER_GOOGLE_EMAIL, then to the extension's
-# default account). Each account's check passes its address as the tools'
-# user_google_email argument, so a missing consent for a secondary account fails
-# ITS check, not the primary's.
-check_workspace_mcp() {
-  local accounts account gmail_checks=0 before="$FAIL_COUNT" old_ifs
-  accounts="${USER_GOOGLE_EMAILS:-${USER_GOOGLE_EMAIL:-}}"
-  if [ -n "$accounts" ]; then
-    old_ifs="$IFS"
-    IFS=','
-    for account in $accounts; do
-      IFS="$old_ifs"
-      account="$(printf '%s' "$account" | tr -d '[:space:]')"
-      [ -n "$account" ] || { IFS=','; continue; }
-      gmail_checks=$((gmail_checks + 1))
-      run_check "Gmail ($account)" \
-        "Using the Google Workspace tools, list the subject lines of the 3 most recent emails in the inbox of the Google account $account. Pass user_google_email=$account on every tool call. Output only the three subject lines, one per line. Do not modify, label, or send anything."
-      IFS=','
-    done
-    IFS="$old_ifs"
-  fi
-  if [ "$gmail_checks" -eq 0 ]; then
-    # No (usable) roster — the pre-multi-account behavior: one check against
-    # the extension's default account. A roster of only commas/whitespace
-    # lands here too instead of silently skipping Gmail entirely.
-    run_check "Gmail (workspace-mcp)" \
-      "Using the Google Workspace tools, list the subject lines of the 3 most recent emails in my inbox. Output only the three subject lines, one per line. Do not modify, label, or send anything."
-  fi
-  if [ "$FAIL_COUNT" -gt "$before" ]; then
-    note "Hints: are GOOGLE_OAUTH_CLIENT_ID/GOOGLE_OAUTH_CLIENT_SECRET in the"
-    note "env (Keychain export / secrets.env)? Was the OAuth consent completed"
-    note "and the GCP app published 'In production'? (docs/setup/30-google-oauth.md"
-    note "— a 'Testing' app expires refresh tokens every 7 days.)"
-    note "A failure for one specific account usually means that account's"
-    note "consent dance was never completed — docs/setup/30-google-oauth.md §8."
-  fi
-  return 0
-}
+echo "NOTE: first-run auth may print an auth URL (Todoist). Complete it,"
+echo "      then re-run this script."
 
 check_todoist() {
   local before="$FAIL_COUNT"
@@ -250,15 +190,14 @@ check_playwright() {
 # ---- 1. every enabled MCP extension, in the config's own order --------------
 for ext in $ROSTER; do
   case "$ext" in
-    workspace-mcp) check_workspace_mcp ;;
     todoist)       check_todoist ;;
     playwright)    check_playwright ;;
     *)
       # THE COMPLETENESS RULE. Nothing else in this repo notices an extension
       # somebody enabled: check-security.sh --local asserts it has a tool
       # allowlist, and that is the whole of the coverage it gets. An enabled
-      # server nobody ever proved can answer is a connector that fails at 06:30
-      # inside a scheduled recipe instead of here.
+      # server nobody ever proved can answer is a connector that fails
+      # mid-task instead of here, under your eyes.
       echo
       echo "--> $ext"
       fail "$ext is enabled and declares an MCP server, but check-mcp.sh has no smoke test for it"
@@ -272,8 +211,9 @@ done
 
 # ---- 2. the ones this script knows about that are NOT enabled ---------------
 # A SKIP, not a failure. A machine that never installed a connector must not be
-# penalised for the connector rule — that is this issue's own acceptance
-# criterion, and Gmail running unconditionally was the case that broke it.
+# penalised for the connector rule — that is the completeness rule's own
+# acceptance criterion, and Gmail running unconditionally was the case that
+# broke it.
 for ext in $KNOWN; do
   case "
 $ROSTER

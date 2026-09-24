@@ -139,7 +139,7 @@ if [ -n "$AUTH" ]; then
   CODE="$($CURL $AUTH -o /dev/null -w '%{http_code}' "$BASE/api/health" 2>/dev/null || echo 000)"
   case "$CODE" in
     200) pass "gateway /api/health authenticated (200)" ;;
-    000) fail "gateway unreachable at $BASE (TLS refused? try --insecure; cert: renew-tls-cert.sh)" ;;
+    000) fail "gateway unreachable at $BASE (TLS refused? try --insecure; the manager serves plain HTTP when no TLS cert is present)" ;;
     *)   fail "gateway /api/health returned HTTP $CODE" ;;
   esac
 else
@@ -279,7 +279,7 @@ if [ "$PROBE" = "yes" ] && [ -n "$AUTH" ]; then
     # a SEND capability onto a lock screen, so an agent that could read it out
     # of its own environment could notify its owner in its owner's voice.
     LEAKED=""
-    for var in GOOGLE_OAUTH_CLIENT_SECRET TELEGRAM_BOT_TOKEN NTFY_TOPIC NTFY_AGENT_TOPIC GOOSE_SERVER__SECRET_KEY OPENCODE_ZEN_API_KEY; do
+    for var in NTFY_AGENT_TOPIC GOOSE_SERVER__SECRET_KEY OPENCODE_ZEN_API_KEY; do
       if podman exec "$CN" sh -c "printenv $var" >/dev/null 2>&1; then LEAKED="$LEAKED $var"; fi
     done
     if [ -z "$LEAKED" ]; then
@@ -288,13 +288,16 @@ if [ "$PROBE" = "yes" ] && [ -n "$AUTH" ]; then
       fail "container env leaks:$LEAKED"
     fi
 
-    # Isolation: host paths must not exist inside the container.
+    # Isolation: host paths must not exist inside the container. /data/life-vault
+    # stays on this list for the brains that still carry it — the repo-side
+    # vault code left with the automations removal (2026-09-23), but the live
+    # teardown that removes the directory rides the herdr epic.
     ISOLATED="yes"
     for p in /data/secrets.env /data/life-vault /data/goose /data/goose-data; do
       if podman exec "$CN" sh -c "test -e $p" >/dev/null 2>&1; then ISOLATED="no"; note "reachable: $p"; fi
     done
     if [ "$ISOLATED" = "yes" ]; then
-      pass "container cannot reach /data (secrets, vault, goose data)"
+      pass "container cannot reach /data (secrets, goose data)"
     else
       fail "container reaches host paths it must not"
     fi

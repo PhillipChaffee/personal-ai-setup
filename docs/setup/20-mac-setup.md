@@ -6,8 +6,8 @@ the config templates; one secrets script puts your keys in the Keychain; then
 you verify. The coding agents are not on this list — they run on the brain
 under herdr (Phase 3), and the Mac reaches them as a client.
 
-Prerequisite: [10-accounts.md](10-accounts.md) §1–2 and §6 done — you have
-`OPENCODE_ZEN_API_KEY`, `TOGETHER_API_KEY`, and an `NTFY_TOPIC` ready to paste.
+Prerequisite: [10-accounts.md](10-accounts.md) §1–2 done — you have
+`OPENCODE_ZEN_API_KEY` and `TOGETHER_API_KEY` ready to paste.
 
 One framing note before you start: the goose you install here is the
 **fallback/offline surface**. From Phase 3 on, the always-on brain on the VPS
@@ -66,15 +66,10 @@ The bootstrap installs them **atomically** (copy to a temp dir, then `mv`), so
 an interrupted run can never leave a half-copied skill that the no-clobber rule
 would then keep forever.
 
-Two units put things there, and the split matters if you ever install
-selectively:
-
-- **`connect-service`** is the goose-native connect workflow (paired with
-  `recipes/connect-service.yaml`). It is what reads a connector manifest when
-  one exists and writes one when it does not.
-- **the eleven Cursor-ported skills** (`code-review`, `ship`, `deep-research`,
-  …) come from the Cursor port and dispatch into the OpenCode subagents. What
-  was ported, adapted and dropped is [`docs/cursor-port.md`](../cursor-port.md).
+One unit puts the skills there — the eleven Cursor-ported ones (`code-review`,
+`ship`, `deep-research`, …), from the Cursor port, dispatching into the OpenCode
+subagents. What was ported, adapted and dropped is
+[`docs/cursor-port.md`](../cursor-port.md).
 
 **`~/.config/opencode/agents/`** holds the subagents those skills dispatch **by
 name**, and **`~/.config/opencode/AGENTS.md`** is the global rule set OpenCode
@@ -89,8 +84,8 @@ delete it and re-run the bootstrap to take a new version from the repo.
 
 ### Choosing what to install
 
-The bootstrap is four **units**, one per manifest in
-[`config/units/`](../../config/units/README.md). With no flags all four run,
+The bootstrap is three **units**, one per manifest in
+[`config/units/`](../../config/units/README.md). With no flags all three run,
 which is what the section above describes. The flags pick a subset:
 
 | Flag | Meaning |
@@ -106,7 +101,6 @@ The units and their dependencies:
 |---|---|---|
 | `base-toolchain` | uv, node, jq, the Tailscale cask | — |
 | `base-goose` | goose CLI + Desktop cask, the pin, `~/.config/goose` | `base-toolchain` |
-| `base-skills` | the `connect-service` skill | `base-goose` |
 | `coding-pack` | the eleven ported skills, the agents, `AGENTS.md` | — |
 
 ```bash
@@ -119,13 +113,13 @@ Three things worth knowing before you use them:
 
 - **`--only` replaces the default set; `--with` adds to it.** `--only coding-pack`
   installs one unit — coding-pack requires nothing since the OpenCode unit left
-  the catalog — and leaves `connect-service` out. `--with coding-pack`
-  installs all four, because coding-pack was already in the default set.
+  the catalog — and leaves the goose units out. `--with coding-pack`
+  installs all three, because coding-pack was already in the default set.
 - **Excluding something another unit needs is refused, not half-done.**
-  `--without base-goose` also drops `base-skills` and says so on stdout,
-  because nothing else needs base-skills. But `--only base-skills --without
-  base-goose` names base-skills explicitly, so it exits `2` naming both rather
-  than installing a skill onto a machine where its dependency never ran.
+  `--without base-toolchain` also drops `base-goose` and says so on stdout,
+  because nothing else needs base-toolchain. But `--only base-goose --without
+  base-toolchain` names base-goose explicitly, so it exits `2` naming both rather
+  than installing goose onto a machine where its dependency never ran.
 - **`--dry-run` really touches nothing** — no `$HOME`, no `brew`, not even a
   `uname`. It answers before the macOS check and before the Homebrew check, so
   it works on a Mac that has neither.
@@ -154,12 +148,13 @@ in plaintext.
 When you add an add-on later, name it and only its secrets are asked for:
 
 ```bash
-./scripts/mac/keychain-secrets.sh --units google-workspace   # Phase 2's OAuth pair
-./scripts/mac/keychain-secrets.sh --units ntfy-alerts        # the alert topic
+./scripts/mac/keychain-secrets.sh --units code-agents        # the code-agent buzz topic
+./scripts/mac/keychain-secrets.sh --units connectors         # the Tavily key
 ./scripts/mac/keychain-secrets.sh --rewrite-only             # just refresh ~/.zshrc
 ```
 
-Where a value is meant to be generated rather than pasted — the ntfy topics —
+Where a value is meant to be generated rather than pasted — the code-agent
+buzz topic —
 type `generate` at the hidden prompt and openssl mints one straight into the
 Keychain; it is never printed. The `~/.zshrc` block is **rewritten in place**
 between its `# >>> personal-ai keychain exports` markers on every run, so
@@ -213,8 +208,8 @@ If you run OpenCode locally anyway, two things to know:
    the model picker changes this in two clicks. (`zen-free` is in the picker
    too; its display name reminds you those models train on your data.)
 3. Confirm the Developer extension is on (default) and leave the extension
-   list minimal for now — MCP wiring for Gmail/Calendar happens in
-   Phase 2 ([30-google-oauth.md](30-google-oauth.md)).
+   list minimal for now — connector adoption is [Phase 2](../connecting.md)
+   territory, and every shipped connector fragment starts disabled.
 
 Desktop apps launched from Finder don't inherit your shell environment. The
 config templates and `keychain-secrets.sh` handle this, but if Desktop ever
@@ -260,6 +255,5 @@ goose run --provider zen-openai --model kimi-k2.6 -t "Reply with exactly: local 
 - This is the complete **Phase 1** stack: usable on
   day one, no server.
 
-Next: [30-google-oauth.md](30-google-oauth.md) to give goose your Gmail,
-Calendar, and Tasks — then Phase 3 stands up the brain and demotes this Mac
+Next: Phase 3 stands up the brain and demotes this Mac
 setup to fallback duty.

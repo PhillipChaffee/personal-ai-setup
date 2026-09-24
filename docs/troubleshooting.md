@@ -10,11 +10,9 @@ Quick index:
 |---|---|
 | Goose custom provider returns 404 / "model not found" on every call | [Custom-provider 404s](#custom-provider-404s-base_url-path-semantics) |
 | Zen `claude-*` / `qwen3.7-*` models fail auth (401/403) | [Zen /messages auth failures](#zen-messages-auth-failures-bearer-vs-x-api-key) |
-| A scheduled job didn't fire | [Scheduler job didn't fire](#goose-scheduler-job-didnt-fire) |
 | Together calls return 429 | [Together 429s](#together-429s-dynamic-rate-limits) |
 | Brain unreachable from the Mac after it slept | [Tailscale after Mac sleep](#tailscale-unreachable-after-mac-sleep) |
 | Brain unreachable after a VPS reboot | [Brain down after reboot](#brain-unreachable-after-a-vps-reboot-luks) |
-| Google MCP asks you to re-authenticate every week | [workspace-mcp 7-day re-auth](#workspace-mcp-re-auth-every-7-days) |
 | A model ID that used to work is rejected | [Model ID rejected](#model-id-rejected-deprecated) |
 
 ---
@@ -88,68 +86,24 @@ your shell? see `scripts/mac/keychain-secrets.sh`), or Zen changed its auth.
 
 ## A client gets a TLS error (or Desktop suddenly can't connect)
 
-**Symptom.** A client refuses the brain's TLS — Desktop fails if a pinned
-fingerprint no longer matches.
+**Symptom.** Desktop refuses the brain's TLS — the pinned fingerprint no
+longer matches.
 
-**Cause.** Either the brain is still on its self-signed certificate, or the
-LE certificate rotated (they renew ~every 60
-days via `tls-cert-renew.timer`) while a client still pins the old
-fingerprint.
+**Cause.** `goose serve` runs `--tls` with its **self-signed** cert and clients
+pin its SHA-256 fingerprint. The fingerprint changes when the cert is
+regenerated (a re-provisioned volume, a fresh `goose serve` state) — there is
+no CA and no renewal machinery (2026-09-23: the LE cert path left with the
+phone story).
 
-**Fix.** Issue/renew the real cert: `sudo scripts/vps/renew-tls-cert.sh` on
-the brain (needs MagicDNS + HTTPS Certificates enabled in the Tailscale
-admin console). Then make sure clients do NOT pin a fingerprint — with a
-CA-trusted cert, pinning only creates renewal breakage. Verify from any
-tailnet machine with strict TLS: `curl -s https://<brain>.<tailnet>.ts.net:3284/status`.
-
-## Goose scheduler job didn't fire
-
-**Symptom.** A registered automation (say `morning-brief`) produced no push, no
-session, nothing — `goose schedule sessions --schedule-id morning-brief` shows no
-run at the expected time.
-
-**Cause.** Goose's scheduler is **in-process**: it only ticks while a goose
-process is running. On the brain that means `goose serve --enable-scheduler`
-under the `goose-serve` systemd unit. If the unit is down (crash, reboot with
-LUKS still locked, failed deploy), every schedule silently misses. On top of
-that, the scheduler has known upstream bugs — background jobs running in chat
-mode and blocking tools ([block/goose#3882](https://github.com/block/goose/issues/3882))
-and timing/session-loading failures
-([block/goose#5045](https://github.com/block/goose/issues/5045)).
-
-**Fix.**
-
-1. Is the brain process up?
-
-   ```bash
-   ssh agent@<brain> systemctl status goose-serve
-   ssh agent@<brain> journalctl -u goose-serve --since "-6h" --no-pager
-   ```
-
-   If it's down because `/data` is locked, see
-   [Brain unreachable after a VPS reboot](#brain-unreachable-after-a-vps-reboot-luks).
-2. Is the schedule registered? `goose schedule list` on the brain. If missing or
-   stale, re-run `scripts/vps/register-schedules.sh` — note the scheduler keeps
-   its **own copy** of each recipe at registration time, so editing a YAML in the
-   repo does nothing until you re-register.
-3. Test the job directly: `goose schedule run-now --schedule-id morning-brief`
-   (or from Desktop's Scheduler UI). If run-now works but cron firings don't,
-   you're likely hitting the upstream bugs.
-4. If the native scheduler keeps misbehaving, **flip that job to the shipped
-   systemd-timer fallback** — the one-command procedure is in
-   `docs/automations.md`. The fallback timers call the same recipes through the
-   same deterministic wrapper (`scripts/common/run-recipe.sh`), so delivery and
-   notifications are unchanged.
-
-**Note — there is nothing to debug on the Mac.** All schedules live on the
-brain's scheduler by design; this setup deliberately installs **no launchd
-plists and no crontabs on the Mac**, so a closed laptop lid can never be the
-reason an automation missed.
+**Fix.** Re-read the fingerprint on the brain —
+`sudo journalctl -u goose-serve -n 50 --no-pager | grep -i fingerprint` — and
+re-pin it in Desktop's connection settings. Verify from any tailnet machine:
+`curl -sk https://<brain>.<tailnet>.ts.net:3284/status` (the `-k` is expected:
+the cert is self-signed; only the clients pin).
 
 ## Together 429s (dynamic rate limits)
 
-**Symptom.** Recipes pinned to the `together` provider (health-followups,
-vault-qa, budget-checkin, automation fallback) intermittently fail with HTTP 429,
+**Symptom.** Sessions on the `together` provider intermittently fail with HTTP 429,
 especially in the first weeks of the account.
 
 **Cause.** Together's rate limits are **dynamic, per-organization and per-model**
@@ -160,23 +114,14 @@ throttled, and a fresh account with no history has very little headroom
 
 **Fix.**
 
-1. Know what the wrapper does — and doesn't: on fallback-timer and manual runs,
-   `scripts/common/run-recipe.sh` retries the `goose run` **once** after a flat
-   60-second sleep, and only if the retry also fails does it send the failure
-   alert. The retry is deliberately blind: every 429 carries an
-   `x-ratelimit-reset` header (seconds to wait), but the header is not visible
-   through goose's exit status, so the wrapper can't honor it. If you write
-   your own callers against the raw API, honor the header instead of
-   hammering. (Native-scheduler runs have no wrapper; a 429-killed run shows
-   up in the Scheduler UI / per-schedule session history.)
-2. Keep crons staggered. The shipped schedule already spaces Together-heavy jobs
-   (health-followups Sun 18:30, budget-checkin monthly 09:00); if you add new
-   recipes, don't land two Together jobs in the same minute — see the cron table
-   in `docs/automations.md`.
-3. Expect it to fade: after a couple of weeks of successful daily traffic the
+1. Retry later, not harder: every 429 carries an `x-ratelimit-reset` header
+   (seconds to wait). goose does not surface it, so a hand-retry should wait
+   rather than hammer. If you write your own callers against the raw API,
+   honor the header instead.
+2. Expect it to fade: after a couple of weeks of successful daily traffic the
    dynamic limit rises on its own.
-4. If a job is bulk-shaped (many independent calls), consider Together's Batch
-   API — separate rate pool, up to 50% off on selected models.
+3. If a workload is bulk-shaped (many independent calls), consider Together's
+   Batch API — separate rate pool, up to 50% off on selected models.
 
 ## Tailscale unreachable after Mac sleep
 
@@ -224,29 +169,10 @@ If even tailnet SSH is dead, use the Hetzner Cloud web console to log in and
 check that `tailscaled` is running; the full runbook is in
 `docs/setup/50-vps-brain.md` (reboot drill section).
 
-## workspace-mcp re-auth every 7 days
-
-**Symptom.** Gmail/Calendar tools work for a few days, then start failing with
-invalid/expired-token errors, and the Google consent screen pops up again. Repeat
-weekly.
-
-**Cause.** Your GCP OAuth consent screen is still in **"Testing"** publishing
-status. Google auto-expires all refresh tokens for Testing-status external apps
-after exactly 7 days
-([Google's notice](https://support.google.com/cloud/answer/15549945)). This is
-the single most common trap with self-hosted Google MCP servers.
-
-**Fix.** Google Cloud Console → APIs & Services → OAuth consent screen →
-**Publish app** → status becomes **"In production"**. For a personal app you can
-ignore the verification flow — you'll see an "unverified app" warning at consent
-time, which is fine. Re-authenticate **once more** after publishing; that new
-refresh token is long-lived. Full walkthrough (and how to move tokens to the
-brain): `docs/setup/30-google-oauth.md`.
-
 ## Model ID rejected (deprecated)
 
 **Symptom.** A previously working model returns 400/404 "model not found" or
-"deprecated" — from Goose, OpenCode, or a recipe that has run fine for months.
+"deprecated" — from Goose or OpenCode, or a provider pinned months ago.
 
 **Cause.** Both gateways churn their catalogs. Zen deprecates aggressively
 (18 models retired in the ~7 months before 2026-08-20 — Qwen3 Coder, Kimi K2,
@@ -266,16 +192,15 @@ go stale silently.
    scripts/verify/pin-models.sh
    ```
 
-2. Update the affected IDs in `config/goose/custom_providers/*.json`
-   and any recipe `settings.goose_model` that
-   pins the retired model; consult `docs/model-routing.md` before substituting so
-   the replacement stays in the right privacy tier (never move a sensitive job
-   off Together just because a model vanished).
+2. Update the affected IDs in `config/goose/custom_providers/*.json`;
+   consult `docs/model-routing.md` before substituting so the replacement
+   stays in the right privacy tier (never move a sensitive job off Together
+   just because a model vanished).
 3. Redeploy configs to the brain (`scripts/vps/deploy-vps.sh`) and re-run
    `scripts/verify/check-goose.sh`.
 
 Run `pin-models.sh` monthly even when nothing is broken — catching a deprecation
-notice beats catching a 404 at 07:00 when the morning brief fails.
+notice beats catching a 404 mid-session.
 
 ## Code agent chat won't start, wake, or answer
 
@@ -286,9 +211,10 @@ returns 502, or the gateway itself is unreachable.
   the tailnet IP only and exits until tailscaled has an IPv4 — check
   `systemctl status code-agent-manager` and `tailscale status`. After a
   reboot, `/data` is locked until `luks-unlock.sh` runs; the unit stays down
-  by design (`RequiresMountsFor=/data`). No TLS? Run
-  `sudo scripts/vps/renew-tls-cert.sh` — without a cert the manager serves
-  plain HTTP and logs a warning.
+  by design (`RequiresMountsFor=/data`). No TLS? That is expected on a fresh
+  brain: the manager serves plain HTTP when no TLS cert is present (the LE
+  cert machinery left with the phone story) and logs a warning — HTTP Basic
+  still applies on every route.
 - **401 from the gateway.** Password mismatch: the app's Code settings must
   carry the current `OPENCODE_SERVER_PASSWORD` (username `opencode`). A 401
   from *inside* a chat container is not a fault: since #115 a container holds
@@ -353,10 +279,10 @@ and print `kept existing`. So `~/.agents/skills/ship` may be this repo's copy or
 you wrote first, and nothing on disk records which. A remover driven off `owns:` deletes
 both; the only sound predicate is content equality against the repo source.
 
-**What it does tell you.** `pai remove brain` names `/data`, `/data/goose` and
-`/data/tls` as retained; `pai remove code-agents` names `/data/code-agents` and the
-subuid range; `pai remove life-vault` names `/data/life-vault`. Data paths are not a
-removable kind — that is structural, not a list of four paths someone has to remember to
+**What it does tell you.** `pai remove brain` names `/data` and
+`/data/goose` as retained; `pai remove code-agents` names `/data/code-agents` and the
+subuid range. Data paths are not a
+removable kind — that is structural, not a list someone has to remember to
 extend. `pai remove --help` states the two doctor facts above.
 
 **To back a unit out by hand,** the manifest's `reason` is the procedure: it is written

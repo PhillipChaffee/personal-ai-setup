@@ -23,8 +23,8 @@ data.
 ## How Google user data is used
 
 - Data is accessed only to serve the operator's explicit requests and the
-  automations the operator configured (for example: summarizing the day's
-  calendar, triaging the inbox into labels and reply drafts).
+  workflows the operator configured (for example: summarizing the day's
+  calendar, drafting reply text the operator approves before anything sends).
 - Relevant excerpts may be included as context in requests to the AI
   inference providers the operator configured, under those providers'
   zero-data-retention API terms. This processing happens solely on the

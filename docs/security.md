@@ -68,14 +68,14 @@ The brain's agent endpoint (`goose serve`, port 3284, systemd unit
   state to the root disk) unless the encrypted volume is unlocked and mounted.
 - **`GOOSE_PATH_ROOT=/data/goose`** — config, data *and* state on the encrypted volume.
   See [the LUKS section](#goose-keeps-state-in-three-places-and-only-one-of-them-was-relocated).
-- **`Restart=always`** — survives crashes; `--enable-scheduler` keeps automations alive.
+- **`Restart=always`** — survives crashes.
 - **The `apps` platform extension is turned off.** goose 1.46.0 ships it *enabled by
   default* (its ACP surface, `_goose/unstable/apps/{list,export,import,delete}`, is listed
   in `crates/goose/acp-meta.json` at the v1.46.0 tag). Tool calls an app initiates are
   dispatched without passing through the permission manager, which makes an imported app
-  an unreviewed route to every other extension's tools — Gmail send, the shell, the vault.
-  `config/goose/config.yaml` sets `apps: enabled: false`; the brain loses nothing, since
-  its clients are Goose Desktop and the scheduler. On a brain deployed before
+  an unreviewed route to every other extension's tools — shell commands, every MCP tool
+  there is. `config/goose/config.yaml` sets `apps: enabled: false`; the brain loses
+  nothing, since its client is Goose Desktop. On a brain deployed before
   that template landed, confirm with `goose configure` → Toggle Extensions.
 
 ## The code plane: the manager, the containers and the allowlist
@@ -93,8 +93,8 @@ is the trust boundary and who can move it.
   from a repo listed there, so the file — not the PAT, not the tailnet — is what
   decides where a code agent can read and write. It is untracked, per-user, and
   `deploy-vps.sh` never clobbers it, so **no deploy restores it if it is lost**.
-- **Only Tier 1/2 repos may be listed** ([privacy.md](privacy.md)); the life vault
-  and anything Tier 3 never enter it. That is a human judgment and cannot be
+- **Only Tier 1/2 repos may be listed** ([privacy.md](privacy.md)); anything Tier 3
+  never enters it. That is a human judgment and cannot be
   validated server-side, which is why `POST /api/repos` **requires** `tier` in the
   request body, refuses `3`, and refuses an absent one rather than defaulting.
 - **An authorisation that can reach a repo is still not an allowlist entry.** The
@@ -167,12 +167,10 @@ mounted at `/data`. Everything stateful lives there:
 ├── secrets.env          # all runtime secrets, chmod 600
 ├── goose/               # GOOSE_PATH_ROOT — goose's config, data AND state (0700)
 │   ├── config/          # config.yaml, .goosehints, memory/, secrets.yaml (0600)
-│   ├── data/            # sessions.db — the shared chat history — and schedule.json
+│   ├── data/            # sessions.db — the shared chat history
 │   └── state/           # logs/llm_request.*.jsonl — raw provider request/response bodies
 ├── goose-data -> goose/data   # the old path, kept as a symlink
-├── workspace-mcp/       # Google OAuth tokens
-├── code-agents/         # per-chat OpenCode volumes + repos.json
-└── life-vault/          # clone of the SEPARATE private vault repo
+└── code-agents/         # per-chat OpenCode volumes + repos.json
 ```
 
 The root disk holds only the OS and this repo's code — nothing *written from now on* is
@@ -200,10 +198,9 @@ original design symlinked only the middle one. Config (including `secrets.yaml`)
 with inference providers) were left on the unencrypted root disk.
 
 `GOOSE_PATH_ROOT=/data/goose` in `goose-serve.service` relocates all three together
-(verified against goose 1.46.0); the fallback `goose-recipe@.service` and the
-`goose-telegram-gateway.service` set the same value — every unit that runs a goose process
-does, or that unit alone would keep writing `llm_request` logs to the root disk and quietly
-undo the rest. Because a `goose` invoked by hand over SSH inherits no unit's environment,
+(verified against goose 1.46.0) — and `goose-serve` is the only unit on the box that
+runs a goose process, so it is the only unit that must. Because a `goose` invoked by
+hand over SSH inherits no unit's environment,
 `deploy-vps.sh` additionally leaves all three home-directory paths as symlinks into
 `/data/goose` — and `scripts/verify/check-security.sh --local` fails if any of them
 resolves outside `/data`.
@@ -259,21 +256,20 @@ the manifests instead — they are what both the prompts and the checked
 
 ```bash
 pai secrets --host mac                            # the base + default_on roster
-pai secrets --host mac --units google-workspace   # one add-on's Keychain names
+pai secrets --host mac --units code-agents        # one add-on's Keychain names
 pai secrets --host mac --all                      # every name the catalog can put there
 pai secrets --host vps                            # what /data/secrets.env must hold
 ```
 
 **The bare form is not an audit of your Keychain.** It projects the *default* selection
 — every `base` and `default_on` unit — and nothing in it knows which add-ons you actually
-installed, so on a Mac running `google-workspace` and `ntfy-alerts` it still prints two
+installed, so on a Mac running `code-agents` and `connectors` it still prints two
 names. Name the add-ons with `--units`, or use `--all`, when the question is "does my
 Keychain hold everything it should".
 
 Outside env vars entirely, and therefore outside every roster above: the LUKS passphrase
-(password manager only), the Tailscale auth key (typed at the Terraform prompt, never
-written to `terraform.tfvars`), the `life-vault` deploy key, and the Google OAuth token
-files on `/data`.
+(password manager only) and the Tailscale auth key (typed at the Terraform prompt, never
+written to `terraform.tfvars`).
 
 ## Host hygiene
 
@@ -295,8 +291,7 @@ Run these on a schedule — an untested recovery path is a broken one.
 3. `ssh agent@<your-brain>.<your-tailnet>.ts.net` (Tailscale SSH).
 4. `sudo /home/agent/personal-ai-setup/scripts/vps/luks-unlock.sh` — enter the passphrase
    from your password manager.
-5. `systemctl status goose-serve` shows active; run `scripts/verify/check-brain.sh`;
-   confirm the next scheduled digest email arrives.
+5. `systemctl status goose-serve` shows active; run `scripts/verify/check-brain.sh`.
 
 ### Key rotation
 
@@ -310,9 +305,7 @@ new → update stores (Keychain on Mac, `/data/secrets.env` on brain) → restar
 | `TOGETHER_API_KEY` | Together dashboard → API keys | Keychain on the Mac and `/data/secrets.env` on the brain |
 | `GOOSE_SERVER__SECRET_KEY` | Generate locally (`openssl rand -hex 32`) | Update secrets.env, restart goose-serve, re-enter on the Desktop client |
 | Tailscale | Admin console → Machines / Keys | Auth keys are one-time (bootstrap); rotate device keys by re-authing; remove stale devices |
-| Google OAuth client secret | GCP console → Credentials | Re-run the workspace-mcp auth flow; re-transfer tokens per `docs/setup/30-google-oauth.md` |
-| `NTFY_TOPIC` | Pick a new random topic | Update secrets.env + Keychain; old topic is burned |
-| `NTFY_AGENT_TOPIC` | Pick a new random topic | The code-agent buzz channel, rotated INDEPENDENTLY of `NTFY_TOPIC` — that separation is the whole reason it is a second variable. Update secrets.env + Keychain, `sudo systemctl restart code-agent-manager`, then re-subscribe the phone's ntfy app to the new topic. Unlike every other row here this is not only a read credential: whoever holds it can also SEND, i.e. put a notification on your lock screen, so rotate on any suspicion at all. Removing the phone from the tailnet does **not** revoke it — delivery goes over the public internet, never the tailnet. Leaving it empty turns the feature off outright |
+| `NTFY_AGENT_TOPIC` | Pick a new random topic | The code-agent buzz channel. Update secrets.env + Keychain, `sudo systemctl restart code-agent-manager`, then re-subscribe the phone's ntfy app to the new topic. Unlike every other row here this is not only a read credential: whoever holds it can also SEND, i.e. put a notification on your lock screen, so rotate on any suspicion at all. Removing the phone from the tailnet does **not** revoke it — delivery goes over the public internet, never the tailnet. Leaving it empty turns the feature off outright |
 | `OPENCODE_SERVER_PASSWORD` | Generate locally (`openssl rand -hex 32`) | Update secrets.env, `sudo systemctl restart code-agent-manager`, re-enter in the app's Code settings. **No `podman rm` by hand.** Since #115 a container's password is `HMAC-SHA256(this value, "code-agent/<epoch>/<chat-id>")`, so changing this changes every derived secret; container env is baked at creation and `podman start` reuses it, so a container from before the rotation can only be *rebuilt*, never fixed. It rebuilds itself lazily, per chat, at the first wake or request after the restart: the container answers the manager 401, the manager rebuilds it from the volume and retries, and the caller sees a normal 200. Note the restart alone does NOT do it — the startup sweep only sees a bumped `CRED_EPOCH`, which a rotation does not move — so a chat you never open stays on the old secret until you open it, which is harmless. Every agent that ran before #115 held the OLD value, so rotate when deploying it |
 | `GITHUB_CODE_AGENT_PAT` | GitHub → Settings → Developer settings → Fine-grained tokens | Keep scope: allowlisted repos only, Contents + Pull requests. Update secrets.env, restart code-agent-manager; new chats get the new token immediately, existing chats after a container recreate (`podman rm` + wake, volume preserved) |
 | LUKS passphrase | `sudo cryptsetup luksChangeKey /dev/disk/by-id/<volume>` | Update the password manager first; test unlock before closing the session |

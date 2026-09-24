@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # pin-models.sh — model-drift detector. Every model ID pinned in this repo
-# (config/goose/custom_providers/*.json, config/goose/config.yaml,
-# recipes/*.yaml) is checked against the live catalogs:
+# (config/goose/custom_providers/*.json, config/goose/config.yaml) is checked
+# against the live catalogs:
 #   Zen      GET https://opencode.ai/zen/v1/models
 #   Together GET https://api.together.xyz/v1/models
 #
@@ -91,13 +91,10 @@ echo
 
   # goose config.yaml: per-provider default models ("    model: X" lines)
   grep -hE '^[[:space:]]+model:' "$REPO_ROOT/config/goose/config.yaml" 2>/dev/null | awk '{print $2}'
-
-  # recipes: per-recipe pinned models
-  grep -hE '^[[:space:]]*goose_model:' "$REPO_ROOT"/recipes/*.yaml 2>/dev/null | awk '{print $2}'
 } | grep -v '^$' | sort -u >"$PINNED"
 
 if [ ! -s "$PINNED" ]; then
-  echo "pin-models.sh: found no pinned model IDs in config/ or recipes/ — wrong checkout?" >&2
+  echo "pin-models.sh: found no pinned model IDs in config/ — wrong checkout?" >&2
   exit 2
 fi
 
@@ -141,7 +138,6 @@ else
 Update each occurrence in the SAME commit, then re-run until clean:
   - config/goose/custom_providers/*.json  (models[] lists)
   - config/goose/config.yaml              (per-provider default models)
-  - recipes/*.yaml                        (goose_model pins)
   - docs/model-routing.md                 (the routing table)
 Mind the routing rules when substituting: a sensitive-tier model must stay
 ZDR/no-training (docs/privacy.md). Then propagate: re-copy on the Mac

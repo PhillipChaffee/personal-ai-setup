@@ -107,10 +107,10 @@ the roster lives in AGENTS.md's *Subagent Use* section.
 
 ## What was deliberately NOT done (first pass)
 
-- **No goose recipes from the review panels.** The `cr-*`/`pr-*` flows are
-  interactive coding workflows; goose `sub_recipes` (experimental) could host
-  them on the brain later, but nothing life-admin needs them yet. Revisit if
-  a scheduled "review yesterday's commits" automation ever earns its keep.
+- **No scheduled runs for the review panels.** The `cr-*`/`pr-*` flows are
+  interactive coding workflows, and this repo ships no automations at all
+  (2026-09-23). If a scheduled "review yesterday's commits" run ever earns
+  its keep, that is a fresh decision, not a resumption.
 - **No brain install.** The brain does life admin, not code review; skills
   are discoverable there anyway if you clone this repo and copy
   `config/skills/` into `~/.agents/skills/` on the VPS.

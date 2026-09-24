@@ -203,14 +203,84 @@ done
 
 # A recording ntfy, so the agent-notification channel can be asserted on the
 # exact bytes that left the manager rather than on the manager's intentions.
-# Two topics on purpose: the failure channel (NTFY_TOPIC, notify.sh) and the
-# agent channel (NTFY_AGENT_TOPIC) must be separately burnable, so the tests
-# below check the notifications landed on the second and never the first.
+# The failure channel (NTFY_TOPIC, notify.sh) left the repo with the automations
+# removal (2026-09-23) — the agent channel (NTFY_AGENT_TOPIC) is what remains,
+# and the tests below check the notifications landed on it.
+#
+# GENERATED, not committed, for the reason the repo's workflow heredocs give:
+# a python3 heredoc is invisible to ruff and mypy --strict, and this recorder
+# replaces the committed fake-ntfy.py that died with the transport. Same shape
+# as the goose stub in test-verify-checks.sh: stdlib only, 127.0.0.1 only.
 NTFY_PORT="${NTFY_PORT:-$((PORT - 2))}"
 NTFY_LOG="$WORK/ntfy.jsonl"
 FAILURE_TOPIC="failure-topic-$$"
 AGENT_TOPIC="agent-topic-$$"
-python3 "$HERE/fake-ntfy.py" --port "$NTFY_PORT" --out "$NTFY_LOG" &
+FAKE_NTFY="$WORK/fake-ntfy.py"
+cat >"$FAKE_NTFY" <<'PYEOF'
+import json
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import unquote, urlparse
+
+WRITE_LOCK = threading.Lock()
+OUT_PATH = Path("/dev/null")
+MAX_BODY = 1 << 20
+RECORDED_HEADERS = (
+    "Title", "Priority", "Tags", "Click", "Actions", "Email", "Content-Type",
+)
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    server_version = "fake-ntfy"
+
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(min(length, MAX_BODY)) if length else b""
+        text = raw.decode("utf-8", "replace")
+        try:
+            body: Any = json.loads(text)
+        except json.JSONDecodeError:
+            body = text
+        record = {
+            # The path IS the topic, and recording it is how the harness
+            # proves the agent channel is not the failure channel.
+            "topic": unquote(urlparse(self.path).path).lstrip("/"),
+            "headers": {
+                name: self.headers.get(name)
+                for name in RECORDED_HEADERS
+                if self.headers.get(name) is not None
+            },
+            "body": body,
+        }
+        with WRITE_LOCK, OUT_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+        payload = b'{"id":"fake"}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def do_GET(self) -> None:
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+OUT_PATH = Path(sys.argv[2])
+OUT_PATH.touch()
+server = ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler)
+server.daemon_threads = True
+server.serve_forever()
+PYEOF
+python3 "$FAKE_NTFY" "$NTFY_PORT" "$NTFY_LOG" &
 NTFY_PID=$!
 for _ in $(seq 1 20); do
   curl -sS -o /dev/null "http://127.0.0.1:$NTFY_PORT/ready" && break
@@ -2812,24 +2882,22 @@ sleep 6
 # for first is contaminated — chatId embeds the repo name, title is the first 80
 # characters of the raw prompt, and a bash ask's metadata is the shell command —
 # so the test names those actual values and demands their absence.
-python3 - "$NTFY_LOG" "$CID" "$AGENT_TOPIC" "$FAILURE_TOPIC" <<'EONTFY' \
+python3 - "$NTFY_LOG" "$CID" "$AGENT_TOPIC" <<'EONTFY' \
   && ok "the notification payload is content-free (kind, handle, count)" \
   || bad "the notification carried content"
 import json, sys
-log, cid, agent_topic, failure_topic = sys.argv[1:5]
+log, cid, agent_topic = sys.argv[1:4]
 records = [json.loads(l) for l in open(log, encoding="utf-8") if l.strip()]
 assert records, "nothing was sent to ntfy at all"
-# Both channels are legitimate -- notify.sh posts operational failures to
-# FAILURE_TOPIC -- so the allowlist is over both, and the content contract
-# below is asserted over the AGENT channel, which is the one that renders on a
-# locked screen. Asserting `topic == agent_topic` for every record (as this
-# once did) breaks the moment any test exercises notify_failure.
+# One channel now: the agent topic. The failure channel (notify.sh ->
+# NTFY_TOPIC) left the repo with the automations removal (2026-09-23), and
+# notify_failure logs instead — so every record here must be the agent topic,
+# the one that renders on a locked screen.
 for r in records:
-    assert r["topic"] in (agent_topic, failure_topic), f"unknown topic: {r['topic']!r}"
-agent_records = [r for r in records if r["topic"] == agent_topic]
+    assert r["topic"] == agent_topic, f"unknown topic: {r['topic']!r}"
+agent_records = records
 assert agent_records, "nothing was sent to the agent channel"
 for r in agent_records:
-    assert r["topic"] != failure_topic, "the agent channel used the failure topic"
     assert "Email" not in r["headers"], "an Email header would burn the ~5/day cap"
     body = r["body"]
     assert isinstance(body, dict), f"body is not JSON: {body!r}"
@@ -4564,12 +4632,13 @@ EOP
 [ "$FAIL_CODE" = "502" ] && [ "$LEAKED" = "0" ] \
   && ok "a failed create rolls back: 502, and no index entry survives" \
   || bad "create rollback: HTTP $FAIL_CODE, leaked index entries $LEAKED"
-# The rollback also has to TELL someone. This is why the ntfy assertion above
-# allowlists both topics rather than demanding the agent channel.
-if grep -q "chat create failed" "$NTFY_LOG" 2>/dev/null; then
-  ok "a failed create raises an operational alert"
+# The rollback also has to TELL someone. With the ntfy failure channel gone
+# (2026-09-23), the operational record is the journal line notify_failure
+# writes, which journald keeps and `journalctl -u code-agent-manager` reads.
+if grep -q "FAILURE (high): chat create failed" "$WORK/manager.log" 2>/dev/null; then
+  ok "a failed create raises an operational record in the journal"
 else
-  bad "no failure notification for a failed create"
+  bad "no failure record for a failed create"
 fi
 
 # 8i. LAST, because they corrupt the manager's own state files. A gateway that

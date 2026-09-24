@@ -46,7 +46,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # The literal typed at a hidden prompt to mint a value instead of pasting one.
 # Only offered for keys whose manifest row carries a `generate` command --
-# NTFY_TOPIC and NTFY_AGENT_TOPIC today, both minted on the Mac in Phase 1
+# NTFY_AGENT_TOPIC today, minted on the Mac in Phase 1
 # (docs/setup/10-accounts.md §6). Keys that are generated on the BRAIN and
 # transcribed here (GOOSE_SERVER__SECRET_KEY) must never offer it: a fresh value
 # on this side unpairs the client from the server.
@@ -66,7 +66,7 @@ Keychain, under service "$SERVICE", then rewrites the export block in
   --units a,b,c   the unit ids to prompt for. Default: every base and
                   default_on unit, which is what a bootstrap install leaves
                   behind. Add an opt-in unit's id when you install it --
-                  \`--units google-workspace\` asks for that unit's names only.
+                  \`--units code-agents\` asks for that unit's names only.
   --rewrite-only  skip every prompt and only regenerate the ~/.zshrc block.
                   This is the one mode that needs no terminal.
 

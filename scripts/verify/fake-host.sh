@@ -4,7 +4,7 @@
 # driven by scripts/verify/test-deploy-vps.sh.
 #
 # LINUX ONLY, and it dies 2 saying so rather than half-working. `ln -sfnT`
-# (GNU -T), `stat -c %a` and register-schedules.sh's `declare -A` all rule out
+# (GNU -T), `stat -c %a` and lib.sh's process-tree helpers all rule out
 # stock macOS, and a partial pass would be worse than no pass: the whole point
 # of this fake is that `ln -sfn` without -T is a REAL failure mode of the
 # script under test, so the assertion about it has to run against the real ln.
@@ -360,35 +360,13 @@ case "$NAME" in
       || die "unhandled git argv: $*"
     ;;
 
-  # ---- goose. Only the schedule surface register-schedules.sh uses.
+  # ---- goose. Only what the deploy itself touches: the preflight's -x test
+  # on $GOOSE_BIN. The schedule surface register-schedules.sh used left with
+  # the automations removal (2026-09-23).
   goose)
     record goose "$@"
     case "${1:-}" in
-      --version) echo "goose 1.46.0" ;;
-      schedule)
-        shift
-        case "${1:-}" in
-          list)
-            if [ -f "$PAI_HOST_STATE/schedules" ]; then cat "$PAI_HOST_STATE/schedules"; fi
-            ;;
-          --help) echo "Usage: goose schedule <add|list|remove|sessions|run-now|cron-help>" ;;
-          add)
-            # The V9 sentinel: one failing unit body, to prove the ERR trap
-            # attributes it to `automations` rather than to line 780.
-            if armed goose-add-fails; then
-              echo "Error: failed to add schedule" >&2
-              exit 1
-            fi
-            [ "${2:-}" = "--schedule-id" ] || die "unhandled goose schedule add argv: $*"
-            state_add schedules "$3"
-            ;;
-          remove)
-            [ "${2:-}" = "--schedule-id" ] || die "unhandled goose schedule remove argv: $*"
-            state_del schedules "$3"
-            ;;
-          *) die "unhandled goose schedule argv: $*" ;;
-        esac
-        ;;
+      --version) echo "goose 1.51.0" ;;
       *) die "unhandled goose argv: $*" ;;
     esac
     ;;
@@ -410,10 +388,10 @@ case "$NAME" in
     fi
     ;;
 
-  # ---- the passthroughs. Two of them can be told to LIE, which is the only
-  # way to reach deploy-vps.sh's two `|| fail` arms: through the script's own
-  # control flow they are unreachable, because a successful mv/rm always
-  # removes the source. See test-deploy-vps.sh V3b.
+  # ---- the passthroughs. One of them can be told to LIE, which is the only
+  # way to reach deploy-vps.sh's `|| fail` arm: through the script's own
+  # control flow it is unreachable, because a successful mv always removes
+  # the source. See test-deploy-vps.sh V3b.
   mv)
     if armed lie-mv; then
       record mv "$@"
@@ -426,14 +404,7 @@ case "$NAME" in
     fi
     passthrough "$@"
     ;;
-  rm)
-    if armed lie-rm; then
-      record rm "$@"
-      exit 0
-    fi
-    passthrough "$@"
-    ;;
-  ln|cp|rmdir|install|chmod|mkdir)
+  ln|cp|rmdir|install|chmod|mkdir|rm)
     passthrough "$@"
     ;;
 

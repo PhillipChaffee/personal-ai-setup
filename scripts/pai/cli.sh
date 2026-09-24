@@ -170,9 +170,9 @@ cmd_verify() {
   # "== summary: 0 passed, 0 failed, 0 skipped ==" and exits 0. Rename or
   # relocate config/units/ and `pai verify` becomes a permanent green no-op.
   #
-  # die 2, matching check-brain.sh:159, which refuses the same shape for its
-  # schedule roster: with nothing to run there is no sweep left to report, and
-  # 2 is this repo's "the precondition is missing".
+  # die 2, matching this repo's "the precondition is missing" convention: with
+  # nothing to run there is no sweep left to report, and 2 is how every
+  # entry point here says so.
   if [ -z "$roster_names" ]; then
     die 2 "the verify roster derived from config/units/*.yaml is EMPTY" \
       "Nothing would run, and a sweep of nothing must not report success." \

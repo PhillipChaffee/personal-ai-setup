@@ -1,11 +1,10 @@
-# Phase 3 — Stand up the brain
+# Phase 2 — Stand up the brain
 
 The payoff phase (~3 h). At the end: one always-on Goose agent on a hardened
-VPS owns your chat history and your automations; Desktop is the window onto
-it. **Milestone: your chat history lives on the brain,
-and a morning brief that arrives by itself.**
+VPS owns your chat history; Desktop is the window onto
+it. **Milestone: your chat history lives on the brain.**
 
-Prerequisites: Phases 1–2 done and verified; Hetzner account + API token
+Prerequisites: Phase 1 done and verified; Hetzner account + API token
 ([10-accounts.md §5](10-accounts.md)); Tailscale MagicDNS + HTTPS enabled
 ([10-accounts.md §3](10-accounts.md)); a password manager entry ready to
 receive the LUKS passphrase. Design background, if you want it before the
@@ -35,8 +34,8 @@ firewall, the data volume, and cloud-init — is declared in
 
    Edit `terraform.tfvars`: `ssh_public_key` (your public key, for
    bootstrap/rescue), plus server type/location/timezone if the defaults don't
-   suit. The **timezone matters**: automation crons fire in the brain's local
-   time ([`docs/automations.md`](../automations.md)).
+   suit. The **timezone matters**: sessions, logs, and any scheduled work you
+   add later run in the brain's local time.
 
    The two secrets do **not** go in that file. `hcloud_token` (from
    10-accounts §5) and `tailscale_authkey` (step 1) have no default, so
@@ -116,7 +115,7 @@ The script `luksFormat`s that device (LUKS2 — prompting for the passphrase
 and a typed `FORMAT` confirmation), adds `noauto` crypttab/fstab entries (so
 no key is ever stored on the machine and nothing auto-unlocks at boot), and
 opens + mounts it at `/data`. One-time only; after any future reboot the
-counterpart is `luks-unlock.sh` (step 9).
+counterpart is `luks-unlock.sh` (step 7).
 
 ## 4. Secrets onto the encrypted volume
 
@@ -127,10 +126,9 @@ agent@brain$ nano /data/secrets.env
 ```
 
 Fill every variable with the real values from your Keychain/notes:
-`OPENCODE_ZEN_API_KEY`, `TOGETHER_API_KEY`, `NTFY_TOPIC`, `NTFY_EMAIL`,
-`NTFY_AGENT_TOPIC` (optional)
-(recommended — the address failure alerts are emailed to), `TAVILY_API_KEY`
-(optional), `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` — and
+`OPENCODE_ZEN_API_KEY`, `TOGETHER_API_KEY`, `TAVILY_API_KEY` (optional),
+`NTFY_AGENT_TOPIC` (optional — the code-agent buzz channel,
+[10-accounts.md §6](10-accounts.md#6-an-ntfy-topic-for-code-agent-buzzes-optional)) — and
 generate the one new secret now:
 
 ```bash
@@ -138,21 +136,11 @@ openssl rand -hex 32    # → GOOSE_SERVER__SECRET_KEY in /data/secrets.env
 ```
 
 Keep `GOOSE_SERVER__SECRET_KEY` at hand (password manager): Desktop
-authenticates with it in step 7. This file is the brain's entire
+authenticates with it in step 6. This file is the brain's entire
 secret store — 0600, owned by `agent`, on the encrypted volume, injected into
 services via systemd `EnvironmentFile`, never anywhere else.
 
-## 5. Transfer the Google OAuth tokens
-
-Follow [30-google-oauth.md §7](30-google-oauth.md) — either rsync the Mac's
-working token directory (`~/.google_workspace_mcp/`) into
-`/data/workspace-mcp/` on the brain (path a, fastest) or run the one-time
-`ssh -L` consent dance on the brain (path b). Either way the tokens sit on
-the encrypted volume; step 6's deploy symlinks `~/.google_workspace_mcp` →
-`/data/workspace-mcp` so workspace-mcp finds them at its default location.
-Come back when a Gmail tool call works from the brain.
-
-## 6. Deploy the stack
+## 5. Deploy the stack
 
 ```bash
 agent@brain$ /home/agent/personal-ai-setup/scripts/vps/deploy-vps.sh
@@ -170,35 +158,27 @@ The script is idempotent — it's also the upgrade path later. It:
 - **migrates goose's state onto the encrypted volume** and keeps it there:
   `/data/goose` becomes `GOOSE_PATH_ROOT`, holding `config/` (config.yaml,
   `.goosehints`, `memory/`, `secrets.yaml`), `data/` (`sessions.db` — the
-  shared history — and `schedule.json`) and `state/`
+  shared history) and `state/`
   (`logs/llm_request.*.jsonl`, the raw provider request/response bodies).
   `~/.config/goose`, `~/.local/share/goose` and `~/.local/state/goose` are
   symlinked into it, so a `goose` you run by hand over SSH reads the same
   files the service does. Existing session history is moved, never deleted,
   and re-running is a no-op. Rationale: [`docs/privacy.md`](../privacy.md);
-- symlinks `~/.google_workspace_mcp` → `/data/workspace-mcp`, so the Google
-  OAuth tokens are encrypted at rest too;
 - installs and starts the systemd unit
   (`scripts/vps/systemd/goose-serve.service`): `goose serve` bound to the
-  **Tailscale IP**, port **3284**, `--tls`, shared-secret auth,
-  `--enable-scheduler`, `Restart=always`, `RequiresMountsFor=/data`,
-  `GOOSE_PATH_ROOT=/data/goose`;
-- runs `scripts/vps/register-schedules.sh` to register the full automation
-  roster (note: `budget-checkin` registers **active** — goose 1.x has no pause
-  CLI; pause it in the Desktop Scheduler UI or remove it until you have a
-  budgeting source) — see [`docs/automations.md`](../automations.md).
+  **Tailscale IP**, port **3284**, `--tls` (self-signed — clients pin the
+  fingerprint), shared-secret auth,
+  `Restart=always`, `RequiresMountsFor=/data`,
+  `GOOSE_PATH_ROOT=/data/goose`.
 
 ### Choosing what gets installed
 
-Four of the pieces above are **selectable units**, and everything else is the
+One of the pieces above is a **selectable unit**; everything else is the
 brain core, which always runs:
 
 | unit | what it is | what skipping it costs |
 | --- | --- | --- |
-| `google-workspace` | `~/.google_workspace_mcp` → `/data/workspace-mcp` | Google OAuth tokens land on the **unencrypted** root disk instead |
-| `telegram-gateway` | `goose-telegram-gateway.service`, enabled when `TELEGRAM_BOT_TOKEN` is set | unverified by any check (see the unit's blockers) |
 | `code-agents` | rootless podman, the `code-agent:local` image, `/data/code-agents`, `code-agent-manager.service` | no code agents ([70-code-agents.md](70-code-agents.md)) |
-| `automations` | `register-schedules.sh` — the goose scheduler roster | no scheduled recipes; the disabled fallback timers are still installed |
 
 ```bash
 # see the plan without touching anything
@@ -219,7 +199,7 @@ Three things to know:
 
 - **The brain core is not selectable.** The path-root migration, the goose
   config install, the systemd unit files, the `goose-serve` restart and the
-  `/status` gate run on every invocation, including `--only automations`. Every
+  `/status` gate run on every invocation, including `--only code-agents`. Every
   selective run prints one line saying so.
 - **Deselecting is not uninstalling.** Nothing removes what an earlier deploy
   already installed; `--without code-agents` on a brain that already has the
@@ -238,38 +218,26 @@ Three things to know:
   `--only code-agents` (or `sudo systemctl restart code-agent-manager.service`).
   Deploy when nothing is mid-turn: the restart SIGTERMs every chat container.
 
-If a selected unit fails, the deploy stops there and names it — `ERROR: unit
+If the unit fails, the deploy stops there and names it — `ERROR: unit
 'code-agents' failed`, plus which units completed and which never ran — and
-the safety-net trap brings `goose-serve` (and the gateway, if it was enabled)
-back up before exiting. Re-run just that one with `--only code-agents`.
+the safety-net trap brings `goose-serve` back up before exiting. Re-run just
+that one with `--only code-agents`.
 
-Then give the brain a **real TLS certificate** for its tailnet name — iOS
-and every stock client trust it natively, and it's a one-liner because
-Tailscale mints Let's Encrypt certs for `ts.net` names (this is why
-[10-accounts.md §3](10-accounts.md) enabled MagicDNS **and HTTPS
-Certificates**):
-
-```bash
-agent@brain$ sudo ~/personal-ai-setup/scripts/vps/renew-tls-cert.sh
-```
-
-That issues the cert to `/data/tls/` and restarts goose-serve with it; the
-weekly `tls-cert-renew.timer` (installed by deploy) keeps it renewed — LE
-certs expire in ~90 days, so don't skip the timer. Confirm everything:
+Confirm everything:
 
 ```bash
 agent@brain$ systemctl status goose-serve
-agent@brain$ goose schedule list
-# from the Mac — strict TLS must validate with NO -k:
-mac$ curl -s -o /dev/null -w '%{http_code}\n' https://<your-brain>.<your-tailnet>.ts.net:3284/status
+# from the Mac — grab the fingerprint for pinning in step 6:
+mac$ ssh agent@<your-brain>.<your-tailnet>.ts.net \
+    "sudo journalctl -u goose-serve -n 50 --no-pager" | grep -iE 'listen|fingerprint'
 ```
 
-(If you skip the real cert, serve falls back to its self-signed one — then
-Desktop must pin the fingerprint from
-`journalctl -u goose-serve | grep -i fingerprint`, and iOS clients will
-refuse the connection outright.)
+`goose serve` runs `--tls` with its **self-signed** cert — there is no CA or
+renewal machinery (the phone client it existed for is gone from this repo's
+story). Goose Desktop pins the cert fingerprint from the journalctl line
+above.
 
-## 7. Connect Goose Desktop to the brain
+## 6. Connect Goose Desktop to the brain
 
 On the Mac, in Goose Desktop: Settings → the remote/server connection pane
 (named "Remote server" / advanced settings depending on version — reference:
@@ -279,25 +247,23 @@ On the Mac, in Goose Desktop: Settings → the remote/server connection pane
 - Remote working directory: `/home/agent` (blank sends your Mac's local
   path, which doesn't exist on the brain)
 - Secret key: the `GOOSE_SERVER__SECRET_KEY` from step 4
-- Certificate fingerprint: **leave empty** when using the real LE cert from
-  step 6 — CA validation covers it, and a pinned fingerprint would break at
-  the cert's automatic ~60-day renewal. Pin the fingerprint ONLY on the
-  self-signed fallback path.
+- Certificate fingerprint: **pin the SHA-256 fingerprint** from the
+  journalctl line printed at the end of the deploy — goose serve runs a
+  self-signed cert, so CA validation does not apply.
 
-Desktop now shows the **brain's** sessions and the Scheduler UI for the
-brain's automations. Sessions you start here execute on the brain and land in
-its history. The Mac-local goose remains available as the offline fallback —
-that's by design ([20-mac-setup.md](20-mac-setup.md)).
+Desktop now shows the **brain's** sessions. Sessions you start here execute
+on the brain and land in its history. The Mac-local goose remains available
+as the offline fallback — that's by design
+([20-mac-setup.md](20-mac-setup.md)).
 
-## 8. VERIFY — the Phase 3 checklist
+## 7. VERIFY — the Phase 2 checklist
 
-Two scripts plus five live tests. Run all of it; this phase has the most
+Two scripts plus live tests. Run all of it; this phase has the most
 moving parts and every test below guards a specific failure mode.
 
 ```bash
 agent@brain$ /home/agent/personal-ai-setup/scripts/verify/check-brain.sh
-# goose-serve service active, serve /status over TLS, the 5-schedule roster,
-# an optional run-now live fire, and the manual checklist
+# goose-serve service active, serve /status over TLS, and the manual checklist
 
 agent@brain$ /home/agent/personal-ai-setup/scripts/verify/check-security.sh --local
 # host checks: /data is a real mountpoint (LUKS mounted), secrets.env is 0600,
@@ -315,22 +281,9 @@ Then, by hand:
 1. **Session lands in the shared history** — start a session in Desktop
    (connected to the brain), send one message, and see the reply land in the
    brain's history. This is the milestone that matters: one history.
-2. **Automation fires and delivers** — on the brain:
-   `goose schedule run-now --schedule-id morning-brief` → the digest email
-   (`Morning brief — <date>`, self-addressed) arrives in your inbox within
-   a couple of minutes.
-3. **Triage never emails anyone but you** — run-now `inbox-triage`, then
-   check Gmail: labels applied and **drafts** created; the only send allowed
-   is the recipe's self-addressed "Inbox triage — action needed" summary
-   (absent when nothing needs action). If anything left the outbox to any
-   other recipient, stop and fix before trusting it on a schedule.
-4. **Failures are loud** — force one:
-   `scripts/common/run-recipe.sh recipes/does-not-exist.yaml` → a failure
-   alert must arrive (emailed to `NTFY_EMAIL` via ntfy's gateway). A silent
-   failure path is the one thing this stack isn't allowed to have.
-5. **Reboot drill** — step 9, now, while everything is fresh.
+2. **Reboot drill** — step 8 below, now, while everything is fresh.
 
-## 9. Reboot drill
+## 8. Reboot drill
 
 Reboots are rare but the recovery path must be muscle memory
 ([`docs/security.md`](../security.md#operational-drills)):
@@ -353,15 +306,13 @@ accepted cost of storing no key server-side.
 
 ## Done — and day-2 operations
 
-The brain is primary from here on: sessions on it, automations on it, all
+The brain is primary from here on: sessions on it, all
 state on `/data`. Routine operations:
 
-- **Manage automations** — [`docs/automations.md`](../automations.md)
-  (add/edit recipes, run-now, the scheduler-bug fallback flip).
 - **Upgrade** — re-run `deploy-vps.sh` after a deliberate `git pull`;
   goose stays version-pinned.
 - **Drills and rotation** — [`docs/security.md`](../security.md#operational-drills).
 - **Something's wrong** — [`docs/troubleshooting.md`](../troubleshooting.md),
   symptom-indexed.
 
-Next: [60-vault-setup.md](60-vault-setup.md) — the sensitive tier.
+Next: [`docs/public-repo.md`](../public-repo.md) — guardrails, then the flip.

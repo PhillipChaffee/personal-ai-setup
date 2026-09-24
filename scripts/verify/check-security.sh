@@ -10,7 +10,7 @@
 # --local mode (run ON the brain): /data mount, every goose config/data/state
 # path resolving onto the encrypted volume, secrets.env permissions, ufw
 # default-deny, a gitleaks scan of the repo clone, and the LIVE config.yaml's
-# extension hardening (apps off, workspace-mcp tool allowlist) — which the
+# extension hardening (apps off, MCP tool allowlists) — which the
 # no-clobber config install cannot deliver to a brain that already has one.
 set -euo pipefail
 
@@ -379,7 +379,8 @@ emit("SECTION", "connector policy")
 # extension that declares an MCP server (`cmd`/`uri`) and is not one of goose's
 # own builtins. Everything below is scoped to it, so a machine that installed no
 # connectors is not penalised for the connector rule -- which it was, because
-# `workspace-mcp` missing was an unconditional finding.
+# the allowlist rule used to be an unconditional finding.
+
 declared = {}
 for name, ext in sorted(exts.items()):
     if not isinstance(ext, dict):
@@ -393,44 +394,12 @@ for name, ext in sorted(exts.items()):
     declared[name] = ext
 
 problems = []
-tool_count = 0
 
-ws = declared.get("workspace-mcp")
-if ws is not None:
-    tools = ws.get("available_tools")
-    args = [str(a) for a in (ws.get("args") or [])]
-    if "availableTools" in ws:
-        problems.append(
-            "`workspace-mcp` carries the camelCase `availableTools` — goose "
-            "discards it SILENTLY, and no allowlist means every tool is allowed"
-        )
-    if not isinstance(tools, list) or not tools:
-        problems.append(
-            "`workspace-mcp` has no non-empty snake_case `available_tools` — "
-            "every tool the server registers is callable (fails OPEN)"
-        )
-    else:
-        tool_count = len(tools)
-    if "--permissions" not in args:
-        problems.append(
-            "`workspace-mcp` args carry no `--permissions` flag — OAuth consent "
-            "then asks for every scope its services can use"
-        )
-    if "--tools" in args:
-        problems.append(
-            "`workspace-mcp` args carry `--tools` (selects whole SERVICES; "
-            "mutually exclusive with --permissions upstream)"
-        )
-
-# Every OTHER enabled MCP extension needs an allowlist too. workspace-mcp gets
-# the detailed treatment above because the repo ships it wired in, but the
-# fail-open is a property of the mechanism, not of that one server: `playwright`
-# and `tavily` ship disabled precisely so that nobody has to think about it, and
-# the moment someone flips one to `enabled: true` without an allowlist it is a
-# blank cheque.
+# Every enabled MCP extension needs an allowlist. The fail-open is a property of
+# the mechanism: `playwright` and `tavily` ship disabled precisely so that nobody
+# has to think about it, and the moment someone flips one to `enabled: true`
+# without an allowlist it is a blank cheque.
 for name, ext in sorted(declared.items()):
-    if name == "workspace-mcp":
-        continue
     if "availableTools" in ext:
         problems.append(
             "`%s` is enabled and carries the camelCase `availableTools` — goose "
@@ -460,19 +429,6 @@ if problems:
 else:
     emit("PASS", "all %d enabled MCP extension(s) carry a non-empty available_tools "
                  "allowlist: %s" % (len(declared), ", ".join(sorted(declared))))
-
-# workspace-mcp's ABSENCE is a NOTE, not a failure, and that is a deliberate
-# narrowing. It used to be an unconditional finding ("this brain predates the
-# hardened template"), which penalised every machine that simply never installed
-# google-workspace. Telling those two apart is exactly the "installed vs
-# installed-and-broken" distinction that needs the unit registry (#40); until it
-# exists there is no predicate, and a rule with no predicate is the one this
-# issue is about.
-if ws is None:
-    emit("NOTE", "no enabled `workspace-mcp` entry. If google-workspace IS meant to "
-                 "be installed here, this brain predates the hardened template "
-                 "(config.yaml is installed no-clobber). Not a failure: nothing on "
-                 "this machine records which units were selected (#40).")
 PYEOF
   CFG_RC=0
   CFG_OUT="$("${CFG_PY[@]}" "$CFG_CHECKER" "$LIVE_CFG" 2>&1)" || CFG_RC=$?

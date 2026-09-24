@@ -91,7 +91,7 @@ The only network path to the brain. Free personal plan.
 ## 4. Todoist (optional — skip unless you've adopted it)
 
 No todo app is wired in by default: the `todoist` extension ships
-`enabled: false` in `config/goose/config.yaml`, and no recipe depends on
+`enabled: false` in `config/goose/config.yaml`, and nothing depends on
 tasks. If you later pick Todoist as your todo app:
 
 1. Create an account at <https://todoist.com>. Free tier is fine.
@@ -139,66 +139,25 @@ narrow the *token*. Revoke it in Todoist's settings if it ever leaks.
    `secrets.env`, never in `terraform.tfvars`, never in the repo — a token
    that is never written to a file cannot be committed.
 
-## 6. ntfy (failure-alert transport)
-
-ntfy carries exactly one thing in this setup: **failure alerts** from the
-automation watchdog, forwarded to your email. Automation *results* don't go
-through it at all — each recipe emails you directly via Gmail
-([`docs/automations.md`](../automations.md)). No app to install, nothing to
-subscribe to, and no account either — ntfy topics are open-by-name, which
-means **the topic name is the entire secret**. Anyone who knows it can read
-and send on it.
-
-1. Generate a topic name nobody will guess:
-
-   ```bash
-   openssl rand -hex 12
-   ```
-
-2. Treat the result exactly like a password: store it as `NTFY_TOPIC` (Mac
-   Keychain now, `/data/secrets.env` in Phase 3). Never commit it, never paste
-   it into an issue or chat.
-3. Decide where failure alerts land: your own email address, stored as
-   `NTFY_EMAIL` alongside the topic (Keychain now, `/data/secrets.env` in
-   Phase 3). Recommended, and not a secret — it's just your address; when set,
-   `scripts/common/notify.sh` adds an `Email:` header so ntfy.sh forwards each
-   alert to your inbox.
-4. Test end-to-end:
-
-   ```bash
-   curl -H "Email: <your-email>" -d "ntfy wired up" https://ntfy.sh/<your-topic>
-   ```
-
-   The message should arrive in your inbox within a minute or two.
-
-One number to know: ntfy.sh's free tier caps email forwarding at roughly
-5/day — plenty for rare failure alerts, and exactly why the recipes email
-their content directly instead of through this channel. Standing rule
-regardless of topic secrecy: alerts carry the recipe name only, **never model
-output or PHI** ([`docs/privacy.md`](../privacy.md)). Self-hosting ntfy is a
-roadmap item ([`docs/roadmap.md`](../roadmap.md)).
-
-### 6a. A second ntfy topic, for code-agent buzzes (optional)
+## 6. An ntfy topic, for code-agent buzzes (optional)
 
 Only if you want the phone to buzz when a code agent finishes a turn or parks
 waiting for permission to push ([`docs/code-agents.md`](../code-agents.md)).
 Skip it and nothing changes — the feature is off while the variable is empty.
 
-1. Generate a **different** topic, the same way: `openssl rand -hex 12`.
+1. Generate a topic name nobody will guess: `openssl rand -hex 12`. A topic
+   on ntfy.sh exists on first POST — no account, no app to install server-side.
 2. Store it as `NTFY_AGENT_TOPIC` (Keychain now, `/data/secrets.env` in
-   Phase 3). Do **not** reuse `NTFY_TOPIC`.
+   Phase 3). Never commit it, never paste it into an issue or a chat.
 3. Install the ntfy app on the phone and subscribe it to *this* topic. Read the
    value out of Keychain Access.app — never print it into a terminal, and never
    paste it into an issue or a chat.
 
-Two topics rather than one is the whole point, for two reasons that both bite
-later. Failure alerts are a backstop you never want to lose, while agent buzzes
-are frequent and go to a device you carry, so the two have to be burnable
-independently. And **subscribing a phone changes what the topic name is**: until
-now it has been a read capability nobody exercised, and from this point anyone
-who learns it can *send* — that is, put a plausible-looking "code agent wants to
-push to main" onto your lock screen. Which is why the notification is never
-itself answerable: tapping it only opens the app, and the app re-reads the real
+**Subscribing a phone changes what the topic name is.** Until now it has been a
+read capability nobody exercised, and from this point anyone who learns it can
+*send* — that is, put a plausible-looking "code agent wants to push to main"
+onto your lock screen. Which is why the notification is never itself
+answerable: tapping it only opens the app, and the app re-reads the real
 pending ask over the tailnet before it offers you any button.
 
 What travels is a kind, an opaque handle and a count — never a repo name, a
@@ -208,8 +167,8 @@ tells you what happened.
 
 ## 7. Web search key (optional)
 
-Optional — briefs and research recipes degrade gracefully without search, and
-the roadmap replaces this with self-hosted SearXNG anyway.
+Optional — research jobs degrade gracefully without search, and the roadmap
+replaces this with self-hosted SearXNG anyway.
 
 - **Tavily** (recommended if you want a key): free tier of 1,000 credits/mo.
   Sign up at <https://tavily.com>, copy the key → `TAVILY_API_KEY`.
@@ -226,9 +185,6 @@ issued by a service:
 - **LUKS passphrase** — encrypts everything at rest on the brain. Generate in
   Phase 3; lives **only** in your password manager. If you lose it, a reboot
   turns the brain's data into noise — there is no recovery path.
-- `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` — created in
-  Phase 2 when you build your own GCP OAuth app
-  ([30-google-oauth.md](30-google-oauth.md)).
 
 ## Credential checklist
 
@@ -250,19 +206,15 @@ else, and `--units <id>` adds one add-on's names at a time.
 |---|---|---|---|---|---|
 | OpenCode Zen API key | `OPENCODE_ZEN_API_KEY` | yes | yes | — | §1 (now) |
 | Together AI API key | `TOGETHER_API_KEY` | yes | yes | — | §2 (now) |
-| ntfy topic | `NTFY_TOPIC` | yes | yes | — | §6 (now) |
-| Failure-alert email (recommended; not a secret) | `NTFY_EMAIL` | yes | yes | — | §6 (now) |
-| ntfy topic for code-agent buzzes (optional) | `NTFY_AGENT_TOPIC` | yes | yes | ntfy app on the phone (subscribed) | §6a (now) |
+| ntfy topic for code-agent buzzes (optional) | `NTFY_AGENT_TOPIC` | yes | yes | ntfy app on the phone (subscribed) | §6 (now) |
 | Tavily key (optional) | `TAVILY_API_KEY` | yes | yes | — | §7 |
 | Hetzner API token | `hcloud_token`, typed at the Terraform prompt | no | no | nowhere — never stored on disk | §5 (Phase 3) |
 | Tailscale auth key | `tailscale_authkey`, typed at the Terraform prompt | no | no | nowhere — never stored on disk | Phase 3 |
 | goose serve shared secret | `GOOSE_SERVER__SECRET_KEY` | yes (Desktop connects with it) | yes | — | Phase 3 |
-| Google OAuth client | `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` | yes | yes | — | Phase 2 ([30-google-oauth.md](30-google-oauth.md)) |
 | LUKS passphrase | (passphrase) | no | no | password manager **only** | Phase 3 |
-| Telegram bot token (optional) | `TELEGRAM_BOT_TOKEN` | yes (transcribe) | yes | — | Phase 3 |
 | Todoist personal API token (optional) | `TODOIST_API_KEY` | no | no | goose's own per-extension secret store | §4 |
 
 Cross-check before moving on: everything in the "now" rows exists, the two Zen
-cost-control settings are flipped, the Together privacy toggles are verified
-off, and the ntfy test email reached your inbox. Then continue to
+cost-control settings are flipped, and the Together privacy toggles are verified
+off. Then continue to
 [20-mac-setup.md](20-mac-setup.md).

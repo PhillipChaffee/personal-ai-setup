@@ -363,7 +363,7 @@ Set `NTFY_AGENT_TOPIC` and the phone buzzes once when a turn ends, and once —
 at high priority — when an agent parks waiting for permission to push. The
 second is the one that matters: a blocked agent is doing nothing at all until
 you answer it. Subscribe the ntfy app to that topic
-([setup §6a](setup/10-accounts.md)); leave the variable empty and nothing is
+([setup §6](setup/10-accounts.md)); leave the variable empty and nothing is
 sent.
 
 ## The pull-request cache
@@ -450,7 +450,7 @@ What it will and will not tell you:
   must not do.
 - **The payload carries nothing** — a kind, an opaque handle and a count. No
   repo name, no chat title, no command. See
-  [privacy.md](privacy.md#the-agent-channel-ntfy_agent_topic--a-second-choke-point-not-a-second-rule);
+  [privacy.md](privacy.md#push-notifications-never-phi-never-account-numbers);
   the buzz says "go look" and the app tells you what happened.
 - **It does not survive a deploy.** Restarting the manager stops every chat
   container (`ExecStopPost`), which destroys OpenCode's in-memory pending-ask
@@ -460,8 +460,9 @@ What it will and will not tell you:
 
 ## Failure behavior
 
-Create/wake failures alert through the standard channel (`notify.sh` → ntfy,
-component + failure class only — never model output). A PR being opened is the
+Create/wake failures are recorded in the manager's journal (`journalctl -u
+code-agent-manager`, component + failure class only — never model output). A
+PR being opened is the
 "done" signal — and since the PRs land on your own repos, **GitHub's native
 notification email covers delivery** (repo, branch, PR link) with zero extra
 plumbing; keep PR notifications on for your account. The manager and

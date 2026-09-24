@@ -4,27 +4,28 @@
 # and the always-on `goose serve` that Desktop talks to.
 #
 # DESCRIBES TODAY. This is the largest single region of deploy-vps.sh —
-# deploy-vps.sh:314-516 (preflight + migration), deploy-vps.sh:606-634
-# (systemd) and deploy-vps.sh:722-784 (the start and the /status gate) — and it
+# deploy-vps.sh:311-486 (preflight + migration), deploy-vps.sh:549-551
+# (systemd) and deploy-vps.sh:616-642 (the start and the /status gate) — and it
 # STILL has no unit_brain() function, so installer.status is `planned`, an
 # assertion that the function does NOT exist. Four of its neighbours now do
 # have one; see the blocker below for why this one does not, and why writing
 # it would be a mistake rather than a to-do.
 #
-# tls-cert-renew.{service,timer} is FOLDED IN here rather than made a
-# nineteenth unit: it is two files, one `enable --now` at deploy-vps.sh:634,
-# and it restarts goose-serve — which is this unit's own service. The price of
-# folding it in is that its absence of verification has to be said out loud,
-# so it is a blocker below rather than a silent omission.
+# The TLS story: goose serve runs `--tls` with its SELF-SIGNED cert (clients
+# pin the SHA-256 fingerprint), and nothing renews anything — the LE
+# cert-renew machinery (renew-tls-cert.sh + tls-cert-renew.{service,timer} +
+# /data/tls) left the repo with the automations pivot (2026-09-23); its reason
+# was iOS trust for a phone client that no longer exists in the repo's story.
+# Desktop connect is never touched; pin-tls-fingerprint stays.
 id: brain
 manifest_version: 1
-verified_on: "2026-09-07"
+verified_on: "2026-09-23"
 summary: Hetzner VPS, LUKS /data, goose's path root on it, and goose-serve over tailnet TLS.
 host: vps
 tier: opt_in
 # tailnet before base-secrets on purpose: cloud-init joins the tailnet at
-# first boot, and deploy-vps.sh:357 refuses to run without the tailscale CLI,
-# then deploy-vps.sh:764 needs a tailnet IPv4 before it can probe /status at
+# first boot, and deploy-vps.sh:350 refuses to run without the tailscale CLI,
+# then deploy-vps.sh:624 needs a tailnet IPv4 before it can probe /status at
 # all. Both refs name the file: a bare continuation is invisible to the
 # `grep -rn 'deploy-vps.sh:[0-9]'` sweep that re-anchors these after a carve,
 # which is how the second one here spent a whole PR pointing at unrelated code.
@@ -69,7 +70,7 @@ runbook: docs/setup/50-vps-brain.md
 secrets:
   # goose-serve.service:29 injects the whole of /data/secrets.env, but this is
   # the one key the SERVER itself consumes - it is the shared secret every
-  # client presents, and deploy-vps.sh:774 uses it for the /status gate.
+  # client presents, and deploy-vps.sh:634 uses it for the /status gate.
   # base-secrets claims the same key as part of the roster it stores; this
   # entry records who READS it. Duplicate claims are legal and deliberate.
   - key: GOOSE_SERVER__SECRET_KEY
@@ -113,23 +114,17 @@ owns:
   - {kind: repo_file, target: scripts/vps/luks-setup.sh}
   - {kind: repo_file, target: scripts/vps/luks-unlock.sh}
   - {kind: data_path, target: /data}
-  # GOOSE_PATH_ROOT. deploy-vps.sh:390-516 moves config/, data/ AND state/
+  # GOOSE_PATH_ROOT. deploy-vps.sh:383-486 moves config/, data/ AND state/
   # here (0700) and leaves the three legacy paths as symlinks so the CLI over
   # SSH and the systemd unit read the same files.
   - {kind: data_path, target: /data/goose}
   - {kind: home_path, target: "~/.config/goose (symlink into /data/goose/config)"}
   - {kind: home_path, target: "~/.local/share/goose (symlink into /data/goose/data)"}
   - {kind: home_path, target: "~/.local/state/goose (symlink into /data/goose/state)"}
-  # ---- the service, and the cert it serves. /data/tls is written by
-  # renew-tls-cert.sh and read by goose-serve.service:61's TLS_ARGS.
+  # ---- the service. goose serve runs --tls with its self-signed cert; there
+  # is no cert-renew machinery (see the header note).
   - {kind: repo_file, target: scripts/vps/systemd/goose-serve.service}
   - {kind: systemd_unit, target: goose-serve.service}
-  - {kind: repo_file, target: scripts/vps/renew-tls-cert.sh}
-  - {kind: repo_file, target: scripts/vps/systemd/tls-cert-renew.service}
-  - {kind: repo_file, target: scripts/vps/systemd/tls-cert-renew.timer}
-  - {kind: systemd_unit, target: tls-cert-renew.service}
-  - {kind: systemd_unit, target: tls-cert-renew.timer}
-  - {kind: data_path, target: /data/tls}
 
 manual_steps:
   - id: terraform-apply
@@ -143,28 +138,13 @@ manual_steps:
       stored, so /data cannot come back unattended.
     doc: docs/setup/50-vps-brain.md#3-luks-create-and-mount-the-encrypted-data-one-time
     blocking: true
-  - id: issue-first-tls-cert
-    summary: Run `sudo scripts/vps/renew-tls-cert.sh` once during setup. The
-      timer renews thereafter, but it never issues the first cert on a brain
-      that has none.
-    doc: docs/setup/50-vps-brain.md#6-deploy-the-stack
-    blocking: false
   - id: pin-tls-fingerprint
     summary: Read the serve fingerprint out of journalctl and pin it in Goose
       Desktop; deploy-vps.sh prints the command but cannot do it for you.
-    doc: docs/setup/50-vps-brain.md#7-connect-goose-desktop-to-the-brain
+    doc: docs/setup/50-vps-brain.md#6-connect-goose-desktop-to-the-brain
     blocking: false
 
 blockers:
-  - id: tls-cert-renew-has-no-verify
-    severity: warn
-    detail: tls-cert-renew.timer is `enable --now`d at deploy-vps.sh:634 and
-      its service restarts goose-serve weekly, yet `grep -rn tls-cert-renew
-      scripts/verify/` returns NOTHING. No check asserts the timer is armed,
-      that /data/tls holds a current cert, or that the two Tailscale
-      admin-console prerequisites (MagicDNS, HTTPS Certificates) are still on
-      - those are recorded only in renew-tls-cert.sh:6-7. This is the price of
-      folding the timer into this unit instead of minting a nineteenth.
   - id: check-security-probe-is-in-no-runner
     severity: warn
     detail: '`pai verify` now derives its roster from this field, so
@@ -173,17 +153,17 @@ blockers:
       EXTERNAL port probe still is not, and cannot be - it needs the public IP
       as an argument and must run from a different machine than the brain, so
       no roster entry can supply it. It stays a hand-run command, quoted in
-      docs/security.md:52 and docs/setup/70-code-agents.md:81.'
+      docs/security.md and docs/setup/70-code-agents.md.'
   - id: brain-region-is-not-one-function
     severity: warn
     detail: "This unit deliberately has no unit_brain(). Its code is EIGHT
-      non-contiguous regions of deploy-vps.sh interleaved with the four units
-      that do have one - preflight, the stop-and-migrate block, the goose
+      non-contiguous regions of deploy-vps.sh interleaved with the one unit
+      that has a function - preflight, the stop-and-migrate block, the goose
       config install, the systemd unit files, `systemctl enable
       goose-serve`, the trap clear, the restart, the /status gate - and a
       single function wrapping them would either reorder the deploy or hand
       the next author a `want brain || return 0` that must never fire. Nothing
-      would then stop `--only automations` from skipping the migration that
+      would then stop `--only code-agents` from skipping the migration that
       every other unit depends on. The gate surface says so out loud instead:
       every selective run prints `the brain core ... is not selectable and
       always runs`, and so does --help. Do not write unit_brain()."
@@ -200,14 +180,13 @@ blockers:
       and tailscale are modelled, so
       it cannot tell you that `podman build` succeeds, that rootless subuid
       ranges or linger work, that `systemctl enable --now` on a stale unit is a
-      no-op (it asserts only that the reload was ISSUED), or that goose serve
-      reads schedule.json only at startup. It is also Linux-only and cannot run
+      no-op (it asserts only that the reload was ISSUED). It is also Linux-only and cannot run
       on the Mac. The post-deploy checks the script's own summary prints -
       check-brain.sh, check-security.sh --local, check-code-agents.sh --probe -
       remain the only evidence about the real host."
   - id: config-install-is-no-clobber
     severity: note
-    detail: install_template at deploy-vps.sh:527-536 never overwrites an
+    detail: install_template at deploy-vps.sh:497-506 never overwrites an
       existing config.yaml, so on a brain deployed before a hardening change
       every "differs from repo template" NOTE is hardening that has not landed
       there. check-security.sh --local asserts the LIVE file, which is why
@@ -216,17 +195,17 @@ blockers:
 uninstall:
   supported: false
   reason: "`terraform destroy` removes the server and the volume - i.e. every
-    session, secret and vault file on it - and there is no smaller lever:
-    nothing in the repo disables goose-serve.service or tls-cert-renew.timer,
+    session, secret and state file on it - and there is no smaller lever:
+    nothing in the repo disables goose-serve.service,
     unmounts /data, or reverses the GOOSE_PATH_ROOT migration on a host you
     intend to keep."
 
 notes: >-
-  The migration at deploy-vps.sh:390-516 is the part of this unit that is
+  The migration at deploy-vps.sh:383-486 is the part of this unit that is
   easiest to under-read. Before it existed only goose's data/ was on the
   encrypted volume; config/ (config.yaml, memory/, secrets.yaml) and state/
   (logs/llm_request.*.jsonl - the RAW request and response bodies exchanged
   with providers, i.e. whole emails) sat on the unencrypted root disk. The
-  script says so itself at deploy-vps.sh:513-515, and it says the freed blocks
+  script says so itself at deploy-vps.sh:483-485, and it says the freed blocks
   are not wiped: a brain deployed before that block ran may still have
   recoverable plaintext on the root disk.

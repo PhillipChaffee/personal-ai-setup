@@ -259,21 +259,11 @@ jobs:
       #
       # SEQUENCE, not set, and that distinction is why this freeze may go. The
       # first version of V1 sorted both logs and compared multisets, which is
-      # NOT stronger than a text freeze: a pure reordering of the deploy passed
-      # it, and the freeze this step used to run would have caught one. V1 now
-      # compares the two logs in order, against a two-edit allowlist expressed
-      # as a patch, and install-test.yml's `a reordered unit call site must fail
-      # V1` step moves a whole unit call site to keep that honest.
-      #
-      # With that, it is stronger than an empty source diff in both directions:
-      # it catches a behaviour change made through a file the freeze did not
-      # name (register-schedules.sh, a systemd unit body), and it does not veto
-      # a comment. V0 is the other half — an unreachable pinned baseline, or one
-      # re-pinned to a post-carve revision, FAILS rather than skipping, so this
-      # replacement cannot quietly evaporate the way a deleted step would. It
-      # runs in install-test.yml's `brain deploy against fakes` job, which is
-      # where the fakes and the fetch-depth: 0 it needs already live.
-      # `fetch-depth: 0` is dropped here with the step that needed it.
+      # The pre-carve sequence freeze this step used to run was retired with the
+      # automations removal (#143): the deploy's constraint set (stop-before-move,
+      # install-reload-restart, -T links, selection, idempotence) is asserted by
+      # install-test.yml's `brain deploy against fakes` job, which is where the
+      # fakes already live.
 
       # NEGATIVE TEST 1 — an unknown TOP-LEVEL key. Deliberately not the
       # connectors probe's shape: check-connectors.sh makes an unknown top-level
@@ -430,16 +420,16 @@ jobs:
           set -euo pipefail
           work="$RUNNER_TEMP/units-negative-lineref"; rm -rf "$work"; mkdir -p "$work"
           git archive HEAD | tar -x -C "$work"
-          before="$(grep -c 'then deploy-vps.sh:764 needs a tailnet IPv4' "$work/config/units/brain.yaml")"
+          before="$(grep -c 'then deploy-vps.sh:624 needs a tailnet IPv4' "$work/config/units/brain.yaml")"
           [ "$before" -eq 1 ] \
             || { echo "::error::the anchor line is gone (found $before) — this control is inert"; exit 1; }
-          sed -i 's|then deploy-vps.sh:764 needs a tailnet IPv4|then :764 needs a tailnet IPv4|' \
+          sed -i 's|then deploy-vps.sh:624 needs a tailnet IPv4|then :624 needs a tailnet IPv4|' \
             "$work/config/units/brain.yaml"
           if out="$("$work/scripts/verify/check-units.sh" --offline 2>&1)"; then
-            echo "::error::check-units.sh accepted a bare ':764' continuation of a deploy-vps.sh reference"
+            echo "::error::check-units.sh accepted a bare ':624' continuation of a deploy-vps.sh reference"
             exit 1
           fi
-          printf '%s\n' "$out" | grep -qF "continues a deploy-vps.sh reference as a bare ':764'" || {
+          printf '%s\n' "$out" | grep -qF "continues a deploy-vps.sh reference as a bare ':624'" || {
             echo "::error::the gate failed without naming the bare reference"
             printf '%s\n' "$out"
             exit 1
@@ -638,12 +628,12 @@ jobs:
             }
             echo "check-units.sh correctly rejected $2 ($1)."
           }
-          # tier: base. base-skills is the manifest that makes this arm
-          # non-trivial: its one home_path (~/.agents/skills/connect-service) is
-          # as removable as anything in the catalogue, so nothing BUT the tier
-          # stops it, and the other two arms below both pass on it.
-          probe tier base-skills \
-            "base-skills.uninstall.supported is true on tier: base"
+          # tier: base. base-goose is the manifest that makes this arm
+          # non-trivial: its home_paths (~/.config/goose) are as removable as
+          # anything in the catalogue, so nothing BUT the tier stops it, and
+          # the other two arms below both pass on it.
+          probe tier base-goose \
+            "base-goose.uninstall.supported is true on tier: base"
           # AC#5 of #43. Its only live target was phone-kit — the sole
           # checklist unit, and the only manifest allowed an empty owns — and
           # the phone deletion removed it, so the arm's negative test now
@@ -714,10 +704,11 @@ jobs:
         run: scripts/verify/check-units.sh --strict
 
   # The rosters that used to be literals, and the harness that keeps them
-  # honest: `pai verify`'s check list (now every manifest's `verify:`),
-  # check-mcp.sh's three hardcoded services (now the live config's enabled MCP
-  # extensions) and check-brain.sh's five schedules (now register-schedules.sh's
-  # ORDER=(). All offline, against generated fixtures, no goose and no network.
+  # honest: `pai verify`'s check list (now every manifest's `verify:`) and
+  # check-mcp.sh's two hardcoded services (now the live config's enabled MCP
+  # extensions). All offline, against generated fixtures, no goose and no
+  # network. (check-brain.sh's schedule roster left with the automations
+  # removal, 2026-09-23.)
   #
   # It lives here rather than in a new checks.yml because these are structural
   # gates over the repo's own data files, which is what this workflow is.

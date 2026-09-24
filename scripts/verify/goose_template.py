@@ -15,7 +15,7 @@ it assert NOTHING and still exit 0. Sources of truth move; the path does not,
 and every consumer is a no-op change.
 
 WHY AN EXPLICIT ORDER. FRAGMENT_ORDER is a hand-written tuple, not
-sorted(glob): sorted() yields playwright/tavily/todoist/workspace-mcp, which
+sorted(glob): sorted() yields playwright/tavily/todoist, which
 composes a different — still valid, still byte-different — file. Adding a
 connector is therefore a deliberate two-line act (drop the fragment in, name it
 here), and the roster check below refuses any fragment this tuple does not name.
@@ -63,7 +63,7 @@ import yaml
 
 # The extension fragments, in the order they are concatenated. NOT sorted(glob)
 # — see the module docstring.
-FRAGMENT_ORDER: Final[tuple[str, ...]] = ("workspace-mcp", "todoist", "playwright", "tavily")
+FRAGMENT_ORDER: Final[tuple[str, ...]] = ("todoist", "playwright", "tavily")
 
 # Assertion 3's location pin. These are measured, not guessed: run --check and
 # the failure line prints the actual counts, so a deliberate move of a comment
@@ -71,7 +71,6 @@ FRAGMENT_ORDER: Final[tuple[str, ...]] = ("workspace-mcp", "todoist", "playwrigh
 # not written down anywhere — assertion 2 derives it from the generated file.
 EXPECTED_COMMENT_TOKENS: Final[dict[str, int]] = {
     "config.base.yaml": 62,
-    "workspace-mcp.yaml": 76,
     "todoist.yaml": 38,
     "playwright.yaml": 16,
     "tavily.yaml": 7,
@@ -331,8 +330,8 @@ def check_allowlist_or_disabled(fragments: dict[str, dict[str, object]]) -> list
             lines.append(cont("An extension with no allowlist may call EVERY tool its server"))
             lines.append(cont("registers. Derive the real list rather than guessing:"))
             # --smoke takes a CONNECTOR MANIFEST id, which is not the extension
-            # key: workspace-mcp's manifest is config/connectors/google-workspace
-            # .yaml, and playwright and tavily have no manifest at all. Printing
+            # key: todoist's manifest is config/connectors/todoist.yaml, and
+            # playwright and tavily have no manifest at all. Printing
             # `--smoke playwright` would hand the reader a command that answers
             # "no manifest for id 'playwright'" — so say <id>, exactly as the
             # fragments' own comments do, and name the fallback.
