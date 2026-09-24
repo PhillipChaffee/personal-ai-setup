@@ -227,10 +227,10 @@ jobs:
           git archive HEAD | tar -x -C "$work"
           test -x "$work/scripts/verify/test-deploy-vps.sh" \
             || { echo "::error::harness is not executable in the archive"; exit 1; }
-          before="$(grep -c '^sudo systemctl stop goose-serve\.service$' "$work/scripts/vps/deploy-vps.sh")"
+          before="$(grep -c '^ *sudo systemctl stop goose-serve\.service$' "$work/scripts/vps/deploy-vps.sh" || true)"
           [ "$before" -eq 1 ] \
             || { echo "::error::expected exactly 1 migration stop, found $before — this control is inert"; exit 1; }
-          sed -i '/^sudo systemctl stop goose-serve\.service$/d' "$work/scripts/vps/deploy-vps.sh"
+          sed -i '/^ *sudo systemctl stop goose-serve\.service$/d' "$work/scripts/vps/deploy-vps.sh"
           if "$work/scripts/verify/test-deploy-vps.sh" --only constraints; then
             echo "::error::the migration ran under a live goose and V2a did not notice"
             exit 1
@@ -281,7 +281,7 @@ jobs:
             || { echo "::error::harness is not executable in the archive"; exit 1; }
           # The ONE in-unit reload: unit_code_agents'. Removing it must break
           # V2c. (The gateway's reload died with the gateway itself.)
-          before="$(grep -c '^  sudo systemctl daemon-reload$' "$work/scripts/vps/deploy-vps.sh")"
+          before="$(grep -c '^  sudo systemctl daemon-reload$' "$work/scripts/vps/deploy-vps.sh" || true)"
           [ "$before" -eq 1 ] \
             || { echo "::error::expected exactly 1 in-unit daemon-reload, found $before — this control is inert"; exit 1; }
           sed -i '/^  sudo systemctl daemon-reload$/d' "$work/scripts/vps/deploy-vps.sh"
@@ -302,7 +302,7 @@ jobs:
           # The automations pivot deleted three unit ids. If someone edits one
           # back into UNIT_IDS without a body to run, --without <id> would go
           # from "refused" to "accepted and a no-op" — and V5b is what notices.
-          before="$(grep -c '^UNIT_IDS=' "$work/scripts/vps/deploy-vps.sh")"
+          before="$(grep -c '^UNIT_IDS=' "$work/scripts/vps/deploy-vps.sh" || true)"
           [ "$before" -eq 1 ] \
             || { echo "::error::expected exactly 1 UNIT_IDS line, found $before — this control is inert"; exit 1; }
           sed -i 's|^UNIT_IDS="code-agents"|UNIT_IDS="code-agents telegram-gateway"|' \
@@ -330,13 +330,16 @@ jobs:
             || { echo "::error::harness is not executable in the archive"; exit 1; }
           src="$work/scripts/vps/deploy-vps.sh"
           cp "$src" "$src.orig"
+          # The install and the in-unit reload are ADJACENT lines, so the
+          # mutation is an adjacent swap: hold the install, and when the reload
+          # that followed it arrives, emit the reload FIRST. The reload now
+          # precedes its install, V2c's first_idx_after finds no reload below
+          # the install, and the assertion re-reddens.
           awk '
-            /^  sudo systemctl daemon-reload$/ { rld = 1; next }
-            rld && !placed && /^  sudo install -m 644 .\/code-agent-manager\.service / {
-              print; print "  sudo systemctl daemon-reload"; placed = 1; next
-            }
-            { print }
-            END { if (!rld || !placed) exit 3 }
+            /^  sudo install -m 644 .*code-agent-manager\.service/ { hold = $0; pending = 1; next }
+            pending && /^  sudo systemctl daemon-reload$/ { print; print hold; pending = 0; swapped = 1; next }
+            { if (pending) { print hold; pending = 0 }; print }
+            END { if (!swapped) exit 3 }
           ' "$src.orig" > "$src" \
             || { echo "::error::the move did not apply — this control is inert"; exit 1; }
           chmod 755 "$src"
