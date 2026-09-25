@@ -129,7 +129,35 @@ case "$HTTP_STATUS" in
     ;;
 esac
 
-# ---- 3. manual checklist -----------------------------------------------------
+# ---- 3. the legacy planes must be gone (the manual teardown's signal) -------
+# The pivot deleted the container plane, the automations and the units-menu
+# services repo-side; live teardown is FULLY MANUAL (the herdr epic §8 — no
+# automated deletion anywhere). This arm deletes nothing and fixes nothing: it
+# FAILS while any legacy service or listener still exists on the brain, which
+# is exactly the manual checklist's completion signal. A fresh brain passes
+# trivially; a legacy brain keeps failing until the human has finished.
+LEGACY_FOUND=""
+for svc in code-agent-manager.service tls-cert-renew.service tls-cert-renew.timer \
+           goose-telegram-gateway.service goose-recipe@.service \
+           goose-recipe@morning-brief.timer goose-recipe@inbox-triage.timer \
+           goose-recipe@weekly-review.timer goose-recipe@health-followups.timer; do
+  if brain_exec systemctl cat "$svc" >/dev/null 2>&1; then
+    LEGACY_FOUND="$LEGACY_FOUND $svc"
+  fi
+done
+if brain_exec sh -c "ss -tln 2>/dev/null | grep -q ':4300 '" 2>/dev/null; then
+  LEGACY_FOUND="$LEGACY_FOUND port-4300"
+fi
+if [ -n "$LEGACY_FOUND" ]; then
+  fail "legacy plane still present:$LEGACY_FOUND — tear it down by hand
+       (the wizard prints the full checklist per the herdr epic §8; this arm is its
+       completion signal: the deploy script never deletes anything, and neither
+       does this check)"
+else
+  pass "no legacy services or listeners remain (container plane, automations, TLS-renew, the two deleted units)"
+fi
+
+# ---- 3b. manual checklist -----------------------------------------------------
 cat <<'EOF'
 
 == manual checklist — the milestone (one history, on the brain) ==

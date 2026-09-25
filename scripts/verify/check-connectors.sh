@@ -195,7 +195,7 @@ fi
 GOOSE_VER="${GOOSE_TAG#v}"
 
 # ---- python runner ----------------------------------------------------------
-# python3 is already a dependency of scripts/verify (test-code-agent-manager.sh,
+# python3 is already a dependency of scripts/verify (test-verify-checks.sh,
 # stub-engine.sh). PyYAML is not universally present, so lib.sh's py_runner
 # falls back to uv, which both bootstrap-mac.sh and cloud-init install. That
 # ladder used to be copied into this file, cli.sh, check-goose-template.sh and

@@ -2,7 +2,8 @@
 # test-pai.sh — the harness for bin/pai. Establishes the pattern every later
 # scripts/pai/*.py owes, because .coveragerc's `source = scripts` plus
 # check-coverage.sh's 85% per-file floor apply the INSTANT such a file is
-# committed, and test-code-agent-manager.sh is the only other runner.
+# committed, and the deleted code-agent-manager.py had test-code-agent-manager.sh
+# (both retired with the container plane — the herdr pivot).
 #
 # THE FIXTURES ARE GENERATED, NOT COMMITTED. A checked-in copy of the goose
 # config would go stale the moment config/goose/config.yaml changed, and would
@@ -24,7 +25,7 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/pai-test.XXXXXX")"
 # as a 0600 marker under $TMPDIR/pai-goosecfg (goosecfg writes it AT SPAWN), and
 # both sections redirect TMPDIR into a subdirectory of $WORK -- so the markers
 # are the roster, and cleanup is idempotent by construction. Killing the group
-# precedent: test-code-agent-manager.sh:90-99; the multi-signal trap is new here.
+# precedent: the deleted test-code-agent-manager.sh's pty arms; the multi-signal trap is new here.
 #
 # The glob is `*/tmp/` rather than `goosecfg/tmp/` because section 9 owns a
 # second work directory: `pai doctor --fix` spawns its own server, and a roster
@@ -55,7 +56,8 @@ trap 'cleanup; exit 130' INT TERM HUP
 # shellcheck source=scripts/verify/lib.sh
 . "$HERE/lib.sh"
 
-# The interpreter seam, mirroring MANAGER_PY in test-code-agent-manager.sh:98.
+# The interpreter seam, the same shape the deleted test-code-agent-manager.sh's
+# MANAGER_PY seam used.
 # It wraps ONLY the thing under measurement.
 read -r -a PAI_PY <<<"${PAI_PY:-python3}"
 DOCTOR="$REPO_ROOT/scripts/pai/doctor.py"
@@ -347,7 +349,7 @@ doctor_path, clean_home, work, repo_root, units_fixture = sys.argv[1:6]
 spec = importlib.util.spec_from_file_location("doctor_probe", doctor_path)
 assert spec and spec.loader
 mod = importlib.util.module_from_spec(spec)
-# Register BEFORE exec_module, matching test-code-agent-manager.sh:244. Without
+# Register BEFORE exec_module (the pty-harness convention). Without
 # it @dataclass fails resolving its own annotations: it looks the class's module
 # up via sys.modules[cls.__module__], finds None, and dies in _is_type.
 sys.modules["doctor_probe"] = mod
@@ -2132,14 +2134,14 @@ fi
 
 # THE MANIFEST'S OWN WORDS, not a generic string. Hardcode "uninstall is not
 # supported" in uninstall.py and all eighteen written reasons become decoration
-# while every exit code above stays 2. `subuid range` is code-agents.yaml's
-# phrase and appears nowhere in scripts/pai/.
+# while every exit code above stays 2. `FULLY MANUAL` is herdr.yaml's phrase
+# and appears nowhere in scripts/pai/.
 RM_RC=0
-RM_OUT="$(pai_remove "$RM_HOME" code-agents 2>&1)" || RM_RC=$?
-if [ "$RM_RC" -eq 2 ] && rm_flat "$RM_OUT" | grep -qF "subuid range"; then
-  pass "the refusal prints code-agents.yaml's own reason, not a generic one"
+RM_OUT="$(pai_remove "$RM_HOME" herdr 2>&1)" || RM_RC=$?
+if [ "$RM_RC" -eq 2 ] && rm_flat "$RM_OUT" | grep -qF "FULLY MANUAL"; then
+  pass "the refusal prints herdr.yaml's own reason, not a generic one"
 else
-  fail "remove code-agents (exit $RM_RC) did not print the manifest reason:"$'\n'"$RM_OUT"
+  fail "remove herdr (exit $RM_RC) did not print the manifest reason:"$'\n'"$RM_OUT"
 fi
 
 # AC #4, on the real manifests — no fixture, because four real units own
@@ -2461,23 +2463,22 @@ for stem, data in manifests.items():
 # AC#4 by name, so the four paths the acceptance criterion lists are asserted
 # as data and not merely as a consequence of the rule above.
 #
-# TWO ASSERTIONS, BECAUSE AC#4'S THIRD PATH IS NOT AN OWNED TARGET. #43 writes
-# `/data/code-agents/chats`; no manifest owns it — code-agents.yaml owns the
-# parent `/data/code-agents`. Substituting the parent and asserting THAT is how
-# an AC gets reported as met while its own text goes untested, so the AC's
-# literal path is checked here by ANCESTOR COVERAGE, and the covering entry is
-# required to be a `data_path`. That second half is what makes it non-trivial:
-# without it, `/data` covers everything under /data and the loop asserts a
-# tautology.
+# TWO ASSERTIONS, BECAUSE AC#4'S THIRD PATH IS NOT AN OWNED TARGET. herdr's
+# worktrees are per-task (`/data/herdr/worktrees/<...>`); the unit owns the
+# parent `/data/herdr`. Substituting the parent and asserting THAT is how an AC
+# gets reported as met while its own text goes untested, so a nested path is
+# checked here by ANCESTOR COVERAGE, and the covering entry is required to be a
+# `data_path`. That second half is what makes it non-trivial: without it,
+# `/data` covers everything under /data and the loop asserts a tautology.
 retained_pairs = [
     (r.kind, r.target)
     for stem in manifests
     for r in mod.retained(mod.load_manifest(REPO, stem))
 ]
 all_retained = {t for _, t in retained_pairs}
-for path in ("/data/goose", "/data/code-agents", "/data"):
+for path in ("/data/goose", "/data/herdr", "/data"):
     assert path in all_retained, (path, sorted(p for p in all_retained if p.startswith("/data")))
-for ac4 in ("/data", "/data/goose", "/data/code-agents/chats"):
+for ac4 in ("/data", "/data/goose", "/data/herdr/worktrees"):
     covers = [(k, t) for k, t in retained_pairs if ac4 == t or ac4.startswith(t + "/")]
     assert covers, (ac4, sorted(all_retained))
     assert all(k == "data_path" for k, _ in covers), (ac4, covers)
@@ -2736,8 +2737,12 @@ WANT_MAC_BASE="OPENCODE_ZEN_API_KEY TOGETHER_API_KEY"
 # ten names left); TELEGRAM_BOT_TOKEN left with the telegram gateway.
 WANT_MAC_ALL="GOOSE_SERVER__SECRET_KEY OPENCODE_ZEN_API_KEY \
 TAVILY_API_KEY TOGETHER_API_KEY"
-# The three deploy-vps.sh preflight hard-requires.
-WANT_VPS_BASE="GOOSE_SERVER__SECRET_KEY OPENCODE_ZEN_API_KEY TOGETHER_API_KEY"
+# The default vps selection (base + default_on): herdr is default_on, so its
+# pick-aware roster joins the three names deploy-vps.sh's preflight
+# hard-requires (GOOSE_SERVER__SECRET_KEY, OPENCODE_ZEN_API_KEY,
+# TOGETHER_API_KEY — all present here).
+WANT_VPS_DEFAULT="ANTHROPIC_API_KEY GITHUB_CODE_AGENT_PAT GOOSE_SERVER__SECRET_KEY \
+OPENAI_API_KEY OPENCODE_ZEN_API_KEY TOGETHER_API_KEY"
 
 secret_names() { # secret_names <flags...> -- the key column, space-separated
   pai secrets "$CLEAN" "$@" | cut -f1 | tr '\n' ' ' | sed 's/ $//'
@@ -2758,20 +2763,20 @@ names_are "secrets --host mac is exactly the two names a base install needs" \
   "$WANT_MAC_BASE" --host mac
 names_are "the whole catalog is four names" \
   "$WANT_MAC_ALL" --host mac --all
-names_are "secrets --host vps is deploy-vps.sh's three" \
-  "$WANT_VPS_BASE" --host vps
+names_are "secrets --host vps is the default-selection roster" \
+  "$WANT_VPS_DEFAULT" --host vps
 names_are "an add-on selection is that unit's names only, not the base ones" \
   "TAVILY_API_KEY" --host mac --units connectors
-# code-agents keeps NOTHING in the Keychain since the agent-buzz channel left:
+# herdr keeps NOTHING in the Keychain — every row it could name is store: vps:
 # a rowless add-on is its own golden, and it lands here rather than inside the
 # names_are family for the same three-channels reason as base-toolchain below.
 EMPTY_CA_RC=0
-EMPTY_CA_OUT="$(pai secrets "$CLEAN" --host mac --units code-agents \
-  2>"$WORK/code-agents.err")" || EMPTY_CA_RC=$?
-if [ "$EMPTY_CA_RC" = "0" ] && [ -z "$EMPTY_CA_OUT" ] && [ ! -s "$WORK/code-agents.err" ]; then
+EMPTY_CA_OUT="$(pai secrets "$CLEAN" --host mac --units herdr \
+  2>"$WORK/herdr.err")" || EMPTY_CA_RC=$?
+if [ "$EMPTY_CA_RC" = "0" ] && [ -z "$EMPTY_CA_OUT" ] && [ ! -s "$WORK/herdr.err" ]; then
   pass "an add-on with no Keychain rows is an empty roster, exit 0"
 else
-  fail "code-agents mac roster: rc=$EMPTY_RC out=$EMPTY_CA_OUT"$'\n'"$(cat "$WORK/code-agents.err")"
+  fail "herdr mac roster: rc=$EMPTY_CA_RC out=$EMPTY_CA_OUT"$'\n'"$(cat "$WORK/herdr.err")"
 fi
 # THE ONE GOLDEN HERE WHOSE EXPECTED VALUE IS ALSO THE FAILURE VALUE, so it does
 # not go through names_are: secret_names discards the exit code and everything on
@@ -3162,7 +3167,7 @@ fi
 printf 'export AFTER_THE_BLOCK=1\n' >>"$ZSHRC"
 cp "$ZSHRC" "$KC_WORK/baseline"
 
-kc_run --units code-agents
+kc_run --units herdr
 if cmp -s "$KC_WORK/baseline" "$ZSHRC"; then
   pass "regenerating with a different selection is byte-identical (the block is the catalog)"
 else
@@ -3325,7 +3330,7 @@ fi
 # The first run appended (no markers yet); this one takes the awk replace branch,
 # which is the other half of the write path and regressed identically.
 cp "$KC_DOTFILE" "$KC_WORK/linked-baseline"
-kc_run --units code-agents
+kc_run --units herdr
 if [ "$KC_RC" -eq 0 ] && [ -L "$ZSHRC" ] && cmp -s "$KC_WORK/linked-baseline" "$KC_DOTFILE"; then
   pass "regenerating over a symlink is idempotent and still leaves a symlink"
 else

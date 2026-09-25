@@ -96,10 +96,10 @@ if [ "$MODE" = "probe" ]; then
       case "$port" in
         22)   echo "      SSH must be tailnet-only after bootstrap (docs/security.md)." ;;
         3284) echo "      goose serve is exposed publicly — this is the worst case." ;;
-        4300) echo "      The code-agent gateway is public. It fronts containers holding a" \
-                   "GitHub PAT that can open pull requests (docs/code-agents.md)." ;;
-        4310) echo "      A per-chat opencode server is public. These bind 127.0.0.1 and are" \
-                   "reachable only through the gateway — that binding has regressed." ;;
+        4300) echo "      A legacy container-plane manager is public. That plane is deleted;" \
+                   "tear the remnant down by hand (check-brain.sh's legacy arm)." ;;
+        4310) echo "      A legacy per-chat opencode server is public. That plane is deleted;" \
+                   "tear the remnant down by hand (check-brain.sh's legacy arm)." ;;
       esac
       echo "      Fix: Hetzner Cloud Firewall (infra/terraform) + ufw on the host"
       echo "      must both default-deny inbound. Re-apply terraform, then re-probe."

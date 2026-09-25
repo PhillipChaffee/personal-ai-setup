@@ -985,10 +985,10 @@ def projection(repo: Path, argv: list[str]) -> int:
 
     THE POINT IS THAT NOTHING DOWNSTREAM KEEPS ITS OWN COPY. cli.sh's verify
     roster was a hardcoded string, and it had drifted: it named `check-brain`
-    and `check-code-agents` but not `check-security`, so one of brain's two
-    verify scripts was reachable only by typing its path (brain.yaml recorded
-    that as a blocker). Deriving it means a unit that gains a check gains it in
-    `pai verify` too, with no second edit.
+    but not `check-security`, so one of brain's two verify scripts was
+    reachable only by typing its path (brain.yaml recorded that as a blocker).
+    Deriving it means a unit that gains a check gains it in `pai verify` too,
+    with no second edit.
 
     An unreadable manifest is exit 1 WITH the readable values still on stdout.
     A roster is the one place where "some of the manifests parsed" must not be

@@ -181,16 +181,18 @@ jobs:
   # because a red deploy should not be reported as "base install failed".
   #
   # WHAT GREEN HERE MEANS: the deploy stops goose-serve before the first move
-  # into the path root, installs then reloads then restarts the manager, always
-  # links with -T, runs the migration once whatever is selected, honours
-  # --with/--without/--only, refuses a unit id that is not in the catalog,
-  # re-runs clean, blocks on a dead /status and attributes a failing unit by
-  # name. The pre-carve sequence differential that used to sit on top of these
-  # was retired with the automations removal (#143) — see the harness header
-  # for what replaced it. It says NOTHING about whether podman, apt, systemd,
-  # rootless subuid ranges or loginctl linger behave as modelled on a real
-  # Ubuntu, and nothing at all about a real brain. The harness's header
-  # enumerates that list; read it before trusting this badge.
+  # into the path root, installs then reloads then restarts the herdr unit,
+  # always links with -T, runs the migration once whatever is selected,
+  # selects NOTHING on a bare run, honours --with/--without/--only and the
+  # --coding-agents gating, refuses a unit id or a coding-agent id that is not
+  # in the catalog, re-runs clean, blocks on a dead /status and attributes a
+  # failing unit by name. The pre-carve sequence differential that used to sit
+  # on top of these was retired with the automations removal (#143) — see the
+  # harness header for what replaced it. It says NOTHING about whether apt,
+  # systemd, sudo -u, useradd, npm or curl behave as modelled on a real
+  # Ubuntu, whether the herdr binary or the agent CLIs run, or anything at all
+  # about a real brain. The harness's header enumerates that list; read it
+  # before trusting this badge.
   deploy-vps:
     name: brain deploy against fakes
     runs-on: ubuntu-latest
@@ -260,18 +262,18 @@ jobs:
           git archive HEAD | tar -x -C "$work"
           test -x "$work/scripts/verify/test-deploy-vps.sh" \
             || { echo "::error::harness is not executable in the archive"; exit 1; }
-          before="$(grep -c 'want code-agents' "$work/scripts/vps/deploy-vps.sh")"
-          sed -i '/^ *want code-agents || return 0$/d' "$work/scripts/vps/deploy-vps.sh"
-          after="$(grep -c 'want code-agents' "$work/scripts/vps/deploy-vps.sh" || true)"
+          before="$(grep -c 'want herdr' "$work/scripts/vps/deploy-vps.sh")"
+          sed -i '/^ *want herdr || return 0$/d' "$work/scripts/vps/deploy-vps.sh"
+          after="$(grep -c 'want herdr' "$work/scripts/vps/deploy-vps.sh" || true)"
           [ "$before" -eq 1 ] && [ "$after" -eq 0 ] \
             || { echo "::error::the sed did not remove the gate (before=$before after=$after) — this control is inert"; exit 1; }
           if "$work/scripts/verify/test-deploy-vps.sh" --only select; then
-            echo "::error::--without code-agents installed podman anyway and V5 did not notice"
+            echo "::error::--with herdr provisioned the plane despite a missing gate and V5 did not notice"
             exit 1
           fi
           echo "V5 correctly caught a unit that ignored its gate."
 
-      - name: Negative test — the manager's reload must stay between install and restart
+      - name: Negative test — the herdr unit's reload must stay between install and restart
         run: |
           set -euo pipefail
           work="$RUNNER_TEMP/neg-reload-unit"
@@ -279,8 +281,8 @@ jobs:
           git archive HEAD | tar -x -C "$work"
           test -x "$work/scripts/verify/test-deploy-vps.sh" \
             || { echo "::error::harness is not executable in the archive"; exit 1; }
-          # The ONE in-unit reload: unit_code_agents'. Removing it must break
-          # V2c. (The gateway's reload died with the gateway itself.)
+          # The ONE in-unit reload: unit_herdr's. Removing it must break V2c.
+          # (The gateway's reload died with the gateway itself.)
           before="$(grep -c '^  sudo systemctl daemon-reload$' "$work/scripts/vps/deploy-vps.sh" || true)"
           [ "$before" -eq 1 ] \
             || { echo "::error::expected exactly 1 in-unit daemon-reload, found $before — this control is inert"; exit 1; }
@@ -299,15 +301,16 @@ jobs:
           git archive HEAD | tar -x -C "$work"
           test -x "$work/scripts/verify/test-deploy-vps.sh" \
             || { echo "::error::harness is not executable in the archive"; exit 1; }
-          # The automations pivot deleted three unit ids. If someone edits one
-          # back into UNIT_IDS without a body to run, --without <id> would go
-          # from "refused" to "accepted and a no-op" — and V5b is what notices.
+          # The pivot deleted four unit ids (google-workspace, telegram-gateway,
+          # code-agents, automations). If someone edits one back into UNIT_IDS
+          # without a body to run, --without <id> would go from "refused" to
+          # "accepted and a no-op" — and V5b is what notices.
           before="$(grep -c '^UNIT_IDS=' "$work/scripts/vps/deploy-vps.sh" || true)"
           [ "$before" -eq 1 ] \
             || { echo "::error::expected exactly 1 UNIT_IDS line, found $before — this control is inert"; exit 1; }
-          sed -i 's|^UNIT_IDS="code-agents"|UNIT_IDS="code-agents telegram-gateway"|' \
+          sed -i 's|^UNIT_IDS="herdr"|UNIT_IDS="herdr telegram-gateway"|' \
             "$work/scripts/vps/deploy-vps.sh"
-          grep -q 'UNIT_IDS="code-agents telegram-gateway"' "$work/scripts/vps/deploy-vps.sh" \
+          grep -q 'UNIT_IDS="herdr telegram-gateway"' "$work/scripts/vps/deploy-vps.sh" \
             || { echo "::error::the sed matched nothing — this control is inert"; exit 1; }
           if "$work/scripts/verify/test-deploy-vps.sh" --only select; then
             echo "::error::a unit id that no longer has an installer body was accepted, and V5b did not notice"
@@ -320,7 +323,7 @@ jobs:
       # the ordering assertion is about POSITION, not presence. Moving the
       # reload ABOVE its install re-reddens V2c identically, so a later author
       # cannot hoist it and call the gate green.
-      - name: Negative test — the manager reload must stay below its install
+      - name: Negative test — the herdr reload must stay below its install
         run: |
           set -euo pipefail
           work="$RUNNER_TEMP/neg-reload-position"
@@ -336,7 +339,7 @@ jobs:
           # precedes its install, V2c's first_idx_after finds no reload below
           # the install, and the assertion re-reddens.
           awk '
-            /^  sudo install -m 644 .*code-agent-manager\.service/ { hold = $0; pending = 1; next }
+            /^  sudo install -m 644 .*herdr\.service/ { hold = $0; pending = 1; next }
             pending && /^  sudo systemctl daemon-reload$/ { print; print hold; pending = 0; swapped = 1; next }
             { if (pending) { print hold; pending = 0 }; print }
             END { if (!swapped) exit 3 }
@@ -347,12 +350,12 @@ jobs:
             || { echo "::error::the mutation changed the script's lines, not just their order — this control tests the wrong thing"; exit 1; }
           rm -f "$src.orig"
           if "$work/scripts/verify/test-deploy-vps.sh" --only constraints; then
-            echo "::error::the manager was restarted against a cached unit definition and V2c did not notice"
+            echo "::error::herdr was restarted against a cached unit definition and V2c did not notice"
             exit 1
           fi
           echo "V2c correctly caught a reload that moved above its install."
 
-      - name: Negative test — enable --now for the manager must fail
+      - name: Negative test — enable --now for herdr must fail
         run: |
           set -euo pipefail
           work="$RUNNER_TEMP/neg-enable-now"
@@ -360,12 +363,12 @@ jobs:
           git archive HEAD | tar -x -C "$work"
           test -x "$work/scripts/verify/test-deploy-vps.sh" \
             || { echo "::error::harness is not executable in the archive"; exit 1; }
-          sed -i 's|^\( *\)sudo systemctl restart code-agent-manager\.service$|\1sudo systemctl enable --now code-agent-manager.service|' \
+          sed -i 's|^\( *\)sudo systemctl restart herdr\.service$|\1sudo systemctl enable --now herdr.service|' \
             "$work/scripts/vps/deploy-vps.sh"
-          grep -q 'enable --now code-agent-manager' "$work/scripts/vps/deploy-vps.sh" \
+          grep -q 'enable --now herdr' "$work/scripts/vps/deploy-vps.sh" \
             || { echo "::error::the sed matched nothing — this control is inert"; exit 1; }
           if "$work/scripts/verify/test-deploy-vps.sh" --only constraints; then
             echo "::error::--now is a no-op on a running unit, and V2e did not notice"
             exit 1
           fi
-          echo "V2e correctly rejected 'enable --now' for the manager."
+          echo "V2e correctly rejected 'enable --now' for the herdr unit."

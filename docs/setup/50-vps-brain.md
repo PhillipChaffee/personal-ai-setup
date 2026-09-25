@@ -176,50 +176,41 @@ brain core, which always runs:
 
 | unit | what it is | what skipping it costs |
 | --- | --- | --- |
-| `code-agents` | rootless podman, the `code-agent:local` image, `/data/code-agents`, `code-agent-manager.service` | no code agents ([70-code-agents.md](70-code-agents.md)) |
+| `herdr` | the coding-agent runtime: dedicated user, pinned binary, server config, the picked agent CLIs | no coding agents ([70-coding-agents.md](70-coding-agents.md)) |
 
 ```bash
 # see the plan without touching anything
 agent@brain$ ~/personal-ai-setup/scripts/vps/deploy-vps.sh --dry-run
 
-# skip the expensive one: no apt install, no subuid range, no image build
-agent@brain$ ~/personal-ai-setup/scripts/vps/deploy-vps.sh --without code-agents
+# the wizard's shape: the plane plus the agents it picked
+agent@brain$ ~/personal-ai-setup/scripts/vps/deploy-vps.sh --with herdr --coding-agents opencode,pi
 ```
 
-`code-agents` is the one worth a decision. Selected, it apt-installs podman +
-uidmap + slirp4netns and grants the `agent` user a subordinate id range **on
-the first deploy** — both are guarded, so later deploys skip them — and then
-enables linger and runs a **multi-minute `podman build`** on **every** deploy,
-whether or not the feature is ever enabled. Deselected, none of that happens
-and `check-code-agents.sh` reports SKIP rather than FAIL.
+`herdr` is OFF by default and that is deliberate: a bare `deploy-vps.sh`
+installs brain core + goose-serve only, because a hand run must never write
+credentials it was never asked for. Selecting it provisions the whole plane
+(user, pinned binary, config, the picked agents) in one run; skipping it costs
+nothing and `check-herdr.sh` reports SKIP rather than FAIL.
 
 Three things to know:
 
 - **The brain core is not selectable.** The path-root migration, the goose
   config install, the systemd unit files, the `goose-serve` restart and the
-  `/status` gate run on every invocation, including `--only code-agents`. Every
+  `/status` gate run on every invocation, including `--only herdr`. Every
   selective run prints one line saying so.
-- **Deselecting is not uninstalling.** Nothing removes what an earlier deploy
-  already installed; `--without code-agents` on a brain that already has the
-  plane leaves the image, the volumes, the subuid range and the linger setting
-  exactly where they are. `pai remove` does not exist yet.
-- **Deselecting is also not freezing.** `--without code-agents` on a brain that
-  already has the plane does not restart `code-agent-manager.service`, so a
-  deploy whose `git pull` shipped new manager code leaves the **old process**
-  serving the new file — with `check-code-agents.sh --probe` still green,
-  because the old process answers `/api/health`, `/api/chats`, stop, wake and
-  delete identically. A route added in that deploy 404s, and a 404 from a stale
-  process is indistinguishable from a route that was never written. This is the
-  same `enable --now`-is-a-no-op failure the explicit `systemctl restart` in the
-  unit body exists to prevent, now reachable by choice rather than by accident.
-  If you deselected the unit and then pulled manager changes, re-run
-  `--only code-agents` (or `sudo systemctl restart code-agent-manager.service`).
-  Deploy when nothing is mid-turn: the restart SIGTERMs every chat container.
+- **Skipping is not uninstalling.** Nothing removes what an earlier deploy
+  already installed — teardown is fully manual by decision (the herdr epic §8):
+  the deploy script has no deletion logic anywhere, and `check-brain.sh`'s
+  legacy arm fails while old units or listeners still exist on the brain. That
+  failing arm is the manual checklist's completion signal, not a bug.
+- **Deploy when nothing is mid-turn.** Selecting the unit restarts
+  `herdr.service`; herdr restores the layout and resumes agent sessions, but a
+  mid-turn pane does not come back mid-turn.
 
 If the unit fails, the deploy stops there and names it — `ERROR: unit
-'code-agents' failed`, plus which units completed and which never ran — and
+'herdr' failed`, plus which units completed and which never ran — and
 the safety-net trap brings `goose-serve` back up before exiting. Re-run just
-that one with `--only code-agents`.
+that one with `--only herdr`.
 
 Confirm everything:
 
@@ -229,11 +220,6 @@ agent@brain$ systemctl status goose-serve
 mac$ ssh agent@<your-brain>.<your-tailnet>.ts.net \
     "sudo journalctl -u goose-serve -n 50 --no-pager" | grep -iE 'listen|fingerprint'
 ```
-
-`goose serve` runs `--tls` with its **self-signed** cert — there is no CA or
-renewal machinery (the phone client it existed for is gone from this repo's
-story). Goose Desktop pins the cert fingerprint from the journalctl line
-above.
 
 ## 6. Connect Goose Desktop to the brain
 
@@ -270,8 +256,8 @@ agent@brain$ /home/agent/personal-ai-setup/scripts/verify/check-security.sh --lo
 # From the Mac — the external probe targets the brain's PUBLIC IP:
 ./scripts/verify/check-security.sh "$(cd infra/terraform && terraform output -raw server_public_ip)"
 # probes ports 22/80/443/3284/4300/4310 over the open internet (not the
-# tailnet) — zero ports may answer. 4300/4310 are the code plane: the gateway
-# and a per-chat opencode server (docs/code-agents.md)
+# tailnet) — zero ports may answer. 4300/4310 are the DELETED container
+# plane's ports, still scanned so any remnant of it stays visible
 ```
 
 Then, by hand:

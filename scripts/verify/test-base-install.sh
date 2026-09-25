@@ -78,16 +78,18 @@
 # real roster is UNSET before the fixtures are exported, so a developer's own
 # key can neither decide the outcome nor reach check-providers.sh:81's mask();
 # the fixture spellings are the ones already committed at
-# test-code-agent-manager.sh:217/219. No assertion message below interpolates a
+# the deleted test-code-agent-manager.sh's fixture constants (217/219). No
+# assertion message below interpolates a
 # captured value -- booleans, counts and status codes only
-# (test-code-agent-manager.sh:744-746).
+# (that harness's 744-746, retired with the container plane).
 #
 # Runs on a laptop, not only in CI: python3 (with PyYAML) + curl + the usual
 # BSD/GNU userland, and the fakes do no real work, so the whole thing is
 # seconds. `--only <leg>` runs one leg, which is what keeps the workflow's
 # negative tests from re-running everything three times.
 # shellcheck disable=SC2015
-# ^ FILE-LEVEL and load bearing, same as test-code-agent-manager.sh:20-31: every
+# ^ FILE-LEVEL and load bearing, same as the deleted test-code-agent-manager.sh's
+# file-level note: every
 # assertion is the deliberate `[ cond ] && ok "..." || bad "..."` idiom. SC2015
 # warns that `a && b || c` runs c when b fails; it cannot here, because ok()
 # ends in `PASS_COUNT=$((PASS_COUNT + 1))`, an arithmetic ASSIGNMENT, which
@@ -241,7 +243,8 @@ PORT="${PORT:-4396}"
 PROVIDER_URL="http://127.0.0.1:$PORT"
 mkdir -p "$FAKE_HOME" "$STATE" "$PREFIX" "$WORK/out"
 
-# UNSET FIRST, EXPORT SECOND. test-code-agent-manager.sh:725-729: "leaving them
+# UNSET FIRST, EXPORT SECOND. The deleted test-code-agent-manager.sh recorded it
+# first: "leaving them
 # inherited would let the developer's real environment decide the outcome."
 # Concretely, an inherited GOOSE_BIN points check-goose.sh at a REAL goose,
 # which reads the just-installed provider JSONs carrying the real
@@ -263,7 +266,7 @@ HARNESS_UNSET_NAMES="GOOSE_BIN PAI_MODE BRAIN_HOST OPENCODE_ZEN_API_KEY
 unset $HARNESS_UNSET_NAMES 2>/dev/null || true
 
 # The fixture keys, in the spelling already committed at
-# test-code-agent-manager.sh:217/219 (low entropy, established gitleaks
+# the deleted test-code-agent-manager.sh's fixture constants (low entropy, established gitleaks
 # precedent). Both checks die 2 on an empty key -- there is no SKIP path, by
 # design -- so the harness cannot reach a single assertion without them.
 ZEN_FIXTURE_KEY="fake-zen-key"

@@ -121,9 +121,10 @@ die_usage() {
 #
 # THE SENTINEL MUST NOT NAME A SUBDIRECTORY. The two it replaces did, and they
 # disagreed: check-brain.sh probed /data/goose (or /data/goose-data, the
-# pre-GOOSE_PATH_ROOT layout), check-code-agents.sh probed /data/code-agents —
-# so a brain running goose with code-agents not installed was "local" to one
-# script and "remote" to the other, and tried to SSH to itself. Which
+# pre-GOOSE_PATH_ROOT layout), the deleted code-agents check probed
+# /data/code-agents — so a brain running goose with that plane not installed
+# was "local" to one script and "remote" to the other, and tried to SSH to
+# itself. Which
 # subdirectory exists is a function of WHICH ADD-ONS are installed, which is
 # precisely what a host test must not depend on.
 #

@@ -1,0 +1,79 @@
+# herdr.service — the coding-agent runtime on the brain: the herdr server
+# (real terminal panes; clients attach over SSH). Installed to
+# /etc/systemd/system/ by scripts/vps/deploy-vps.sh's unit_herdr().
+#
+# ISOLATION MODEL. The server runs as a dedicated low-privilege user whose home
+# IS the encrypted volume (/data/herdr), so every herdr default path lands on
+# LUKS. The unit then makes the service see ONLY its own directory:
+#
+#   ProtectSystem=strict          the whole filesystem tree is read-only
+#   TemporaryFileSystem=/data:ro  /data becomes an EMPTY read-only tmpfs — the
+#                                 rest of the LUKS volume (goose state,
+#                                 secrets.env, the life vault) ceases to exist
+#                                 from the service's view
+#   BindPaths=/data/herdr         ...and the real home is bound back in,
+#                                 writable (ReadWritePaths reopens it)
+#   ProtectHome=true              /home is fully inaccessible, not merely
+#                                 read-only — inside this service /home does
+#                                 not exist
+#
+# Inside the service and every pane under it, /data IS /data/herdr and nothing
+# else; system directories stay readable so programs can run. This is stricter
+# than plain permissions: a write probe at /data fails by NAMESPACE, not by
+# file mode. The combination is syntax-checked by `systemd-analyze verify` in
+# CI (scripts/verify/test-deploy-vps.sh) and proven by first boot on the real
+# brain — the live arms live in scripts/verify/check-herdr.sh.
+#
+# THE ENVIRONMENT IS THE CONTRACT, NOT AN OPTIMIZATION. herdr resolves its
+# whole API socket and config from $XDG_CONFIG_HOME/herdr (src/config/io.rs),
+# and the SSH remote-attach bridge resolves the SAME paths from the SSH login
+# session's environment — so unit_herdr() writes the same values into the
+# herdr user's ~/.bashrc, and check-herdr.sh asserts both sides. Changing one
+# without the other silently splits the server's socket from the bridge's.
+#
+# Restart kills pane processes (herdr restores layout and resumes agent
+# sessions on restart, but a mid-turn pane does not come back mid-turn) — the
+# installer restarts this unit on every deploy and prints the deploy-when-idle
+# rule; docs/setup/70-coding-agents.md carries it too.
+
+[Unit]
+Description=herdr server (coding-agent runtime on the brain)
+Wants=network-online.target
+After=network-online.target
+# /data (LUKS volume) holds the herdr home. After a reboot it is deliberately
+# absent until scripts/vps/luks-unlock.sh runs — this line keeps the unit down
+# rather than starting against an empty /data (goose-serve does the same).
+RequiresMountsFor=/data
+
+[Service]
+User=herdr
+Group=herdr
+WorkingDirectory=/data/herdr
+# The herdr-scoped credential copy: exactly the picked agents' rows and
+# GITHUB_CODE_AGENT_PAT, never the goose secret, never anything else —
+# unit_herdr() writes it pick-aware and check-herdr.sh asserts the exact set
+# against /data/herdr/config/agents.list.
+EnvironmentFile=/data/herdr/secrets.env
+# Explicit, not derived from passwd: herdr is everything-$HOME-relative, and
+# the SSH bridge must resolve the same paths (see the header note).
+Environment=HOME=/data/herdr
+Environment=XDG_CONFIG_HOME=/data/herdr/config
+Environment=XDG_STATE_HOME=/data/herdr/state
+# The agent CLIs unit_herdr() installs land in these three roots; system dirs
+# stay last so programs and MCP servers resolve.
+Environment=PATH=/data/herdr/bin:/data/herdr/.local/bin:/data/herdr/.grok/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Belt and braces with RequiresMountsFor: refuse to start over a stale,
+# unmounted /data directory.
+ExecStartPre=/usr/bin/mountpoint -q /data
+Restart=on-failure
+RestartSec=5
+ProtectSystem=strict
+TemporaryFileSystem=/data:ro
+BindPaths=/data/herdr
+ReadWritePaths=/data/herdr
+ProtectHome=true
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

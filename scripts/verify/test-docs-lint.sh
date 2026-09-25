@@ -197,7 +197,7 @@ budget_rows() {
 | OpenCode Zen inference (PAYG — **disable auto-reload, set a cap**) | ~$5–20/mo typical |
 | Together AI inference (min $5 top-up; sensitive tier + default hub) | ~$5–10/mo |
 | Tailscale (personal plan) | $0 |
-| Code agents on the brain (containers) | no new account — bills to the Zen/Together lines above, plus disk |
+| Coding agents on the brain (herdr panes) | no new account — bills to the Zen/Together lines above, plus disk |
 | **Total** | **~$15–35/mo** |
 EOF
   return 0

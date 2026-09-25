@@ -1,0 +1,36 @@
+# herdr config.toml — the brain's herdr server config template. Copied
+# NO-CLOBBER by unit_herdr() into /data/herdr/config/herdr/config.toml (the
+# path herdr derives from the unit's XDG_CONFIG_HOME=/data/herdr/config plus
+# its own app directory — src/config/io.rs appends `herdr`).
+#
+# EVERY KEY BELOW IS EXPLICIT, AND THAT IS THE POINT: upstream defaults are
+# not a contract at 0.x cadence, so the live check (check-herdr.sh, arm
+# "config keys") compares EVERY key against this list and pins the whole
+# meaning of the brain's config. pane_history stays off even if herdr flips
+# the default, resume stays on even if it flips the other way.
+
+# Unattended use: never prompt.
+onboarding = false
+
+[update]
+# Both background checks contact herdr.dev; the brain is pinned
+# (config/pins.yaml herdr.version) and nothing may move it.
+version_check = false
+manifest_check = false
+
+[experimental]
+# Pane replay can echo pane output — including anything an agent printed —
+# into restored panes. Off, and kept off deliberately.
+pane_history = false
+
+[session]
+# A server restart restores workspaces/panes/layout and resumes the official
+# integrations' agent sessions by session id. The restart itself still kills
+# pane processes: deploy when nothing is mid-turn.
+resume_agents_on_restore = true
+
+[worktrees]
+# Explicit: herdr's own default would land worktrees at /data/herdr/.herdr/
+# worktrees. The canonical layout is /data/herdr/worktrees (notes: disk
+# layout), and check-herdr.sh asserts the live file's value.
+directory = "/data/herdr/worktrees"

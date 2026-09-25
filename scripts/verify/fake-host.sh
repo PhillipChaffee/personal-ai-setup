@@ -26,8 +26,8 @@
 #
 # THREE CLASSES OF SHIM, and the split is the design:
 #
-#   ANSWERING     sudo systemctl apt-get podman usermod loginctl tailscale
-#                 curl mountpoint git goose sleep date
+#   ANSWERING     sudo systemctl apt-get usermod loginctl tailscale curl
+#                 mountpoint git goose sleep date id useradd npm
 #                 They model a host. Nothing real happens.
 #
 #   PASSTHROUGH   ln mv cp rm rmdir install chmod mkdir
@@ -37,10 +37,13 @@
 #                 rename and every symlink semantic REAL rather than modelled.
 #                 A modelled `mv` could not tell you that `ln -sfnT` onto a
 #                 surviving directory is an error, which is the entire content
-#                 of that constraint.
+#                 of that constraint. `install` is a hybrid: placement and
+#                 mode run real, but -o/-g are recorded and dropped, because a
+#                 chown is impossible unprivileged — the recorded argv still
+#                 says who would own what on a real brain.
 #
-#   NOT SHIMMED   seq head grep cmp ls stat id date basename readlink find sed
-#                 cat wc tr sort env bash sh dirname mktemp diff comm
+#   NOT SHIMMED   seq head grep cmp ls stat date basename readlink find sed
+#                 cat wc tr sort dirname uname mktemp sha256sum tar
 #                 Resolved from a minimal PATH the harness builds. A name that
 #                 is neither shimmed nor in that PATH exits 127 mid-run, which
 #                 is the point: an unmodelled dependency surfaces as a failure
@@ -202,10 +205,17 @@ case "$NAME" in
 
   # ---- sudo: record the WHOLE line, then run the rest without a second
   # record. One log line per privileged call, so `index(...)` assertions read
-  # the way the script reads.
+  # the way the script reads. `sudo -u USER cmd` records the run-as and drops
+  # it: the fake host is single-user, and unit_herdr runs every herdr-home
+  # probe as herdr, which on a real brain is a different uid — the RECORD is
+  # what the harness asserts, so the run-as prefix must survive into it.
   sudo)
     [ "$#" -gt 0 ] || die "sudo with no command"
     record sudo "$@"
+    if [ "$1" = "-u" ]; then
+      shift 2
+      [ "$#" -gt 0 ] || die "sudo -u with no command"
+    fi
     export PAI_HOST_QUIET=1
     PATH="$CALLER_PATH"
     exec "$@"
@@ -337,18 +347,99 @@ case "$NAME" in
     esac
     ;;
 
-  # ---- curl. Fails by default. `/status answers` is an ARMED state, so the
-  # "deploy blocks on /status" assertion runs against the real 45-attempt loop
-  # rather than against a fake that always says yes.
+  # ---- curl. Two shapes: the /status probe (no -o) and pinned downloads.
+  # Fails by default; `/status answers` is an ARMED state, so the "deploy
+  # blocks on /status" assertion runs against the real 45-attempt loop rather
+  # than against a fake that always says yes. Downloads serve state-file
+  # fixtures by URL, so the deploy's sha256sum -c runs against the REAL bytes
+  # of whatever the fixture built — the digest pin is exercised, not skipped.
+  # `download-lies` serves different bytes and is how the harness proves a
+  # digest mismatch fails the install loudly.
   curl)
     record curl "$@"
     armed curl-ok || exit 7
+    target=""; url=""
+    if [ "$1" = "-fsSL" ] && [ "$2" = "-o" ]; then
+      target="$3"
+      url="$4"
+    fi
+    if [ -z "$target" ]; then
+      exit 0
+    fi
+    case "$url" in
+      *herdr-linux-x86_64)        src="$PAI_HOST_STATE/asset-herdr" ;;
+      *opencode-linux-x64.tar.gz) src="$PAI_HOST_STATE/asset-opencode" ;;
+      *claude.ai/install.sh)      src="$PAI_HOST_STATE/asset-claude-install" ;;
+      *x.ai/cli/install.sh)       src="$PAI_HOST_STATE/asset-grok-install" ;;
+      *) die "unhandled curl download argv: $*" ;;
+    esac
+    if armed download-lies; then
+      src="$PAI_HOST_STATE/asset-bad"
+      [ -f "$src" ] || die "download-lies arm: $src is missing"
+    fi
+    [ -f "$src" ] || die "fake-host: download fixture missing: $src"
+    cp "$src" "$target"
     ;;
 
   mountpoint)
     record mountpoint "$@"
     [ "$#" -eq 2 ] && [ "$1" = "-q" ] || die "unhandled mountpoint argv: $*"
     [ -d "$2" ] || exit 1
+    ;;
+
+  # ---- the dedicated user. `id -u herdr` is the existence probe unit_herdr
+  # guards useradd with; answered from the users state file, because a real
+  # `id` would fail on every CI run and re-run useradd every deploy — the
+  # exact drift V7's idempotence leg must catch. The preflight's own probes
+  # (id -u / id -un, one flag, no user) stay REAL: the containment gate's
+  # root refusal and the 'agent' warning depend on them.
+  id)
+    if [ "$#" -le 1 ]; then
+      exec "$(real_bin id)" "$@"
+    fi
+    case "$*" in
+      "-u herdr")
+        state_has users herdr && echo 4242 || exit 1 ;;
+      *) die "unhandled id argv: $*" ;;
+    esac
+    ;;
+
+  useradd)
+    record useradd "$@"
+    if [ "$#" -eq 6 ] && [ "$1" = "--home-dir" ] && [ "$3" = "--no-create-home" ] && \
+       [ "$4" = "--shell" ] && [ "$5" = "/bin/bash" ] && [ "$6" = "herdr" ]; then
+      state_add users herdr
+    else
+      die "unhandled useradd argv: $*"
+    fi
+    ;;
+
+  npm)
+    record npm "$@"
+    case "${1:-}" in
+      install)
+        # unit_herdr's exact shape: install -g --ignore-scripts --prefix <p>
+        # <pkg>@<ver>. The stub answers --version with the pinned version so
+        # the re-run guard sees it, and lands in the prefix's bin — the same
+        # path the real npm -g --prefix writes.
+        [ "$2" = "-g" ] && [ "$3" = "--ignore-scripts" ] && [ "$4" = "--prefix" ] && [ "$#" -eq 6 ] \
+          || die "unhandled npm install argv: $*"
+        prefix="$5"; pkg="$6"
+        case "$pkg" in
+          @earendil-works/pi-coding-agent@*) binname="pi" ;;
+          @openai/codex@*)                   binname="codex" ;;
+          *) die "unhandled npm package: $pkg" ;;
+        esac
+        ver="${pkg##*@}"
+        mkdir -p "$prefix/bin"
+        # shellcheck disable=SC2016  # "$1" must reach the shim unexpanded —
+        # it is expanded at the SHIM's runtime, never here.
+        printf '#!/bin/sh\ncase "$1" in --version) echo "%s";; *) exit 0;; esac\n' "$ver" \
+          >"$prefix/bin/$binname"
+        chmod 755 "$prefix/bin/$binname"
+        ;;
+      *) die "unhandled npm argv: $*" ;;
+    esac
     ;;
 
   git)
@@ -404,7 +495,29 @@ case "$NAME" in
     fi
     passthrough "$@"
     ;;
-  ln|cp|rmdir|install|chmod|mkdir|rm)
+  install)
+    # PASSTHROUGH with an ownership model. install -o/-g asks for a chown,
+    # which an unprivileged sandbox cannot do — so the flags are RECORDED and
+    # dropped while placement and mode stay real. Ownership assertions live in
+    # check-herdr.sh's live arms; the harness asserts the argv (which says who
+    # would own what) and the file tree (what exists, in what mode).
+    record install "$@"
+    real_args=""
+    skip_value=0
+    for a in "$@"; do
+      if [ "$skip_value" -eq 1 ]; then
+        skip_value=0
+        continue
+      fi
+      case "$a" in
+        -o|-g) skip_value=1 ;;
+        *) real_args="$real_args $a" ;;
+      esac
+    done
+    # shellcheck disable=SC2086  # filtered argv, no quoted-path fixture exists
+    exec "$(real_bin install)" $real_args
+    ;;
+  ln|cp|rmdir|chmod|mkdir|rm)
     passthrough "$@"
     ;;
 

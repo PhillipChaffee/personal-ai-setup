@@ -114,7 +114,7 @@ needs, so the roster is a query rather than a list to keep in sync:
 
 ```bash
 pai secrets --host mac                     # the base + default_on roster (the default)
-pai secrets --host mac --units code-agents # add an add-on's names when you install it
+pai secrets --host mac --units herdr      # add an add-on's names when you install it
 pai secrets --host mac --all               # every name the catalog can put in the Keychain
 pai secrets --host vps                     # what /data/secrets.env must hold
 ```

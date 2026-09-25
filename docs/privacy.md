@@ -22,14 +22,15 @@ medical sentence is Tier 3, whole.
 Two rules of thumb that catch most edge cases:
 
 - If you're unsure which tier something is, it's the higher one.
-- **Code-agent chats** (`docs/code-agents.md`) are classified **at the allowlist gate**,
-  not per message: `/data/code-agents/repos.json` may only contain repos you classify
-  Tier 1 or 2 — anything Tier 3 never enters it. Zen-free models are
-  refused unless a repo is explicitly flagged `public_throwaway` (hard rule 1). If a chat
-  trips over sensitive content anyway, abort it — never continue the session. Chat
-  transcripts live in per-chat volumes on the encrypted `/data` — consistent with the
-  trusted-client-device stance in
-  [security.md](security.md).
+- **Coding-agent panes** (`docs/coding-agents.md`) are classified **at the credential
+  gate**, not per message: the fine-grained `GITHUB_CODE_AGENT_PAT`'s selected-repos
+  scope (the allowlist, since there is no repos.json) may only cover repos you classify
+  Tier 1 or 2 — anything Tier 3 never enters it. Zen-free models never see personal
+  data (hard rule 1) — a docs rule in the herdr plane, not a runtime gate, so pick
+  paid models for anything personal. If a pane trips over sensitive content anyway,
+  abort it — never continue the session. Pane state and worktrees live under
+  `/data/herdr` on the encrypted volume — consistent with the trusted-client-device
+  stance in [security.md](security.md).
 
 ## Provider policy summary (verified as of 2026-08-20)
 

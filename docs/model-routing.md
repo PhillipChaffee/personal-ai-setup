@@ -49,8 +49,10 @@ Notes on reading the table:
   (Phase 3), or a local OpenCode you installed yourself. The repo ships no
   OpenCode config and writes no credential; you connect OpenCode to Zen
   yourself. Those rows never pass through Goose.
-- The **code agents** row is the one deliberately unpinned job class: model choice is
-  per-chat at kick-off (`docs/code-agents.md`), defaulting to `deepseek-v4-flash`. The
+- The **coding agents** row is the one deliberately unpinned job class: model choice is
+  per-pane at kick-off (`docs/coding-agents.md`) — no default is baked in; you pick per
+  pane, and free ids never see personal data (hard rule 1 — in the herdr plane that is
+  a discipline, not a runtime gate). The
   hard rules still bind — the session manager refuses zen-free models for any repo not
   flagged `public_throwaway` in the allowlist, and only Tier 1/2 repos are allowlistable
   at all, so the free-tier and retention rules cannot be violated by a model pick.
