@@ -2,8 +2,10 @@
 
 A **connector manifest** is one YAML file describing how to connect the brain to one
 external service — which MCP server (if any), which credentials, which *exact* tools the
-agent may call, which privacy tier the data falls in, and whether the whole thing can be
-finished from a phone.
+agent may call, which privacy tier the data falls in, and where the credential comes
+from. An earlier draft also carried `first_run_auth`/`phone_completable`, fields that
+asserted where a phone client could finish auth; they died with the phone story
+(#140, removal rides #144) — the repo plans around no phone client.
 
 Manifests are the accruing half of the design in [`docs/connecting.md`](../../docs/connecting.md):
 every service you connect leaves behind the artifact that makes the next connection to it a no-op.
@@ -84,7 +86,7 @@ config/connectors/
 ```yaml
 # ---- identity -------------------------------------------------------------
 id: google-workspace              # kebab-case, matches the filename
-display_name: Google Workspace    # what a human sees in the phone UI
+display_name: Google Workspace    # what a human sees in any client
 summary: Gmail, Calendar and Tasks through your own GCP OAuth app.
 
 manifest_version: 1
@@ -95,12 +97,11 @@ goose_version_verified: 1.51.0    # the goose the wire shapes were verified agai
 archetype: self_hosted_mcp_stdio  # see "Archetypes" below
 capabilities: [mail, calendar, tasks]
 
-# ---- can this be finished from a phone? -----------------------------------
-first_run_auth: brain_browser     # none | phone_secret | brain_browser | laptop_oob
-phone_completable: partial        # yes | no | partial
+# ---- where the credential comes from --------------------------------------
 auth_notes: >-
   One-time OAuth consent needs a browser on the same host as the loopback
-  callback listener. See docs/setup/30-google-oauth.md §7b.
+  callback listener — a human sits at the brain's shell; no script in this
+  repo performs or reheats it. See docs/setup/30-google-oauth.md §7b.
 
 # ---- privacy --------------------------------------------------------------
 privacy:
@@ -191,7 +192,7 @@ comes back whether the allowlist bit or was dropped. That is a legitimate config
 
 The workflow's first branch. Picking the archetype determines everything downstream.
 
-| Archetype | What it means | Phone-completable? |
+| Archetype | What it means | Can setup be automated? |
 |---|---|---|
 | `first_party_remote_mcp` | The provider hosts an MCP server themselves. Only you and the provider — passes vetting bar 2. | **Yes**, *if* it takes a bearer token. No, if it requires goose's OAuth flow. |
 | `self_hosted_mcp_stdio` | A community MCP server you run on the brain. | Credential yes; browser consent no. |
@@ -281,8 +282,8 @@ Two consequences you must respect:
 **Never read a secret back to confirm it.** `config/read` with `is_secret: true` returns the
 first `min(len/2, 8)` characters in clear plus the exact length — which violates the
 project's own secrets rule. Verify by handshake instead: enable the extension, list its
-tools, call one cheap read-only tool. There is deliberately no "show token" affordance in
-the phone UI.
+tools, call one cheap read-only tool. There is deliberately no "show token" affordance
+anywhere.
 
 ### The stdio naming collision
 
@@ -311,8 +312,8 @@ rather than pretending the convention holds.
 
 - `available_tools` absent, empty, or spelled `availableTools`
 - `clientId` / `clientSecretKey` / `scopes` at all — they exist on the mcp variant since
-  v1.47.0, but a manifest that sets them asks goose to run its OAuth flow, which cannot be
-  completed from a phone; this repo's credential path is `envKeys`
+  v1.47.0, but a manifest that sets them asks goose to run its OAuth flow, which cannot
+  be driven headlessly on the brain; this repo's credential path is `envKeys`
 - `server.type: sse`
 - `privacy.tier: 3` without a `docs/privacy.md` row
 - any secret whose `key` appears with a value anywhere in the file

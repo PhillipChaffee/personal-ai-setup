@@ -18,21 +18,22 @@ goose_version_verified: 1.51.0
 archetype: standard_protocol_bridge
 capabilities: [mail]
 
-# ---- can this be finished from a phone? -----------------------------------
-first_run_auth: brain_browser
-phone_completable: "no"           # quoted: bare `no` is a YAML 1.1 boolean
+# ---- where the credential comes from --------------------------------------
+# The first_run_auth/phone_completable fields died with the phone story (#140;
+# removal rides #144). What still holds — consent happens on the brain, so a
+# human sits at its shell:
 auth_notes: >-
-  Three separate reasons this is not phone-completable, any one of which is fatal.
-  (1) Proton Mail Bridge is a paid-plan feature — proton.me states Bridge is available
-  only with a paid Proton plan, so a free account cannot get IMAP credentials at all.
-  (2) The first `bridge --cli` -> `login` is interactive and multi-step: username,
-  password, TOTP second factor, possibly a separate mailbox password, and possibly a
-  human-verification URL that has to be opened in a browser. There is no non-interactive
-  login and no device-code equivalent.
-  (3) Bridge, not Proton, mints the IMAP/SMTP password, and you can only read it back out
-  of the running Bridge (`bridge --cli` -> `info`). So the credential does not exist until
-  after someone has sat at a shell on the brain.
-  The credential-typing step afterwards is phone-friendly; everything before it is not.
+  Three separate reasons this cannot be set up headlessly, any one of which is
+  fatal to automation. (1) Proton Mail Bridge is a paid-plan feature — proton.me
+  states Bridge is available only with a paid Proton plan, so a free account
+  cannot get IMAP credentials at all. (2) The first `bridge --cli` -> `login` is
+  interactive and multi-step: username, password, TOTP second factor, possibly a
+  separate mailbox password, and possibly a human-verification URL that has to
+  be opened in a browser. There is no non-interactive login and no device-code
+  equivalent. (3) Bridge, not Proton, mints the IMAP/SMTP password, and you can
+  only read it back out of the running Bridge (`bridge --cli` -> `info`). So the
+  credential does not exist until someone has sat at a shell on the brain, and
+  the wizard never touches any of it.
 
 # ---- privacy --------------------------------------------------------------
 privacy:
@@ -111,13 +112,13 @@ blockers:
       account has no supported IMAP path at all — not a configuration problem, a product
       boundary.
   - id: interactive-first-login
-    blocks: phone
+    blocks: connector
     severity: hard
     detail: >-
       `bridge --cli` -> `login` prompts for username, password and TOTP, and may
-      additionally demand a mailbox password and a human-verification URL. Not scriptable,
-      not phone-completable. This is why first_run_auth is brain_browser rather than
-      phone_secret.
+      additionally demand a mailbox password and a human-verification URL. Not
+      scriptable, and nothing can sit in for the human at that shell — the
+      wizard and the installers never touch it (docs/connecting.md).
   - id: imap-smtp-ports-drift
     blocks: connector
     severity: operational

@@ -1,5 +1,23 @@
-# gitleaks configuration. The default ruleset runs as-is; this repository has
-# no allowlist entries. Add one only with a reason (for example, a test
-# fixture that carries a fake credential on purpose).
+# gitleaks configuration. The default ruleset runs as-is; allowlist entries
+# exist only with a reason (for example, a test fixture that carries a fake
+# credential on purpose).
+#
+# scripts/wizard/setup.sh pre-declares the captured-secret vars as EMPTY
+# strings so shellcheck can see an assignment (ask_secret fills them through
+# `printf -v`, which it cannot see). The empty placeholder trips
+# generic-api-key's `..._KEY = ...` shape with zero secret in it — the
+# fingerprints below are exactly the five declarations, none of which ever
+# carries a value.
 [extend]
 useDefault = true
+
+[allowlist]
+description = "the wizard's empty pre-declarations (see the wizard's SC2154 note)"
+paths = ['''scripts/wizard/setup\.sh''']
+regexes = [
+  '''OPENCODE_ZEN_API_KEY=""''',
+  '''TOGETHER_API_KEY=""''',
+  '''ANTHROPIC_API_KEY=""''',
+  '''OPENAI_API_KEY=""''',
+  '''GITHUB_CODE_AGENT_PAT=""''',
+]

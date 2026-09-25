@@ -542,4 +542,25 @@ saw "a drifted unit file FAILs against the repo template" \
   "differs from scripts/vps/systemd/herdr.service"
 cp "$REPO_ROOT/scripts/vps/systemd/herdr.service" "$HF/systemd/herdr.service"
 
+# 5. THE FRONT DOOR SCHEDULES NOTHING. The #137 flow's guarantee: the wizard
+# drives only the two installers and writes only the local .env — it carries
+# none of the strings a SCHEDULER would need. The teardown checklist it prints
+# for an existing brain legitimately names schedule-removal lines, so the list
+# is the strings that CREATE or re-arm automation — the ones the automations
+# pivot (#136/#143) deleted from the repo, plus the goose scheduler flag the
+# pivot dropped — and none of those are removal-shaped.
+WIZARD="$REPO_ROOT/scripts/wizard/setup.sh"
+SCHED_HITS=""
+for bad_string in "--enable-scheduler" "register-schedules" "run-recipe" \
+                  "notify_failure" "crontab" "anacron" "brew services start"; do
+  if grep -qF -- "$bad_string" "$WIZARD"; then
+    SCHED_HITS="$SCHED_HITS $bad_string"
+  fi
+done
+if [ -z "$SCHED_HITS" ]; then
+  pass "the front-door wizard carries no scheduler-shaped string"
+else
+  fail "the front-door wizard mentions:$SCHED_HITS — nothing schedules anything"
+fi
+
 finish --skips

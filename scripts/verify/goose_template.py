@@ -71,7 +71,7 @@ FRAGMENT_ORDER: Final[tuple[str, ...]] = ("todoist", "playwright", "tavily")
 # not written down anywhere — assertion 2 derives it from the generated file.
 EXPECTED_COMMENT_TOKENS: Final[dict[str, int]] = {
     "config.base.yaml": 62,
-    "todoist.yaml": 38,
+    "todoist.yaml": 39,
     "playwright.yaml": 16,
     "tavily.yaml": 7,
 }

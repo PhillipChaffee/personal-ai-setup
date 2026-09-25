@@ -42,7 +42,7 @@ No task manager is part of the stack yet — the `todoist` extension in
 `config/goose/config.yaml` ships `enabled: false` as a worked example, and
 nothing depends on tasks.
 Criteria when choosing: a real API or first-party MCP server (Todoist has
-`https://ai.todoist.net/mcp`, OAuth, zero key management — still the
+`https://ai.todoist.net/mcp` with one typed personal API token — still the
 lowest-friction option), export path, and no-training data posture. To adopt
 one: flip the extension on (or swap its `uri`) and re-run
 `scripts/verify/check-mcp.sh`.

@@ -23,12 +23,23 @@ the full list is in [Before you start](#before-you-start). Then:
 ```bash
 git clone https://github.com/PhillipChaffee/personal-ai-setup.git
 cd personal-ai-setup
-./scripts/mac/bootstrap-mac.sh
+./scripts/wizard/setup.sh
 ```
 
-That is the base install, and it **runs start to finish without asking you
+The wizard is the front door. It asks six questions — scope (fresh end-to-end
+or the existing brain), which coding agents live in herdr panes, Mac extras,
+the provisioning/teardown confirmations, the keys it captures, verify — and
+then drives both installers: `bootstrap-mac.sh` locally and `deploy-vps.sh`
+over SSH on the brain. It writes exactly the keys it captures or generates
+into `/data/secrets.env` over SSH, stores the Mac's copies in the Keychain,
+and prints everything a human must do by hand (Tailscale toggles, the LUKS
+passphrase, terraform's prompts, Desktop connect). Nothing it does is
+scheduled. Stop it any time and re-run — it remembers saved values.
+
+Prefer to drive the installers yourself? The bootstrap below is the same
+base install, and it **runs start to finish without asking you
 anything**. It puts the goose CLI and Desktop, the toolchain and the
-skills/agents/rules onto the Mac at the versions pinned in `config/pins.yaml`,
+skills onto the Mac at the versions pinned in `config/pins.yaml`,
 never overwriting a file you already have. Re-running it is safe.
 
 Want a subset? The flags resolve against the same `config/units/*.yaml` catalog
@@ -93,7 +104,7 @@ one that is not there. `bin/pai list` prints the same catalog on your machine.
 | [base-goose](docs/setup/20-mac-setup.md) | base | mac | Pinned goose CLI and Desktop cask, four custom providers, config template. | `bootstrap-mac.sh` | `check-goose.sh`, `check-providers.sh` |
 | [base-secrets](docs/setup/20-mac-setup.md) | base | both | Keychain roster on the Mac, /data/secrets.env on the brain, and the deploy gate. | by hand | — |
 | [base-toolchain](docs/setup/20-mac-setup.md) | base | mac | macOS guard, Homebrew presence check, and the uv/node/jq formulae. | `bootstrap-mac.sh` | — |
-| [coding-pack](docs/cursor-port.md) | default_on | mac | Eleven ported Cursor skills, 30 OpenCode subagents, and the global AGENTS.md rule set. | `bootstrap-mac.sh` | — |
+| [coding-pack](docs/cursor-port.md) | default_on | mac | Eleven ported Cursor skills; the ported OpenCode agents and AGENTS.md stay in the repo as paste-in material. | `bootstrap-mac.sh` | — |
 | [goose-desktop](docs/setup/20-mac-setup.md) | default_on | mac | Human-only, turn OFF Desktop auto-update and pick the custom providers on first run. | by hand | — |
 | [herdr](docs/setup/70-coding-agents.md) | default_on | vps | The herdr server, its dedicated user and namespace, the pinned binary, and the coding-agent catalog. | `deploy-vps.sh` | `check-herdr.sh` |
 | [brain](docs/setup/50-vps-brain.md) | opt_in | vps | Hetzner VPS, LUKS /data, goose's path root on it, and goose-serve over tailnet TLS. | `deploy-vps.sh` (planned) | `check-brain.sh`, `check-security.sh --local` |
@@ -198,8 +209,8 @@ Goose CLI (offline fallback)                                      ├─ coding 
 │   ├── goose/custom_providers/   # together (DEFAULT), zen-openai, zen-anthropic, zen-free (trains on data)
 │   ├── goose/goosehints.example  # identity, routing rules, PHI standing rules
 │   ├── goose/acp-contract.json   # the captured ACP method list check-connectors.sh asserts against
-│   ├── opencode/AGENTS.md        # global coding/workflow rules template
-│   ├── opencode/agents/          # 30 review/research subagents
+│   ├── opencode/AGENTS.md        # global coding/workflow rules — paste-in for a self-installed OpenCode
+│   ├── opencode/agents/          # 30 review/research subagents — paste-in for a self-installed OpenCode
 │   ├── opencode/project-rules/   # per-project rule snippets (python, django, linear…) — paste-in
 │   ├── skills/                   # 11 skills, Claude-compatible SKILL.md (→ ~/.agents/skills) — read by BOTH OpenCode and goose
 │   ├── connectors/               # 3 connector manifests + the contract in that directory's README
@@ -207,6 +218,7 @@ Goose CLI (offline fallback)                                      ├─ coding 
 │   └── env/secrets.env.example   # every secret VAR NAME (no values) — copy to /data/secrets.env
 └── scripts/
     ├── pai/                      # the `pai` dispatcher, doctor, goosecfg
+    ├── wizard/                   # the front door: six questions, then it drives both installers
     ├── mac/                      # bootstrap-mac.sh, keychain-secrets.sh
     ├── vps/                      # deploy-vps.sh, LUKS setup/unlock, systemd units
     ├── sync-models.sh            # refresh provider model lists from the live Zen/Together catalogs

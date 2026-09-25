@@ -22,7 +22,8 @@ HTTP.
 
 There are four ways to add one — the UI, `goose configure`, a `goose://extension?…`
 deeplink, or editing `config.yaml`. This repo uses a fifth that the others are built on:
-the **ACP custom methods**, because that is the only path a phone can drive.
+the **ACP custom methods**, because that is the path a headless brain can drive — and
+the only one whose every write is followed by a read-back that has to agree.
 
 | Method | Does |
 |---|---|
@@ -172,7 +173,7 @@ Three listening situations, worth keeping apart because they fail differently:
 | Interface | Status | What uses it |
 |---|---|---|
 | **Public** (Hetzner NIC) | all inbound dropped | nothing — this is what makes webhooks impossible |
-| **Tailnet** (WireGuard) | reachable from your devices | `goose serve --host "$TS_IP" --port 3284` — how your phone reaches the brain at all |
+| **Tailnet** (WireGuard) | reachable from your devices | `goose serve --host "$TS_IP" --port 3284` — how your Mac reaches the brain at all |
 | **Loopback** (`127.0.0.1`) | never crosses a network interface | the OAuth callback listener; Proton Bridge's IMAP on `127.0.0.1:1143` |
 
 Per connector: Todoist's remote MCP is an
@@ -183,9 +184,8 @@ never touches a network interface.
 **The corollary that matters:** the OAuth failure below is *not* a firewall problem, and
 opening a port would not fix it. goose hardcodes the redirect as
 `http://127.0.0.1:{port}/oauth_callback`, so "localhost" resolves to whichever machine the
-*browser* is on — on a phone, the phone. Even with the brain's port world-reachable, goose
-would never emit a redirect URI pointing at it, and Google would not accept a `*.ts.net` one
-regardless. Two independent walls, and only one of them is yours to move.
+*browser* is on. Even with the brain's port world-reachable, goose would never emit a
+redirect URI pointing at it, and Google would not accept a `*.ts.net` one regardless. Two independent walls, and only one of them is yours to move.
 
 ## Least privilege is a field, and it fails open
 
@@ -213,36 +213,31 @@ narrows the OAuth consent screen, and `available_tools` is what narrows the agen
 repo's older `--tool-tier core --tools gmail calendar tasks` did neither well — it left
 `tasks` non-functional and requested more than it used.
 
-## Can it be done from the phone?
+## Where first-run auth happens
 
-Honestly: **it depends entirely on how the service authenticates**, and for OAuth the answer
-today is no.
+Honestly: **it depends entirely on how the service authenticates**, and for OAuth the
+answer today is that a human sits at a shell on the brain — no script performs it.
 
-Every manifest therefore carries a `first_run_auth` field, and the workflow **refuses to
-start a connection it cannot finish** rather than stranding you 40 minutes in.
+Every manifest therefore carries an `auth_notes` field that says where the credential
+comes from and who can produce it. (An earlier draft also carried `first_run_auth` /
+`phone_completable`, fields that asserted where a phone client could finish auth; they
+died with the phone story, #140, removal rides #144 — the audience they described is
+gone, and the credential facts below are what remains.)
 
-| `first_run_auth` | Meaning | Phone |
-|---|---|---|
-| `none` | No credential (e.g. a local file path) | **Yes** |
-| `phone_secret` | An API token or app password you can type | **Yes** |
-| `brain_browser` | Interactive consent/login on the brain itself | No — needs a laptop |
-| `laptop_oob` | Out-of-band setup, then copy state to the brain | No |
-
-### Why OAuth cannot be completed from a phone
+### Why OAuth cannot be automated on the brain
 
 Not a limitation of this repo — a property of goose at 1.46.0, re-verified in the source at
 the pinned **v1.51.0** on 2026-09-23, and on `main` alike. Three
-independent mechanisms, each individually fatal:
+independent mechanisms, each individually fatal to any non-interactive run:
 
 1. **The callback is loopback-bound on the brain.** The redirect URI is hardcoded
    `http://127.0.0.1:{port}/oauth_callback`; `GOOSE_OAUTH_CALLBACK_PORT` changes only the
-   port. Your phone's browser resolves `127.0.0.1` to *the phone*.
+   port. No browser on the brain, no callback.
 2. **The authorization URL never leaves the brain.** It is emitted with `warn!` +
    `eprintln!` + `webbrowser::open` — a no-op on a headless server — and appears in no ACP
-   message. The phone never learns the URL to open.
+   message.
 3. **URL-mode elicitation, the one mechanism that could carry it, is explicitly refused** at
-   goose's ACP bridge, and the phone client advertises no elicitation capability, so even
-   form elicitation is auto-cancelled.
+   goose's ACP bridge, so no client — phone or laptop — can carry the URL in-session.
 
 There is no device-code grant anywhere in the MCP path. Upstream issue #11086 tracks this.
 
@@ -251,11 +246,11 @@ Google's TV/limited-input device flow does not cover Gmail/Calendar/Tasks scopes
 Tailscale-HTTPS redirect URI cannot be registered because `*.ts.net` can never be a verified
 Authorized Domain; and a domain you own works but presumes you own one.
 
-**So the phone-native happy path is `phone_secret`, not OAuth** — bearer-token services and
+**So the headless happy path is a typed token, not OAuth** — bearer-token services and
 app-password services. Todoist is the worked example: its first-party remote MCP accepts a
-personal API token as an `Authorization` header, which is headless, phone-completable, and
-keeps goose's OAuth machinery out of the picture entirely. Where a service *only* does
-OAuth, the manifest says `brain_browser` and points at a runbook.
+personal API token as an `Authorization` header, which is headless and keeps goose's OAuth
+machinery out of the picture entirely. Where a service *only* does OAuth, the manifest's
+`auth_notes` says a human sits at the brain's shell and points at a runbook.
 
 ## Privacy is a gate, not a footnote
 
@@ -280,10 +275,9 @@ Saying this plainly is more useful than a half-working integration:
 
 - **Push / webhooks.** Zero public inbound ports is a security invariant
   ([`security.md`](security.md)). Anything push-only is out.
-- **Sending files from the phone.** The mobile client can only send text content blocks;
-  there is no attachment path at any layer. This is why `periodic_export` (health records,
-  bank statements) is **Mac-only** today, not phone-runnable — the export has to reach
-  `/data` some other way.
+- **Sending files at all.** There is no attachment path at any layer of goose. This is
+  why `periodic_export` (health records, bank statements) is **Mac-only** — the export
+  file has to reach `/data` some other way, by hand.
 - **Proton Calendar and Proton Contacts.** No CalDAV, no supported API. Proton *Mail* works
   via Bridge; the rest of the suite does not. Half of "all Proton services" is a documented
   dead end rather than an open task.
