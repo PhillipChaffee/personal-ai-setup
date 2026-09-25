@@ -202,56 +202,48 @@ go stale silently.
 Run `pin-models.sh` monthly even when nothing is broken — catching a deprecation
 notice beats catching a 404 mid-session.
 
-## Code agent chat won't start, wake, or answer
+## A coding-agent pane won't start, resume, or answer
 
-Symptoms: the app's Code tab shows a chat stuck in "waking…", `POST /api/chats`
-returns 502, or the gateway itself is unreachable.
+Symptoms: `herdr machine add` fails, a pane shows an agent that never starts,
+or `check-herdr.sh` goes red.
 
-- **Gateway unreachable (connection refused / TLS error).** The manager binds
-  the tailnet IP only and exits until tailscaled has an IPv4 — check
-  `systemctl status code-agent-manager` and `tailscale status`. After a
-  reboot, `/data` is locked until `luks-unlock.sh` runs; the unit stays down
-  by design (`RequiresMountsFor=/data`). No TLS? That is expected on a fresh
-  brain: the manager serves plain HTTP when no TLS cert is present (the LE
-  cert machinery left with the phone story) and logs a warning — HTTP Basic
-  still applies on every route.
-- **401 from the gateway.** Password mismatch: the app's Code settings must
-  carry the current `OPENCODE_SERVER_PASSWORD` (username `opencode`). A 401
-  from *inside* a chat container is not a fault: since #115 a container holds
-  only its own derived secret, which the gateway does not accept.
-- **502 "rejected the manager's credential", from a wake or a chat request.**
-  The container was created under a different `OPENCODE_SERVER_PASSWORD` and
-  `podman start` reuses env baked at create, so starting it can never fix it.
-  A rotated password is NOT this: the manager rebuilds such a container from
-  the volume and retries, once, before it will say this at all, so a rotation
-  heals itself and never reaches here. Seeing it means the rebuilt container
-  refused too — an engine that reported success without replacing the
-  container, a name collision, or a container recreated by hand. Do what the
-  message says — `podman rm -f code-agent-<id>`, then wake — and check
-  `journalctl -u code-agent-manager` for the rebuild it logged just before.
-  The volume keeps the workspace, the config and the transcript, so nothing is
-  lost.
-- **Create fails with a 403.** The repo isn't in
-  `/data/code-agents/repos.json`, or you picked a zen-free model for a repo
-  not flagged `public_throwaway` — both are policy, not bugs
-  (`docs/code-agents.md`).
-- **Create fails with a 409.** `CODE_AGENT_MAX_ACTIVE` (default 2) chats are
-  already running — stop one from the app or wait for idle spin-down.
-- **Create/wake 502.** The container didn't come up in 90s. Look at
-  `journalctl -u code-agent-manager -n 50` and
-  `podman logs code-agent-<id>`. First create after a deploy pulls the
-  OpenCode base image — slow networks can blow the window; re-try once.
-  Clone failures usually mean the PAT lacks that repo
-  (fine-grained scope: docs/setup/70-code-agents.md §1).
-- **Zen models error inside a chat** ("provider not authenticated"). The
-  seeded auth.json shape may have drifted with an opencode upgrade — check
-  `scripts/vps/code-agent-manager.py` (`seed_auth`) against what
-  `opencode auth login` writes, and re-run
-  `scripts/verify/check-code-agents.sh --probe`.
-- **A chat vanished from the running list.** Idle spin-down is normal
-  (default 15 min); the volume keeps everything. Opening the chat wakes it.
-  If wake says the container is `absent` (e.g. after `podman rm` or an image
-  upgrade), wake recreates it from the volume — that's the designed path.
+- **`herdr machine add` fails at the SSH step.** The SSH target must be the
+  **herdr user** (`herdr@<brain>`) — the server's own user owns the 0600
+  socket, and no other identity can reach it. Your Mac's key must be in
+  `/data/herdr/.ssh/authorized_keys` first (docs/setup/70-coding-agents.md §4),
+  and after a reboot `/data` is locked until `luks-unlock.sh` runs, so the
+  user's home (and its keys) is absent by design (`RequiresMountsFor=/data`).
+- **`machine add` says the remote binary was not found.** The bridge resolves
+  `herdr` from the login shell's PATH or at `$HOME/.local/bin/herdr`; the
+  installer provides both. If a manual install moved things, re-run
+  `deploy-vps.sh --only herdr` rather than hand-editing PATHs.
+- **The check reports "herdr.service not active".** After a reboot this is
+  EXPECTED until `luks-unlock.sh` runs. Otherwise:
+  `journalctl -u herdr -n 50`. The unit starts against a missing
+  `/data/herdr/secrets.env` never — the installer always writes the file
+  (server-only runs write an empty one), so its absence means a deploy was
+  interrupted: re-run `deploy-vps.sh --only herdr`.
+- **The check reports an env-set mismatch.** `/data/herdr/secrets.env` is
+  written pick-aware from `/data/secrets.env` + `agents.list` and is never
+  hand-edited. A mismatch means the pick list or the roster changed outside a
+  deploy — update `/data/secrets.env` (and `agents.list` via a re-deploy with
+  the right `--coding-agents`), never the herdr env directly.
+- **A clone fails inside a pane.** The PAT lacks that repo — the credential
+  scope IS the allowlist (docs/setup/70-coding-agents.md §2). Issue a new
+  fine-grained token with the repo selected, update `/data/secrets.env`,
+  re-run the deploy, revoke the old token.
+- **A pane wrote outside `/data/herdr`?** It cannot, by namespace — a clone
+  pointed outside it fails, and `check-herdr.sh` probes the boundary. If the
+  probe itself fails, the namespace or the permissions regressed: re-run the
+  deploy, then `systemd-analyze verify /etc/systemd/system/herdr.service`.
+- **An agent session didn't resume after a server restart.** Native resume
+  needs the official integrations (opencode/pi) at min versions and the agent
+  config dirs the installer pre-creates. Re-run `deploy-vps.sh --only herdr`
+  and check `herdr integration list`.
+- **The plane went red after a herdr update was run by hand.** Never run
+  `herdr update` on the brain — the binary is digest-pinned and the update
+  checks are off. Reinstall from the pin:
+  `deploy-vps.sh --only herdr`.
 
 ## `pai remove <id>` refuses, for every unit
 
@@ -280,8 +272,8 @@ you wrote first, and nothing on disk records which. A remover driven off `owns:`
 both; the only sound predicate is content equality against the repo source.
 
 **What it does tell you.** `pai remove brain` names `/data` and
-`/data/goose` as retained; `pai remove code-agents` names `/data/code-agents` and the
-subuid range. Data paths are not a
+`/data/goose` as retained; `pai remove herdr` names `/data/herdr` and its
+tree. Data paths are not a
 removable kind — that is structural, not a list someone has to remember to
 extend. `pai remove --help` states the two doctor facts above.
 

@@ -1,0 +1,243 @@
+---
+# herdr — the coding-agent runtime on the brain: the herdr server owning real
+# terminal panes, a dedicated low-privilege user whose home IS the encrypted
+# volume, the digest-pinned binary, and the setup-time coding-agent catalog
+# (the #138 matrix). The per-chat-container plane that used to be this unit is
+# gone (docs/adr/0001); this is its replacement, per the revised epic (issue
+# #139's resolution comment — the authoritative spec).
+#
+# DESCRIBES TODAY. unit_herdr() (deploy-vps.sh) is gated by --with/--without/
+# --only plus the new --coding-agents flag, and it is OFF BY DEFAULT: a bare
+# `deploy-vps.sh` installs brain core + goose-serve only, because hand runs
+# never write credentials unasked (#138's "unpicked = nothing written"). The
+# tier below is the WIZARD menu's default, not this installer's — see the
+# blocker on the two defaults.
+id: herdr
+manifest_version: 1
+verified_on: "2026-09-24"
+summary: The herdr server, its dedicated user and namespace, the pinned binary, and the coding-agent catalog.
+host: vps
+tier: default_on
+requires: [brain]
+
+# Copied VERBATIM from the "Budget" table in README.md (the validator requires
+# `line` and `amount` on the same row of the named file). The plane bills
+# through base-goose's two inference rows and consumes disk: worktrees, repos
+# and the per-agent state all live on the same 10 GB LUKS volume, and
+# check-herdr.sh fails at 75% of the volume (T9) — a gate, not a fix.
+cost:
+  - line: Coding agents on the brain (herdr panes)
+    amount: no new account — bills to the Zen/Together lines above, plus disk
+    source: README.md
+
+installer:
+  script: scripts/vps/deploy-vps.sh
+  function: unit_herdr
+  status: present
+
+verify:
+  - scripts/verify/check-herdr.sh
+runbook: docs/setup/70-coding-agents.md
+
+# The herdr-scoped roster (epic §2): the union of the picked agents' rows per
+# the #138 matrix + GITHUB_CODE_AGENT_PAT. The DEPLOYED set is dynamic — the
+# installer records the pick list at /data/herdr/config/agents.list and
+# check-herdr.sh asserts the env set exactly against it (T5, pick-aware).
+# Vendor keys beat the Zen key when both are present (vendor displayed first
+# at pick time, #138); the goose secret is deliberately NOT here — it stays
+# goose-scoped, never in herdr's environment.
+secrets:
+  - key: TOGETHER_API_KEY
+    # OpenCode, Pi and Grok Build bill through Together (the default biller).
+    # Row duplicated with base-secrets (which stores it); this row records the
+    # herdr plane as a READER — same prompt, same generate, per P6.
+    store: vps
+    secret: true
+    optional: false
+    prompt: >-
+      Together AI key (docs/setup/10-accounts.md §2) — the same value as the
+      Mac Keychain entry
+    generate: null
+  - key: OPENCODE_ZEN_API_KEY
+    # Codex bills through Zen's Responses wire when its pick chose Zen (the
+    # #146-verified shape); a Claude Code pick on Zen copies it under
+    # ANTHROPIC_AUTH_TOKEN with the Zen base URL instead. Row duplicated with
+    # base-secrets per P6.
+    store: vps
+    secret: true
+    optional: false
+    prompt: >-
+      OpenCode Zen console key (docs/setup/10-accounts.md §1) — the same value
+      as the Mac Keychain entry
+    generate: null
+  - key: ANTHROPIC_API_KEY
+    # The Claude Code vendor credential, asked at pick time. Optional: the
+    # pick can bill through Zen instead (then the env carries derived
+    # ANTHROPIC_AUTH_TOKEN/ANTHROPIC_BASE_URL rows instead of this name).
+    store: vps
+    secret: true
+    optional: true
+    prompt: >-
+      Anthropic API key for a Claude Code pick (docs/setup/10-accounts.md §4)
+      — optional: a pick can bill through Zen instead
+    generate: null
+  - key: OPENAI_API_KEY
+    # The Codex vendor credential, asked at pick time. Optional: the pick can
+    # bill through Zen instead (then config.toml names the Zen key).
+    store: vps
+    secret: true
+    optional: true
+    prompt: >-
+      OpenAI API key for a Codex pick (docs/setup/10-accounts.md §4) —
+      optional: a pick can bill through Zen instead
+    generate: null
+  - key: GITHUB_CODE_AGENT_PAT
+    # Fine-grained, and the scope IS the allowlist (TN7): no repos.json comes
+    # back — the credential scope is the gate. Required whenever ≥1 agent is
+    # picked (agents clone and push in panes with it).
+    store: vps
+    secret: true
+    optional: false
+    prompt: >-
+      fine-grained GitHub PAT for the coding agents: scope it to ONLY the
+      repositories the agents should reach, permissions Contents + Pull
+      requests (read/write). The scope IS the allowlist
+    generate: null
+
+owns:
+  - {kind: repo_file, target: scripts/vps/systemd/herdr.service}
+  - {kind: repo_file, target: scripts/verify/check-herdr.sh}
+  - {kind: repo_file, target: config/herdr/config.toml}
+  - {kind: repo_file, target: docs/setup/70-coding-agents.md}
+  - {kind: systemd_unit, target: herdr.service}
+  # The whole tree the unit writes: the user's home IS the plane. The
+  # per-agent subdirectories (config/, state/, repos/, worktrees/, bin/, and
+  # the per-CLI config dirs) all live under this one root.
+  - {kind: data_path, target: /data/herdr}
+  - {kind: data_path, target: /data/herdr/secrets.env}
+  - {kind: data_path, target: /data/herdr/config/agents.list}
+  # Host-level side effects with no file to name, all from deploy-vps.sh's
+  # unit_herdr(): useradd herdr (--shell /bin/bash — the SSH bridge needs a
+  # real login shell), the ~/.bashrc/.profile env block, and the
+  # /data/herdr/.local/bin/herdr discovery symlink.
+  - {kind: manual, target: "user herdr (home /data/herdr, login shell /bin/bash)"}
+  - {kind: manual, target: "herdr user's .bashrc/.profile XDG+PATH block"}
+
+manual_steps:
+  - id: fill-the-credential-rows
+    summary: Add the picked agents' credential rows to /data/secrets.env
+      (TOGETHER_API_KEY for OpenCode/Pi/Grok Build; ANTHROPIC_API_KEY or the
+      Zen key for Claude Code; OPENAI_API_KEY or the Zen key for Codex) and
+      GITHUB_CODE_AGENT_PAT. The installer copies exactly the picked union and
+      fails loudly on a missing row.
+    doc: docs/setup/70-coding-agents.md#3-fill-the-credential-rows
+    blocking: true
+  - id: issue-the-git-pat
+    summary: Issue the fine-grained GitHub PAT scoped to ONLY the repos the
+      agents should reach (Contents + Pull requests, read/write). The scope is
+      the allowlist — there is no repos.json any more.
+    doc: docs/setup/70-coding-agents.md#2-issue-the-git-pat
+    blocking: true
+  - id: authorize-the-mac-key
+    summary: Add your Mac's public key to /data/herdr/.ssh/authorized_keys on
+      the brain — clients attach as the herdr USER (the server's own user owns
+      the 0600 socket; a different SSH identity cannot reach it).
+    doc: docs/setup/70-coding-agents.md#4-authorize-your-mac-key-for-herdr
+    blocking: true
+  - id: attach-the-mac
+    summary: From the Mac, run `herdr machine add herdr@<brain>` — the brain
+      panes appear next to the local ones. Nothing installs on the Mac; the
+      client/server version drift is safe by the endpoint-generation contract.
+    doc: docs/setup/70-coding-agents.md#5-attach-from-the-mac
+    blocking: false
+
+blockers:
+  - id: deploy-restart-kills-panes
+    severity: warn
+    detail: >-
+      unit_herdr restarts herdr.service on every deploy (the stale-unit
+      lesson — `enable --now` is a no-op on a running unit). herdr restores
+      the workspace layout and resumes official-integration sessions by id,
+      but a mid-turn pane does not come back mid-turn. Deploy when nothing is
+      mid-turn — the old plane's rule, carried over.
+  - id: two-defaults-and-why
+    severity: note
+    detail: "tier: default_on is the WIZARD menu's default (the wizard pre-checks
+      the unit), while deploy-vps.sh's bare run selects nothing: a hand run
+      must never write credentials unasked (#138). The wizard passes --with
+      herdr --coding-agents <picked> explicitly; a human opts in with the same
+      flags. The tier does not, and must not, change the installer's default."
+  - id: vendor-first-is-deterministic
+    severity: note
+    detail: When both a vendor key (ANTHROPIC_API_KEY / OPENAI_API_KEY) and the
+      Zen key are present, the vendor key wins — the wizard displays the
+      vendor as the pick default (#138). The same rule is implemented in
+      check-herdr.sh's exact-set derivation, so the deployed env is always
+      reconstructible from /data/secrets.env + agents.list.
+  - id: claude-code-zen-base-url-is-inferred
+    severity: note
+    detail: "A Claude Code pick on Zen is plumbed with ANTHROPIC_BASE_URL=
+      https://opencode.ai/zen plus ANTHROPIC_AUTH_TOKEN (the captured Zen
+      key). Zen documents the Anthropic wire at /zen/v1/messages and Claude
+      Code appends /v1/messages to ANTHROPIC_BASE_URL, so the join is inferred
+      rather than blessed by either vendor's docs — verify once with a live
+      request from a pane, and record the result in docs/model-routing.md."
+  - id: opencode-credential-rides-env
+    severity: note
+    detail: >-
+      The #138 matrix names OpenCode's credential placement as the brain
+      auth.json; the implementation rides the environment instead — OpenCode's
+      models.dev catalog marks the togetherai provider with exactly
+      TOGETHER_API_KEY, so the env activates the provider and no auth.json
+      plumbing exists to drift. Recorded as the T6 delta.
+  - id: grok-installer-has-no-checksum
+    severity: note
+    detail: "The Grok Build installer publishes no checksum anywhere upstream
+      (no GitHub releases; the installer verifies nothing). The pinned install
+      is TLS-only — trust the transport or skip the agent. Recorded rather
+      than silently accepted."
+  - id: free-model-refusal-is-docs-only
+    severity: warn
+    detail: The old manager 403'd Zen's free-model ids on the wire; that
+      runtime gate DIED with the container plane. A herdr pane is a full CLI
+      with the billing env, and nothing intercepts its model choice. The
+      privacy rule lives in docs/model-routing.md hard rule 1 (Zen free
+      models never see personal data; the Codex-client FreeTierError caveat),
+      and each new CLI's free-model ids are recorded there. This is the one
+      enforcement the pivot genuinely lost — know it before running agents
+      against personal data.
+  - id: panes-are-not-sandboxed
+    severity: warn
+    detail: >-
+      herdr ships no sandbox: a pane is a real shell as the herdr user
+      under the unit's systemd namespace. The boundary is that user plus
+      /data/herdr (system dirs readable, outbound network unrestricted — the
+      same accepted risk as the old containers). A pane's bash can clone
+      anywhere under /data/herdr and nothing outside it; that is the intended
+      boundary, not a loss (epic §5).
+  - id: absent-is-indistinguishable-from-failed
+    severity: note
+    detail: "check-herdr.sh exits 2 (SKIP, not FAIL) when neither
+      herdr.service nor /data/herdr exists — a brain deployed without --with
+      herdr carries no red check. It CANNOT tell that state apart from a
+      failed herdr install; if you selected the unit, re-run
+      `deploy-vps.sh --only herdr` and read its output."
+
+uninstall:
+  supported: false
+  reason: "Nothing removes the plane — the herdr epic's teardown decision is
+    FULLY MANUAL: the deploy script gains no teardown logic and no automated
+    deletion of any kind. Disabling herdr.service stops new panes; the herdr
+    user, /data/herdr (worktrees, repos, state) and the env file all survive,
+    and the GitHub PAT must be revoked at GitHub. The wizard prints the manual
+    checklist; check-brain.sh's legacy arm is its completion signal."
+
+notes: >-
+  The namespace contract is the load-bearing half of this unit:
+  herdr.service's TemporaryFileSystem=/data:ro + BindPaths=/data/herdr +
+  ProtectHome=true make /data BE /data/herdr inside the service and every pane
+  under it — TN2's write probes hold by namespace, not just permissions. The
+  environment block (HOME, XDG_CONFIG_HOME, XDG_STATE_HOME) is a CONTRACT with
+  the SSH remote-attach bridge, not an optimization: the bridge resolves the
+  0600 socket from the login session's env, and unit_herdr() writes the same
+  values into the herdr user's shell init so both sides agree.

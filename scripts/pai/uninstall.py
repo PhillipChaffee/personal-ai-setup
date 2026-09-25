@@ -304,7 +304,7 @@ def retained(manifest: Manifest) -> list[Retained]:
     Kind-driven, so the answer for a future manifest is right before anyone
     has read it: everything outside REMOVABLE_KINDS is retained, and
     retain_reason() says why for each kind. This is where AC #4 lives — /data,
-    /data/goose, /data/secrets.env and /data/code-agents are all
+    /data/goose, /data/secrets.env and /data/herdr are all
     `data_path`, and `data_path` is not a removable kind.
 
     A kind nothing recognises is retained TOO, and is the reason this filter is

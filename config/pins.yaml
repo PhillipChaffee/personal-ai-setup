@@ -47,3 +47,48 @@ goose:
   # itself catches the other half: a capture edited by hand to make the check
   # pass. Evidence, not configuration.
   acp_contract_sha256: "7b01e89a32f45092c22b5332187ebec77f1f002fc2cd3e548c2be594dd67e6ae"
+
+herdr:
+  # The brain's coding-agent runtime. The official install.sh cannot pin, so
+  # unit_herdr() downloads this exact release asset, asserts the sha256 below
+  # against the downloaded bytes, and installs it at /data/herdr/bin/herdr.
+  # The digest is verifiable against the GitHub release API and herdr.dev's
+  # latest.json (which retains per-release digests).
+  version: "0.9.1"
+  asset: "herdr-linux-x86_64"
+  sha256: "2a02fed16beb651ef006e1d43f048f652ca4dc58ad053cd2d44450563d5c54b7"
+  verified_on: "2026-09-24"
+
+coding_agents:
+  # The setup-time catalog (the #138 matrix): what unit_herdr() installs for
+  # each id on `deploy-vps.sh --with herdr --coding-agents <list>`, and what
+  # the wizard (#144) will offer on its agent screen. Every CLI the wizard can
+  # install gets a pin here, catalog included.
+  #
+  # Install shapes, verified 2026-09-24 against official docs:
+  #   opencode     pinned GitHub release asset (no checksums file upstream;
+  #                the per-asset digest below IS the verification — re-read it
+  #                from the release API when bumping, never from the page)
+  #   pi           npm at the pinned version (--ignore-scripts, as documented)
+  #   claude_code  the documented installer script; it verifies sha256 itself
+  #                against a GPG-signed manifest — pin the version, it pins
+  #                the bytes. DISABLE_AUTOUPDATER is set in the seeded settings
+  #                (a native install otherwise self-updates past the pin)
+  #   codex        npm at the pinned version (registry integrity + provenance)
+  #   grok_build   the official installer at a pinned version; NO checksum is
+  #                published anywhere upstream — that install is TLS-only, and
+  #                herdr.yaml records it as a blocker
+  opencode:
+    version: "1.18.32"
+    asset: "opencode-linux-x64.tar.gz"
+    sha256: "3046e0404fdc60fb80307e7a47824ba07477364178a4d09baa8548496dd6d43b"
+  pi:
+    version: "0.87.1"
+    package: "@earendil-works/pi-coding-agent"
+  claude_code:
+    version: "2.1.282"
+  codex:
+    version: "0.156.1"
+    package: "@openai/codex"
+  grok_build:
+    version: "1.0.41"

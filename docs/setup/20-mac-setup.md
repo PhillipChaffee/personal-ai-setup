@@ -148,7 +148,7 @@ in plaintext.
 When you add an add-on later, name it and only its secrets are asked for:
 
 ```bash
-./scripts/mac/keychain-secrets.sh --units code-agents        # the code-agent buzz topic
+./scripts/mac/keychain-secrets.sh --units herdr              # one add-on's Keychain names
 ./scripts/mac/keychain-secrets.sh --units connectors         # the Tavily key
 ./scripts/mac/keychain-secrets.sh --rewrite-only             # just refresh ~/.zshrc
 ```

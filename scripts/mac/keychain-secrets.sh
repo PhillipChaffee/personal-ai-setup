@@ -58,7 +58,7 @@ Keychain, under service "$SERVICE", then rewrites the export block in
   --units a,b,c   the unit ids to prompt for. Default: every base and
                   default_on unit, which is what a bootstrap install leaves
                   behind. Add an opt-in unit's id when you install it --
-                  \`--units code-agents\` asks for that unit's names only.
+                  \`--units herdr\` asks for that unit's names only.
   --rewrite-only  skip every prompt and only regenerate the ~/.zshrc block.
                   This is the one mode that needs no terminal.
 
