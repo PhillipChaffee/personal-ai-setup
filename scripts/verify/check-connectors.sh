@@ -452,12 +452,11 @@ def audit_fields(mcp, http, schema_seen):
 
     # The OAuth fields exist at the pin since v1.47.0; the 1.51.0 bump
     # re-verified this exact set against crates/goose/acp-schema.json on
-    # 2026-09-23, along with the phone-side OAuth verdict in docs/connecting.md:
-    # the callback is loopback-bound, the authorization URL is only announced
-    # via warn!/eprintln!, and ACP URL elicitation is refused — OAuth still
-    # cannot be completed from a phone. This repo's credential path stays
-    # envKeys; the manifests never send any of the three, and the manifest
-    # validator below rejects all three outright.
+    # 2026-09-23: the callback is loopback-bound, the authorization URL is
+    # only announced via warn!/eprintln!, and ACP URL elicitation is refused —
+    # OAuth cannot be driven headlessly on the brain. This repo's credential
+    # path stays envKeys; the manifests never send any of the three, and the
+    # manifest validator below rejects all three outright.
     oauth = sorted(k for k in ("clientId", "clientSecretKey", "scopes") if k in mcp)
     if oauth == ["clientId", "clientSecretKey", "scopes"]:
         passes.append((
@@ -725,12 +724,10 @@ ARCHETYPES = {
     "browser_automation",
     "periodic_export",
 }
-FIRST_RUN_AUTH = {"none", "phone_secret", "brain_browser", "laptop_oob"}
-PHONE_COMPLETABLE = {"yes", "no", "partial"}
 VETTING_BARS = ["maintenance", "self_hosted_auth", "relocatable_state", "restrictable_tools", "privacy_row"]
 TOP_LEVEL = {
     "id", "display_name", "summary", "manifest_version", "verified_on", "goose_version_verified",
-    "archetype", "capabilities", "first_run_auth", "phone_completable", "auth_notes",
+    "archetype", "capabilities", "auth_notes",
     "privacy", "vetting", "secrets", "acp_extension", "smoke_test", "runbook", "blockers", "notes",
 }
 SMOKE_KEYS = {
@@ -841,10 +838,10 @@ for forbidden in ("clientId", "clientSecretKey", "scopes"):
             "declares `%s` at %s" % (forbidden, ", ".join(hits)),
             "The OAuth fields on the mcp variant exist at the pinned %s (v1.47.0+), so a" % PINNED_VER,
             "manifest that sets them asks goose to RUN its OAuth flow — which cannot be",
-            "completed from a phone (docs/connecting.md): the callback is loopback-bound on",
-            "the brain, the authorization URL appears in no ACP message, and URL-mode",
+            "driven headlessly on the brain (docs/connecting.md): the callback binds",
+            "loopback there, the authorization URL appears in no ACP message, and URL-mode",
             "elicitation is refused. This repo's credential path is envKeys. Use a bearer",
-            "token or app password — first_run_auth: phone_secret.",
+            "token or app password, and record where consent happens in auth_notes.",
         )
 
 unknown_top = sorted({k for k, p in all_keys if p == k and k not in TOP_LEVEL})
@@ -909,48 +906,24 @@ if problems:
 else:
     ok("archetype %s, capabilities %s" % (arche, ", ".join(caps)))
 
-# ---- 3. can it be finished from a phone? -----------------------------------
+# ---- 3. where the credential comes from ------------------------------------
+# The phone-completability machinery (first_run_auth / phone_completable and
+# its cross-field gate) died with the phone story (#140; removal rides #144):
+# the repo plans around no phone client, so a field asserting where a PHONE
+# can finish auth asserted nothing. What survives is auth_notes — free text
+# that says where the credential comes from and who can produce it — required
+# for any connector that adds an extension, which is the shape that needs one.
 problems = []
-fra = doc.get("first_run_auth")
-pc = doc.get("phone_completable")
-# YAML 1.1 (which PyYAML implements) resolves bare yes/no/on/off to booleans and
-# bare null/~/Null to None, so `phone_completable: no` is the boolean False to
-# every reader, not the enum value "no". This is the same shape of trap as
-# availableTools — the file looks right, the parsed value is something else —
-# so it is a FAIL, not a note: one reader special-cases the boolean back into a
-# string (this validator used to), the next one compares it to "no", gets False,
-# and silently treats a laptop-only connector as phone-completable.
-for field, raw in (("first_run_auth", fra), ("phone_completable", pc)):
-    if isinstance(raw, bool):
-        problems.append(
-            "%s is the bare word %s, which YAML 1.1 resolves to the boolean %s, not the "
-            "string %r. Quote it: %s: \"%s\""
-            % (field, "yes" if raw else "no", raw, "yes" if raw else "no",
-               field, "yes" if raw else "no")
-        )
-    elif raw is None and field in doc:
-        problems.append(
-            "%s is present but resolves to null (bare null/~/Null/empty in YAML 1.1). "
-            "Quote the value you meant." % field
-        )
-if isinstance(pc, bool):
-    pc = "yes" if pc else "no"
-if fra not in FIRST_RUN_AUTH:
-    problems.append("first_run_auth %r is not one of: %s" % (fra, ", ".join(sorted(FIRST_RUN_AUTH))))
-if pc not in PHONE_COMPLETABLE:
-    problems.append("phone_completable %r is not one of: yes, no, partial" % (pc,))
-if fra in ("brain_browser", "laptop_oob") and pc == "yes":
+if "acp_extension" in doc and not str(doc.get("auth_notes", "") or "").strip():
     problems.append(
-        "first_run_auth: %s but phone_completable: yes — the consent listener binds "
-        "127.0.0.1 ON THE BRAIN and the auth URL never leaves it, so this claim strands "
-        "the user 40 minutes into a connect it cannot finish" % fra
+        "auth_notes is empty — say where the credential comes from and who can "
+        "produce it (docs/connecting.md)"
     )
-if fra not in (None, "none") and not str(doc.get("auth_notes", "") or "").strip():
-    problems.append("auth_notes is empty — say where the credential comes from and who can produce it")
 if problems:
-    bad("first_run_auth/phone_completable", *problems)
+    bad("auth_notes", *problems)
 else:
-    ok("first_run_auth: %s, phone_completable: %s" % (fra, pc))
+    ok("auth_notes: present" if str(doc.get("auth_notes", "") or "").strip()
+       else "no auth story required (no acp_extension)")
 
 # ---- 4. privacy: an actual grep, not a self-certification ------------------
 # What counts as "a row" is one exact marker, `<!-- connector: <id> -->`, in the
@@ -1064,7 +1037,7 @@ else:
         else:
             secret_keys.append(key)
         if not str(entry.get("prompt", "") or "").strip():
-            problems.append("secrets[%d] (%s) has no prompt — the phone UI has nothing to ask" % (i, key))
+            problems.append("secrets[%d] (%s) has no prompt — say what a human is asked to paste" % (i, key))
         if not isinstance(entry.get("secret"), bool):
             problems.append("secrets[%d] (%s) needs secret: true|false" % (i, key))
         if "value" in entry:

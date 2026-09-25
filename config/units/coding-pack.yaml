@@ -1,15 +1,18 @@
 ---
-# coding-pack — the Cursor port: eleven skills, thirty OpenCode subagents and
-# the global AGENTS.md rules, all copied no-clobber into $HOME.
+# coding-pack — the Cursor port: eleven skills, copied no-clobber into $HOME.
 #
-# DESCRIBES TODAY. unit_coding_pack() installs it, and it is the largest
-# footprint of any Mac unit and the one with the least machinery behind it: an
-# enumerated skill list, two glob loops, no verify script, and a runbook that
-# documents the PORT DECISIONS rather than the install.
+# DESCRIBES TODAY. unit_coding_pack() installs it. The OpenCode half of the
+# port (30 subagents + the global AGENTS.md) left the SHIPPED install with the
+# herdr pivot (#144, 2026-09-25): no coding agent installs on the Mac, so
+# writing ~/.config/opencode/ served nothing in the shipped story and the repo
+# sets nothing for people (#135). The files stay in the repo as paste-in
+# material — see the repo_file owns below. An enumerated skill list, one glob
+# loop, no verify script, and a runbook that documents the PORT DECISIONS
+# rather than the install.
 id: coding-pack
 manifest_version: 1
-verified_on: "2026-09-07"
-summary: Eleven ported Cursor skills, 30 OpenCode subagents, and the global AGENTS.md rule set.
+verified_on: "2026-09-25"
+summary: Eleven ported Cursor skills; the ported OpenCode agents and AGENTS.md stay in the repo as paste-in material.
 host: mac
 tier: default_on
 requires: []
@@ -65,13 +68,17 @@ owns:
   - {kind: home_path, target: ~/.agents/skills/pre-mr-checklist}
   - {kind: home_path, target: ~/.agents/skills/refactor-planner}
   - {kind: home_path, target: ~/.agents/skills/ship}
-  # The 30 agents are claimed as the directory, not file by file:
-  # unit_coding_pack()'s glob copies whatever is in it, and no other unit owns
-  # any part of it -- the same shape base-goose uses for custom_providers/.
+  # The ported OpenCode agents (claimed as the directory) and the global
+  # AGENTS.md are owned but NEVER INSTALLED, on purpose: unit_coding_pack()
+  # stopped writing ~/.config/opencode/ with the herdr pivot (#144,
+  # 2026-09-25) — no coding agent installs on the Mac, so the copies served
+  # nothing in the shipped story, and the repo sets nothing for people (#135).
+  # They are paste-in material for a self-installed OpenCode, exactly like
+  # project-rules/ below. Their home_path targets are gone with the installer
+  # loops; a Mac that still carries them from an earlier install removes them
+  # by hand.
   - {kind: repo_file, target: config/opencode/agents}
-  - {kind: home_path, target: ~/.config/opencode/agents}
   - {kind: repo_file, target: config/opencode/AGENTS.md}
-  - {kind: home_path, target: ~/.config/opencode/AGENTS.md}
   # Owned but NEVER INSTALLED, on purpose: unit_coding_pack() prints that the
   # per-project rule snippets stay in the repo and are pasted into a project by
   # hand. It is this unit's file with no destination.
@@ -83,6 +90,13 @@ manual_steps:
       into a project's own rules file. Nothing installs them; the bootstrap
       only prints where they live.
     doc: docs/cursor-port.md#where-everything-landed
+    blocking: false
+  - id: paste-the-opencode-port
+    summary: For a self-installed OpenCode on the Mac, copy the 30 subagents
+      from config/opencode/agents/ and the global rules from
+      config/opencode/AGENTS.md into ~/.config/opencode/ by hand — the
+      bootstrap stopped shipping them with the herdr pivot (#144, 2026-09-25).
+    doc: docs/cursor-port.md
     blocking: false
 
 blockers:
@@ -115,12 +129,14 @@ blockers:
 
 uninstall:
   supported: false
-  reason: "Nothing removes ~/.agents/skills or ~/.config/opencode/agents, and
-    the no-clobber install means this repo cannot tell which entries it wrote
-    from ones you added. Removing the wrong file loses your own work."
+  reason: "Nothing removes ~/.agents/skills, and the no-clobber install means
+    this repo cannot tell which entries it wrote from ones you added. Removing
+    the wrong file loses your own work."
 
 notes: >-
-  The 30 agents are 11 cr-*, 12 pr-*, 2 refactor scouts and 5 research agents
+  The OpenCode half of the port left the shipped install with the herdr pivot
+  (#144, 2026-09-25); the repo files remain as paste-in material. Those files
+  are 11 cr-*, 12 pr-*, 2 refactor scouts and 5 research agents
   (docs/cursor-port.md:97-98, which also records that the issue's "31" was a
   miscount). Filenames equal agent names and the skills dispatch by name, so
   renaming a file here breaks a cross-reference that nothing checks -- which

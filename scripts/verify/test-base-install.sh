@@ -497,8 +497,9 @@ for provider_json in "$REPO_ROOT"/config/goose/custom_providers/*.json; do
   check_copy "$provider_json" "$HOME/.config/goose/custom_providers/$(basename "$provider_json")"
 done
 check_copy "$REPO_ROOT/config/goose/goosehints.example" "$HOME/.config/goose/.goosehints"
-check_copy "$REPO_ROOT/config/opencode/AGENTS.md" "$HOME/.config/opencode/AGENTS.md"
-[ "$COPY_BAD" -eq 0 ] && [ "$COPY_N" -ge 7 ] &&
+# The OpenCode AGENTS.md row left with the herdr pivot (#144): unit_coding_pack
+# stopped writing ~/.config/opencode/ entirely.
+[ "$COPY_BAD" -eq 0 ] && [ "$COPY_N" -ge 6 ] &&
   ok "A6: all $COPY_N config templates installed byte-identical to the repo copies" ||
   bad "A6: $COPY_BAD of $COPY_N config templates missing or altered"
 
@@ -700,7 +701,7 @@ if leg select; then
   [ "$F5_RC" = "0" ] &&
     [ ! -e "$F5_HOME/.agents/skills/connect-service" ] &&
     [ -d "$F5_HOME/.agents/skills/ship" ] &&
-    [ -f "$F5_HOME/.config/opencode/AGENTS.md" ] &&
+    [ ! -e "$F5_HOME/.config/opencode/AGENTS.md" ] &&
     [ ! -e "$F5_HOME/.config/goose/config.yaml" ] &&
     [ "$F5_BREW_LINES" -eq 0 ] &&
     [ "$F5_SKIPS" -eq 2 ] &&
@@ -783,11 +784,9 @@ if leg select; then
   file          ~/.agents/skills/pre-mr-checklist
   file          ~/.agents/skills/refactor-planner
   file          ~/.agents/skills/ship
-  file          ~/.config/opencode/agents
-  file          ~/.config/opencode/AGENTS.md
 EOF
   if [ "$H_RC" = "0" ] && diff -u "$WORK/golden-h.txt" "$WORK/out/h.log" >"$WORK/h1.diff" 2>&1; then
-    ok "H1: --dry-run prints exactly the 29-line three-unit plan and its 23 owned items"
+    ok "H1: --dry-run prints exactly the 29-line three-unit plan and its 21 owned items"
   else
     bad "H1: the default --dry-run output is not the 29-line golden (rc=$H_RC)"
     evidence "$WORK/h1.diff"
@@ -808,9 +807,9 @@ EOF
   # ~/.config, which on a fresh home is absent and on a real Mac is not. So the
   # populated case is the one that matters, and it is asserted as `diff -r`
   # against a snapshot taken immediately before the run rather than as "no
-  # error". The snapshot is a copy of phase A's install: 60 files, every
-  # template, every skill, every agent (61 before #142 deleted the opencode
-  # template row).
+  # error". The snapshot is a copy of phase A's install: 28 files, every
+  # template and every skill (the 30 agents left the install with the herdr
+  # pivot, #144).
   H_POP="$WORK/home-dry-pop"
   H_REF="$WORK/home-dry-ref"
   rm -rf "$H_POP" "$H_REF"
@@ -818,11 +817,11 @@ EOF
   cp -R "$FAKE_HOME" "$H_REF"
   H2B_BEFORE="$(find "$H_REF" -type f | wc -l | tr -d ' ')"
   H2B_RC="$(run_bootstrap_flags h-pop "$H_POP" --dry-run)"
-  if [ "$H2B_RC" = "0" ] && [ "$H2B_BEFORE" -ge 59 ] &&
+  if [ "$H2B_RC" = "0" ] && [ "$H2B_BEFORE" -ge 28 ] &&
      diff -r "$H_REF" "$H_POP" >"$WORK/h2b.diff" 2>&1; then
     ok "H2b: --dry-run over a populated \$HOME ($H2B_BEFORE files) left every byte where it was"
   else
-    bad "H2b: --dry-run modified a populated \$HOME (rc=$H2B_RC, files=$H2B_BEFORE want >=59)"
+    bad "H2b: --dry-run modified a populated \$HOME (rc=$H2B_RC, files=$H2B_BEFORE want >=28)"
     evidence "$WORK/h2b.diff"
   fi
 
@@ -869,14 +868,12 @@ EOF
   file          ~/.agents/skills/pre-mr-checklist
   file          ~/.agents/skills/refactor-planner
   file          ~/.agents/skills/ship
-  file          ~/.config/opencode/agents
-  file          ~/.config/opencode/AGENTS.md
 EOF
   if [ "$H4_RC" = "0" ] &&
      diff -u "$WORK/golden-h4.txt" "$WORK/out/h-noc.log" >"$WORK/h4.diff" 2>&1; then
-    ok "H4: --dry-run --without base-toolchain prints exactly the 17-line one-unit plan, cascade announced"
+    ok "H4: --dry-run --without base-toolchain prints exactly the 15-line one-unit plan, cascade announced"
   else
-    bad "H4: the cascading dry-run plan is not the 17-line golden (rc=$H4_RC)"
+    bad "H4: the cascading dry-run plan is not the 15-line golden (rc=$H4_RC)"
     evidence "$WORK/h4.diff"
   fi
 fi

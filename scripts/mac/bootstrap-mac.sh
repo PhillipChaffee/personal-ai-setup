@@ -63,7 +63,7 @@ The three units, in dependency order:
 
   base-toolchain   uv, node, jq, the Tailscale cask
   base-goose       the goose CLI + Desktop cask, the pin, ~/.config/goose
-  coding-pack      the eleven ported skills, the OpenCode agents, AGENTS.md
+  coding-pack      the eleven ported skills
 
 `--only coding-pack` therefore installs one unit: coding-pack requires nothing
 since the OpenCode unit left the catalog (coding agents are the brain's, under
@@ -193,8 +193,7 @@ home:~/.agents/skills/code-review home:~/.agents/skills/deep-research
 home:~/.agents/skills/looping-code-review home:~/.agents/skills/looping-plan-review
 home:~/.agents/skills/mr-review home:~/.agents/skills/plan-review
 home:~/.agents/skills/pre-mr-checklist home:~/.agents/skills/refactor-planner
-home:~/.agents/skills/ship home:~/.config/opencode/agents
-home:~/.config/opencode/AGENTS.md"
+home:~/.agents/skills/ship"
 
 requires_of() {
   # requires_of <id> -- the ids this unit needs, restricted to UNIT_IDS.
@@ -383,8 +382,8 @@ if [ "$DRY_RUN" -eq 1 ]; then
   done
   echo "==> would install:"
   # At the manifests' granularity, which is why ~/.config/goose/custom_providers
-  # and ~/.config/opencode/agents appear as directories rather than as the files
-  # inside them: it makes the plan mechanically checkable against the catalog
+  # appears as a directory rather than as the files
+  # inside it: it makes the plan mechanically checkable against the catalog
   # instead of against this script's cp loops. P8(d) checks the OWNS_* strings;
   # P8(f) RUNS this loop -- `--dry-run --only <id>` for every id -- and compares
   # what it prints to config/units/. The second one is not redundant: owns_of()'s
@@ -647,14 +646,19 @@ unit_base_goose() {
 
 unit_coding_pack() {
   want coding-pack || return 0
-  # Ported from PhillipChaffee/.cursor (docs/cursor-port.md): eleven skills, the
-  # OpenCode subagents, and the global AGENTS.md. The agents and AGENTS.md are
-  # OpenCode-only. Same no-clobber rule throughout: a skill directory or agent
-  # file you have edited locally is never overwritten.
-  local skill_name agent_md
+  # Ported from PhillipChaffee/.cursor (docs/cursor-port.md): eleven skills.
+  # The OpenCode half of the port (30 subagents + the global AGENTS.md) left
+  # the shipped install with the herdr pivot (#144, 2026-09-25): no coding
+  # agent installs on the Mac — they live in herdr panes on the brain — so
+  # writing ~/.config/opencode/ served nothing in the shipped story, and the
+  # repo sets nothing for people (#135). The files stay in the repo under
+  # config/opencode/ as paste-in material for a self-installed OpenCode, same
+  # as project-rules/. Same no-clobber rule throughout: a skill directory you
+  # have edited locally is never overwritten.
+  local skill_name
 
-  echo "==> Installing skills, OpenCode agents, and global rules (no-clobber)"
-  mkdir -p "$HOME/.agents/skills" "$HOME/.config/opencode/agents"
+  echo "==> Installing skills (no-clobber)"
+  mkdir -p "$HOME/.agents/skills"
   rm -rf "$HOME/.agents/skills"/.personal-ai-tmp.* 2>/dev/null || true
 
   # By name, from SKILLS_CODING_PACK — deliberately NOT a glob, and deliberately
@@ -664,14 +668,9 @@ unit_coding_pack() {
     install_skill "$REPO_ROOT/config/skills/$skill_name"
   done
 
-  for agent_md in "$REPO_ROOT"/config/opencode/agents/*.md; do
-    [ -f "$agent_md" ] || continue
-    copy_no_clobber "$agent_md" "$HOME/.config/opencode/agents/$(basename "$agent_md")"
-  done
-
-  copy_no_clobber "$REPO_ROOT/config/opencode/AGENTS.md" "$HOME/.config/opencode/AGENTS.md"
-  echo "    (project-specific rule snippets stay in the repo:"
-  echo "     config/opencode/project-rules/ — see docs/cursor-port.md)"
+  echo "    (the ported OpenCode agents and the global AGENTS.md stay in the repo:"
+  echo "     config/opencode/ — paste them into a self-installed OpenCode by hand;"
+  echo "     per-project rule snippets: config/opencode/project-rules/, docs/cursor-port.md)"
   return 0
 }
 

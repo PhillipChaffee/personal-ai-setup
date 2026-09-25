@@ -2086,26 +2086,25 @@ rm_fingerprint() {
 rm_flat() { printf '%s' "$1" | tr '\n' ' ' | tr -s ' '; }
 
 # The fixture is what `pai remove coding-pack` would be pointed at on a real
-# Mac: the eleven ported skills, the OpenCode agents directory and AGENTS.md,
-# all present and all identical to the repo's copies — plus ONE FILE THE USER
+# Mac: the eleven ported skills, all present and all identical to the repo's
+# copies — plus ONE FILE THE USER
 # WROTE that no manifest claims. That last file is the whole safety argument in
-# one line: the install side is no-clobber (copy_no_clobber and install_skill
-# both "keep existing"), so nothing on disk records who wrote what, and a
-# remover driven by a directory rather than by `owns` takes it with everything
-# else.
+# one line: the install side is no-clobber (install_skill "keeps existing"), so
+# nothing on disk records who wrote what, and a remover driven by a directory
+# rather than by `owns` takes it with everything else. (The OpenCode agents and
+# AGENTS.md left both the installer and this fixture with the herdr pivot,
+# #144: the manifest no longer owns any ~/.config/opencode/ path.)
 #
 # `cd "$WORK" && pwd` rather than "$WORK/remove-home": $TMPDIR ends in a slash
 # on macOS, so mktemp -d yields `.../T//pai-test.XXXX` and the assertion below
 # would compare that literal against a path pathlib had already collapsed. A
 # subshell, so this script's own cwd is untouched.
 RM_HOME="$(cd "$WORK" && pwd)/remove-home"
-mkdir -p "$RM_HOME/.agents/skills" "$RM_HOME/.config/opencode/agents"
+mkdir -p "$RM_HOME/.agents/skills"
 for skill_src in "$REPO_ROOT"/config/skills/*/; do
   [ -d "$skill_src" ] || continue
   cp -R "$skill_src" "$RM_HOME/.agents/skills/$(basename "$skill_src")"
 done
-cp "$REPO_ROOT"/config/opencode/agents/*.md "$RM_HOME/.config/opencode/agents/"
-cp "$REPO_ROOT/config/opencode/AGENTS.md" "$RM_HOME/.config/opencode/AGENTS.md"
 printf 'a skill I wrote myself, claimed by no manifest\n' \
   > "$RM_HOME/.agents/skills/my-own-notes.md"
 
@@ -2126,8 +2125,8 @@ fi
 # The refusal is not silence, and it is not a plan half-executed: the eleven
 # skills coding-pack owns are named as retained, by the manifest's own spelling.
 if printf '%s\n' "$RM_OUT" | grep -qxF "    RETAIN  ~/.agents/skills/ship" \
-  && printf '%s\n' "$RM_OUT" | grep -qxF "    RETAIN  ~/.config/opencode/agents"; then
-  pass "...and names the skill and agents targets it kept, verbatim from owns:"
+  && printf '%s\n' "$RM_OUT" | grep -qxF "    RETAIN  ~/.agents/skills/ci-lint-test"; then
+  pass "...and names the skill targets it kept, verbatim from owns:"
 else
   fail "remove coding-pack did not name its home_path targets:"$'\n'"$RM_OUT"
 fi
@@ -2429,7 +2428,9 @@ home_targets = [
 # that goes red on an unrelated edit gets deleted. What this guards is the
 # derivation itself — an empty or one-element list would make the set
 # comparison below trivially true, which is the failure mode that matters.
-assert len(home_targets) >= 20, len(home_targets)
+# (The two ~/.config/opencode home targets left with #144's coding-pack drop:
+# the floor holds the derivation, not the catalog's exact size.)
+assert len(home_targets) >= 18, len(home_targets)
 unresolved = {t for t in home_targets if mod.parse_home_target(t, HOME) is None}
 assert unresolved == PROSE, sorted(unresolved ^ PROSE)
 # And the other side: everything that DOES resolve lands strictly inside home.

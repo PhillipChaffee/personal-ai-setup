@@ -11,6 +11,12 @@ strict per-tier privacy rules; the coding agents run on the brain under herdr
 personal admin (calendar and todos via MCP; email is a connector the registry
 records rather than a shipped default).
 
+`scripts/wizard/setup.sh` is the front door for all of it: it asks six
+questions and drives both installers, performing nothing irreversible itself —
+every gauntlet step (terraform, LUKS, `/data/secrets.env` fill) stays behind a
+confirmation you perform. The runbooks below are the same procedure, written
+out step by step; the wizard walks them in order.
+
 The architecture diagram and component map live in the
 [README](../../README.md). The privacy tiers and hard routing rules live in
 [`docs/model-routing.md`](../model-routing.md) and

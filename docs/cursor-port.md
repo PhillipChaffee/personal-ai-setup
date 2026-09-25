@@ -3,17 +3,26 @@
 [PhillipChaffee/.cursor](https://github.com/PhillipChaffee/.cursor) is a mature
 Cursor setup — 11 skills, 20 rules, 30 subagent prompts. This stack ports it
 (issue #12): the artifacts live in this repo as the single source,
-`scripts/mac/bootstrap-mac.sh` installs them no-clobber, and this document
+`scripts/mac/bootstrap-mac.sh` installs the skills no-clobber, and this document
 records every porting decision so nothing was dropped silently.
+
+**2026-09-25, the herdr pivot (#144):** the OpenCode half of the port stopped
+being INSTALLED. No coding agent installs on the Mac — they live in herdr
+panes on the brain — so `unit_coding_pack()` no longer writes
+`~/.config/opencode/`, and the manifest no longer claims those home paths.
+The 30 agents and the merged global rules stay in this repo (the
+`config/opencode/` rows below) as paste-in material for a self-installed
+OpenCode, same as the per-project rules always were; the eleven skills keep
+installing, because goose reads them.
 
 ## Where everything landed
 
 | Cursor artifact | In this repo | Installed to | Read by |
 |---|---|---|---|
 | `skills/*/SKILL.md` (11 skills + reference libraries) | `config/skills/` | `~/.agents/skills/` | **Both**: OpenCode ("agent-compatible" global dir) and goose ≥ 1.16 (built-in skills support, enabled by default; repo pins 1.4x) |
-| `rules/*.mdc` — global-worthy (9) | merged into `config/opencode/AGENTS.md` | `~/.config/opencode/AGENTS.md` | OpenCode (all sessions) |
+| `rules/*.mdc` — global-worthy (9) | merged into `config/opencode/AGENTS.md` | not installed — paste-in (#144) | OpenCode (all sessions) |
 | `rules/*.mdc` — stack-specific (8) | `config/opencode/project-rules/*.md` | not installed — per-project | Paste into a project's `AGENTS.md`, or list in the project's `opencode.json` `"instructions"` array |
-| `agents/*.md` (all 30) | `config/opencode/agents/` | `~/.config/opencode/agents/` | OpenCode (agent name = filename; dispatched via the task tool / `@`-mention) |
+| `agents/*.md` (all 30) | `config/opencode/agents/` | not installed — paste-in (#144) | OpenCode (agent name = filename; dispatched via the task tool / `@`-mention) |
 
 Facts this layout relies on (verified against the OpenCode and goose docs and
 the workspace-mcp/goose sources, 2026-08-21): OpenCode reads global skills

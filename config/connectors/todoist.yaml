@@ -1,4 +1,4 @@
-# Todoist — the worked example of a phone-completable connector.
+# Todoist — the worked example of a headless bearer-token connector.
 #
 # Ships DISABLED: docs/roadmap.md has not picked a todo app. Everything else is ready —
 # the docs/privacy.md row exists, the credential path is verified, the allowlist is written
@@ -17,7 +17,7 @@ display_name: Todoist
 summary: >-
   Tasks and projects through Doist's own hosted MCP server, authenticated with a
   personal API token in an Authorization header. No OAuth, no local server, no
-  browser — the only connector in this repo verified finishable entirely from the phone.
+  browser consent — the whole credential ceremony is one typed token.
 
 manifest_version: 1
 verified_on: 2026-08-23
@@ -27,18 +27,18 @@ goose_version_verified: 1.51.0
 archetype: first_party_remote_mcp
 capabilities: [tasks, projects]
 
-# ---- can this be finished from a phone? -----------------------------------
-first_run_auth: phone_secret
-phone_completable: "yes"          # quoted: bare yes is a YAML 1.1 boolean, not the enum value
+# ---- where the credential comes from --------------------------------------
+# The first_run_auth/phone_completable fields died with the phone story (#140;
+# removal rides #144). This manifest keeps the credential facts that still hold:
 auth_notes: >-
   Paste one personal API token from your Todoist account settings, and that is the whole
   ceremony. The hosted endpoint accepts a Todoist API token directly as a bearer token —
   confirmed by Doist maintainer scottlovegrove in Doist/todoist-mcp issue #492 — so goose's
-  OAuth machinery, which cannot be driven from a phone at all (docs/connecting.md §"Why
-  OAuth cannot be completed from a phone"), never enters the picture. Three places in this
+  OAuth machinery, which cannot be driven headlessly on the brain (docs/connecting.md
+  §"Where first-run auth happens"), never enters the picture. Three places in this
   repo described Todoist as "browser OAuth on first connect, no API key"; two are now
   corrected against this manifest (docs/setup/10-accounts.md §4 and the todoist entry in
-  config/goose/config.yaml). The third, docs/roadmap.md line 46 ("OAuth, zero key
+  config/goose/config.yaml). The third, docs/roadmap.md ("OAuth, zero key
   management"), is STILL WRONG as of 2026-08-23 and needs the same correction. This file
   is the current answer.
 

@@ -3,11 +3,12 @@ extensions:
   #
   # AUTH IS A BEARER TOKEN, NOT OAUTH. Doist's hosted endpoint accepts a Todoist
   # personal API token directly in an Authorization header, which is why this is
-  # the one connector in the repo that can be finished entirely from the phone —
-  # goose's OAuth path cannot be (the callback binds to the brain's loopback and
-  # the auth URL never leaves it). Put the token in goose's secret store under
-  # TODOIST_API_KEY; ${TODOIST_API_KEY} below is substituted at connect time,
-  # because goose applies ${VAR} to a remote extension's uri/headers/socket.
+  # the one connector in the repo whose whole credential ceremony is one typed
+  # value — goose's OAuth path cannot be automated on the brain (the callback
+  # binds to the brain's loopback and the auth URL never leaves it). Put the
+  # token in goose's secret store under TODOIST_API_KEY; ${TODOIST_API_KEY}
+  # below is substituted at connect time, because goose applies ${VAR} to a
+  # remote extension's uri/headers/socket.
   # Full rationale and the vetting record: config/connectors/todoist.yaml.
   #
   # DISABLED: no todo app chosen yet. docs/privacy.md already carries the Todoist

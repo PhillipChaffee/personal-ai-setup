@@ -14,20 +14,20 @@ goose_version_verified: 1.51.0
 archetype: standard_protocol_bridge
 capabilities: [mail, calendar, tasks]
 
-# ---- can this be finished from a phone? -----------------------------------
-first_run_auth: phone_secret
-phone_completable: partial
+# ---- where the credential comes from --------------------------------------
+# The first_run_auth/phone_completable fields died with the phone story (#140;
+# removal rides #144). What still holds:
 auth_notes: >-
-  The credential half is phone-native: generate an app password in the
-  provider's web UI, type it into the phone client, and it lands in goose's
-  secret store via config/upsert. `partial`, not `yes`, for two reasons that
-  have nothing to do with the credential — (1) the servers' non-secret
+  The credential half is headless-native: generate an app password in the
+  provider's web UI, paste it once, and it lands in goose's
+  secret store via config/upsert. Two caveats remain that have nothing to do
+  with the credential — (1) the servers' non-secret
   connection settings (IMAP host/port, CalDAV base URL) are per-account and
   their exact env-var names are UNVERIFIED at the pinned server releases, so
   first run needs one confirmation against each server's README; (2) any
   second account of the same protocol needs a wrapper binary on the brain's
-  filesystem (see `blockers.secret_key_collision`), which a phone cannot
-  create. No OAuth is involved at any point — goose's ACP layer refuses OAuth
+  filesystem (see `blockers.secret_key_collision`). No OAuth is involved at
+  any point — goose's ACP layer refuses OAuth
   fields on stdio extensions outright ("OAuth client fields are only supported
   for streamable_http MCP extensions"), which here is a feature.
 
@@ -189,7 +189,8 @@ blockers:
       instance per account, each pointing `command` at an absolute-path wrapper
       binary on the brain that exports the right value for that account and
       exec's uvx/npx. That wrapper is also where XDG_* relocation goes (see
-      offbox_state). A phone cannot create it.
+      offbox_state). Writing one is a human's job — no script in this repo
+      authors or re-renders it.
   - id: offbox_state
     severity: blocking_before_tier3_traffic
     detail: >-

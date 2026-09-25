@@ -110,12 +110,12 @@ tasks. If you later pick Todoist as your todo app:
 **It is a bearer token, not OAuth.** Doist's hosted MCP server accepts a Todoist
 personal API token directly in an `Authorization: Bearer …` header, confirmed by
 a Doist maintainer in `Doist/todoist-mcp` issue #492. That matters more than it
-sounds: goose's OAuth flow **cannot be completed from a phone at all** — the
-callback binds to the brain's loopback interface and the authorization URL never
-leaves the brain — so a bearer token is what makes Todoist the one connector in
-this repo you can finish entirely from the phone. Earlier revisions of this doc
-said "no API key, browser OAuth on first connect"; that was wrong. The full
-record is [`config/connectors/todoist.yaml`](../../config/connectors/todoist.yaml).
+sounds: goose's OAuth flow cannot be automated on the brain at all — the callback
+binds to the brain's loopback interface and the authorization URL never leaves
+it — so a bearer token is the credential path that needs nothing but one typed
+value, no browser, no consent screen. Earlier revisions of this doc said "no API
+key, browser OAuth on first connect"; that was wrong. The full record is
+[`config/connectors/todoist.yaml`](../../config/connectors/todoist.yaml).
 
 The token is **full-account read/write** and cannot be scoped — Todoist's auth is a bearer
 header, not OAuth, so the `clientId`/`scopes` fields goose grew at v1.47.0+ have nothing to

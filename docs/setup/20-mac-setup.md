@@ -42,8 +42,10 @@ What it does (it's idempotent — safe to re-run after a failed step):
   | `config/goose/custom_providers/*.json` | `~/.config/goose/custom_providers/` |
   | `config/goose/goosehints.example` | `~/.config/goose/.goosehints` |
   | `config/skills/*/` | `~/.agents/skills/` |
-  | `config/opencode/agents/*.md` | `~/.config/opencode/agents/` |
-  | `config/opencode/AGENTS.md` | `~/.config/opencode/AGENTS.md` |
+
+  The ported OpenCode agents and the global AGENTS.md stay in
+  `config/opencode/` — paste them into a self-installed OpenCode by hand (they
+  left the shipped install with the herdr pivot, 2026-09-25).
 
 The four custom-provider JSONs are the heart of it: they define the
 `together` (default), `zen-openai`, `zen-anthropic`, and `zen-free` providers
