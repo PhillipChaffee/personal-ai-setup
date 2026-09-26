@@ -106,16 +106,16 @@ Everything past the base is a **unit** in `config/units/`; the table is rendered
 ## 🏗️ Architecture
 
 ```text
-Mac laptop                       Brain (Hetzner, Terraform-managed)
-────────                         ──────────────────────────────────
-Goose Desktop ◄── remote ACP ─────────────────────────────────►  goose serve (systemd)
-                                                                  ├─ sessions.db ─── THE shared history
-herdr app ◄──── SSH ──────────►                                   ├─ MCP: Todoist, search
-Goose CLI (offline fallback)                                      ├─ coding agents: herdr panes
-                                                                  ├─ inference ──► Zen API / Together API (HTTPS)
-                                                                  └─ all state on LUKS-encrypted volume
+Mac laptop (thin client)          Brain (Hetzner, Terraform-managed)
+────────────────────────          ──────────────────────────────────
+Goose Desktop ◄── remote ACP ───► goose serve (systemd)
+herdr app ◄────── SSH ──────────►   ├─ sessions.db ── THE shared history
+Goose CLI (offline fallback)        ├─ MCP: Todoist, search
+                                    ├─ coding agents: herdr panes
+                                    ├─ inference ──► Zen / Together (HTTPS)
+                                    └─ all state on a LUKS-encrypted volume
 
-        Tailscale tailnet (WireGuard) — the ONLY path to the brain; zero public inbound ports
+Tailscale tailnet — the ONLY path to the brain; zero public inbound ports
 ```
 
 | Surface | Role |
@@ -158,6 +158,8 @@ All figures verified as of 2026-08-20 — re-verify at signup (`scripts/verify/p
 Coding agents are the one line that can move the total on their own — an agent turn bills far more than a chat turn, and several can run at once (`opencode stats` inside a pane reports actual spend). They also consume **disk**: clones and worktrees live under `/data/herdr`, on the same 10 GB volume as everything else by default, and `check-herdr.sh` fails once they occupy 75% of it. Grow `data_volume_size` (Hetzner volumes grow without recreation) or clean old worktrees — see [`docs/coding-agents.md`](docs/coding-agents.md).
 
 Routing keeps costs predictable: daily chat runs on a cheap open model, escalating to a frontier model only when needed — prices and hard rules in [`docs/model-routing.md`](docs/model-routing.md).
+
+## 🗺️ Repo map
 
 <!-- GENERATED — do not edit between the markers; `bin/pai docs --write`
      re-renders this. The SHAPE (which paths appear, in which order, carrying
