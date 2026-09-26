@@ -1,24 +1,40 @@
+<!-- The H1 sits inside the centered header block below. -->
+
+<div align="center">
+
+<img src="./assets/logo.svg" width="72" alt="personal-ai-setup logo" />
+
 # personal-ai-setup
 
+A self-owned personal AI: one hub, one shared history, on a brain you control.
+
 [![Coverage Status](https://coveralls.io/repos/github/PhillipChaffee/personal-ai-setup/badge.svg?branch=main)](https://coveralls.io/github/PhillipChaffee/personal-ai-setup?branch=main)
-[![python-lint](https://github.com/PhillipChaffee/personal-ai-setup/actions/workflows/python-lint.yml/badge.svg)](https://github.com/PhillipChaffee/personal-ai-setup/actions/workflows/python-lint.yml)
-[![secret-scan](https://github.com/PhillipChaffee/personal-ai-setup/actions/workflows/secret-scan.yml/badge.svg)](https://github.com/PhillipChaffee/personal-ai-setup/actions/workflows/secret-scan.yml)
+[![Security](https://github.com/PhillipChaffee/personal-ai-setup/actions/workflows/secret-scan.yml/badge.svg)](https://github.com/PhillipChaffee/personal-ai-setup/actions/workflows/secret-scan.yml)
+[![Hygiene](https://github.com/PhillipChaffee/personal-ai-setup/actions/workflows/hygiene.yml/badge.svg)](https://github.com/PhillipChaffee/personal-ai-setup/actions/workflows/hygiene.yml)
+[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Build your own personal AI — one agent with one memory, available on your laptop and on a small always-on server — out of open-source parts and pay-as-you-go inference. No hosted-assistant subscriptions, no lock-in, and your sensitive data only ever reaches zero-data-retention endpoints.
+**Your AI, on models you choose · secure enough for all your private data · open models by default — your data never touches big tech**
 
-This repo is the complete, reproducible blueprint: Terraform for the server, config templates for every component, a verify script for every piece that has one, and step-by-step runbooks. It is an installer with a menu rather than a ceremony — one command gets you a working AI on the Mac, and everything past that is an add-on you pick off the list below. Running cost, all in: **~$15–35/month**.
+[What you get](#what-you-get) · [Install](#install) · [Add-ons](#add-ons) · [Architecture](#architecture) · [Budget](#budget) · [License](#license)
 
-**What you get:**
+</div>
 
-- **One AI, one history.** A [Goose](https://github.com/aaif-goose/goose) agent (the "brain") runs 24/7 on a small hardened VPS. Your laptop is a thin client to it — start a conversation on the Mac, continue it on the brain.
-- **A serious coding agent.** [OpenCode](https://github.com/anomalyco/opencode) and Pi first-class under [herdr](https://github.com/herdrdev/herdr) on the brain — real terminal panes, the agent set chosen at setup (Claude Code, Codex, Grok Build in the catalog) ([`docs/coding-agents.md`](docs/coding-agents.md)).
-- **A private tier for life admin.** Email, calendar, and todos via MCP; a connector registry that records which services were vetted, adopted, or deliberately not. Your sensitive data only ever reaches [Together AI](https://docs.together.ai) (zero-data-retention default, SOC 2, HIPAA posture), never free models, never providers that retain.
-- **Cheap, flexible inference.** [OpenCode Zen](https://opencode.ai/docs/zen) (at-cost gateway: Kimi, GLM, MiniMax, DeepSeek, Claude…) plus Together AI (200+ open models). Broad model catalogs ship in the configs; `scripts/sync-models.sh` refreshes them from the live catalogs. Swap any of it — that's the point.
+<a id="what-you-get"></a>
 
-## Install
+## ✨ What you get
 
-You need a Mac, a terminal and a handful of pay-as-you-go accounts;
-the full list is in [Before you start](#before-you-start). Then:
+The complete, reproducible blueprint: Terraform for the brain, config templates for every component, a verify script for every piece that has one, and a runbook for every manual step. Running cost, all in: **~$15–35/month**.
+
+- **One AI, one history.** A [Goose](https://github.com/aaif-goose/goose) hub runs 24/7 on the brain and your Mac is a thin client — start a conversation on the laptop, continue it on the brain.
+- **A serious coding agent.** [OpenCode](https://github.com/anomalyco/opencode) and Pi first-class under [herdr](https://github.com/herdrdev/herdr) on the brain — real terminal panes, with Claude Code, Codex, and Grok Build in the setup-time catalog. See [`docs/coding-agents.md`](docs/coding-agents.md).
+- **A private tier for life admin.** Email, calendar, and todos via MCP, behind a vetted-connector registry. Sensitive data reaches only [Together AI](https://docs.together.ai) — zero-data-retention default, SOC 2, HIPAA posture. Never free models, never providers that retain.
+- **Cheap, flexible inference.** [OpenCode Zen](https://opencode.ai/docs/zen) (at-cost gateway: Kimi, GLM, MiniMax, DeepSeek…) plus Together AI's 200+ open models. `scripts/sync-models.sh` refreshes both catalogs from the live sources. Swap any of it — that's the point.
+
+<a id="install"></a>
+
+## 📦 Install
+
+You need a Mac, a terminal, and a handful of pay-as-you-go accounts — the full list is in [Before you start](#before-you-start). Then:
 
 ```bash
 git clone https://github.com/PhillipChaffee/personal-ai-setup.git
@@ -26,24 +42,9 @@ cd personal-ai-setup
 ./scripts/wizard/setup.sh
 ```
 
-The wizard is the front door. It asks six questions — scope (fresh end-to-end
-or the existing brain), which coding agents live in herdr panes, Mac extras,
-the provisioning/teardown confirmations, the keys it captures, verify — and
-then drives both installers: `bootstrap-mac.sh` locally and `deploy-vps.sh`
-over SSH on the brain. It writes exactly the keys it captures or generates
-into `/data/secrets.env` over SSH, stores the Mac's copies in the Keychain,
-and prints everything a human must do by hand (Tailscale toggles, the LUKS
-passphrase, terraform's prompts, Desktop connect). Nothing it does is
-scheduled. Stop it any time and re-run — it remembers saved values.
+The wizard is the front door: six questions, then it drives both installers, `bootstrap-mac.sh` locally and `deploy-vps.sh` over SSH on the brain. It writes exactly the keys it captures or generates into `/data/secrets.env` over SSH, stores the Mac's copies in the Keychain, and prints everything a human must do by hand. Nothing it does is scheduled; stop it any time and re-run — it remembers saved values.
 
-Prefer to drive the installers yourself? The bootstrap below is the same
-base install, and it **runs start to finish without asking you
-anything**. It puts the goose CLI and Desktop, the toolchain and the
-skills onto the Mac at the versions pinned in `config/pins.yaml`,
-never overwriting a file you already have. Re-running it is safe.
-
-Want a subset? The flags resolve against the same `config/units/*.yaml` catalog
-the menu below is generated from:
+Prefer to drive the installers yourself? `bootstrap-mac.sh` is the same base install: it runs start to finish without asking you anything, installs at the versions pinned in `config/pins.yaml`, never overwrites a file you already have, and is safe to re-run. Want a subset? The flags resolve against the same `config/units/*.yaml` catalog the menu below is rendered from:
 
 ```bash
 ./scripts/mac/bootstrap-mac.sh --dry-run              # print the plan, touch nothing
@@ -52,27 +53,14 @@ the menu below is generated from:
 ./scripts/mac/bootstrap-mac.sh --help                 # the units, in dependency order
 ```
 
-Excluding a unit that something else still needs is refused with exit 2, rather
-than half-installed.
+Excluding a unit that something else still needs is refused with exit 2, rather than half-installed.
 
-**Two things after the bootstrap are interactive on purpose.** Both are
-credentials or consent that no script may invent on your behalf:
+Two things after the bootstrap are interactive on purpose — credentials or consent no script may invent on your behalf:
 
-- **Your API keys** — `scripts/mac/keychain-secrets.sh` prompts for each one
-  silently, never echoes a value, and asks before it appends anything to
-  `~/.zshrc`.
-- **The Tailscale sign-in** — you sign the Mac into your own tailnet, from the
-  app the bootstrap installed.
+- **Your API keys** — `scripts/mac/keychain-secrets.sh` prompts for each one silently, never echoes a value, and writes only its own marked block into `~/.zshrc` (a file it cannot parse is refused, not touched).
+- **The Tailscale sign-in** — you sign the Mac into your own tailnet, from the app the bootstrap installed.
 
-**The brain is different: it cannot be made unattended, by design.** It has five
-interactive points, and every one of them is key material this repo deliberately
-stores nowhere. `terraform apply` prompts for the Hetzner token and the Tailscale
-auth key on *every* run and keeps neither. `luks-setup.sh` makes you type
-`FORMAT` in capitals, then takes the volume passphrase twice. And
-`luks-unlock.sh` asks for that passphrase again after every reboot, because the
-crypttab entry is written `noauto` on purpose — the key to the disk is never on
-the disk. Anything that promised you a one-command brain would be promising to
-store that passphrase somewhere.
+**The brain cannot be made unattended, by design.** All five of its interactive points are key material this repo deliberately stores nowhere: `terraform apply` re-prompts for the Hetzner token and the Tailscale auth key on every run and keeps neither; `luks-setup.sh` makes you type `FORMAT` in capitals, then takes the volume passphrase twice; and `luks-unlock.sh` asks for that passphrase again after every reboot, because the crypttab entry is written `noauto` on purpose — the key to the disk is never on the disk. Anything that promised you a one-command brain would be promising to store that passphrase somewhere.
 
 Once something is installed, four read-only commands tell you where you stand:
 
@@ -83,15 +71,13 @@ bin/pai doctor    # what drifted between this machine and the repo's templates
 bin/pai verify    # run the checks the manifests claim: one table, one exit code
 ```
 
-Everything personal stays out of your clone — see
-[Adapting it to you](#adapting-it-to-you).
+Everything personal stays out of your clone — see [Adapting it to you](#adapting-it-to-you).
 
-## Add-ons
+<a id="add-ons"></a>
 
-Everything past the base is a unit in `config/units/`, and the table below is
-rendered from those manifests. **Verified by** is deliberately empty wherever
-nothing proves a unit yet: this repo would rather show you the gap than describe
-one that is not there. `bin/pai list` prints the same catalog on your machine.
+## 🧩 Add-ons
+
+Everything past the base is a **unit** in `config/units/`; the table is rendered from those manifests, and `bin/pai list` prints the same catalog on your machine. **Verified by** is deliberately empty wherever nothing proves a unit yet — this repo would rather show you the gap than describe one that is not there.
 
 <!-- GENERATED — do not edit between the markers; `bin/pai docs --write`
      re-renders this and CI fails when it is stale. The rows, and their order,
@@ -113,49 +99,67 @@ one that is not there. `bin/pai list` prints the same catalog on your machine.
 
 <!-- pai-docs:end units-menu -->
 
-`(planned)` means the manifest names an installer function that does not exist
-yet — the unit is real and its runbook works, but today you install it by hand.
-`by hand` means the manifest names no installer at all: sometimes because nothing
-*could* (an App Store download, a browser toggle, a key you type), sometimes
-because nothing does yet. Each manifest says which, and `check-units.sh` fails
-if one of them stops saying it.
+`(planned)` means the manifest names an installer function that does not exist yet — the unit is real and its runbook works, but today you install it by hand. `by hand` means the manifest names no installer at all: sometimes because nothing *could* (an App Store download, a browser toggle, a key you type), sometimes because nothing does yet. Each manifest says which, and `check-units.sh` fails if one of them stops saying it.
 
-## Before you start
+<a id="architecture"></a>
 
-| You need | Notes |
-|---|---|
-| A Mac | The runbooks are written for the Mac. **The brain itself is Linux** (Ubuntu 24.04) — goose is not the Mac-only part. What *is* Mac-only is the laptop's secret store (macOS Keychain) and Homebrew; a Linux laptop needs a keyring backend that does not exist here yet. Component-by-component table: [`docs/setup/00-overview.md`](docs/setup/00-overview.md#supported-platforms). |
-| Comfort with a terminal | You'll run scripts, `terraform apply`, and paste commands over SSH. Every step is written out; no improvisation required. |
-| ~$15–35/month | Breakdown in [Budget](#budget). The two inference accounts are pay-as-you-go with hard caps. |
-| Accounts you'll create | OpenCode Zen, Together AI, Hetzner (VPS), Tailscale (a todo app like Todoist is optional). Each has a runbook with the gotchas called out. |
-
-## Architecture
+## 🏗️ Architecture
 
 ```text
-Mac laptop                       VPS "brain" (Hetzner, Terraform-managed)
-────────                         ────────────────────────────────────────
-Goose Desktop ◄── remote ACP ─────────────────────────────────►  goose serve (systemd)
-                                                                  ├─ sessions.db ─── THE shared history
-herdr app ◄──── SSH ──────────►                                   ├─ MCP: Todoist, search
-Goose CLI (offline fallback)                                      ├─ coding agents: herdr panes
-                                                                  ├─ inference ──► Zen API / Together API (HTTPS)
-                                                                  └─ all state on LUKS-encrypted volume
+Mac laptop (thin client)          Brain (Hetzner, Terraform-managed)
+────────────────────────          ──────────────────────────────────
+Goose Desktop ◄── remote ACP ───► goose serve (systemd)
+herdr app ◄────── SSH ──────────►   ├─ sessions.db ── THE shared history
+Goose CLI (offline fallback)        ├─ MCP: Todoist, search
+                                    ├─ coding agents: herdr panes
+                                    ├─ inference ──► Zen / Together (HTTPS)
+                                    └─ all state on a LUKS-encrypted volume
 
-        Tailscale tailnet (WireGuard) — the ONLY path to the brain; zero public inbound ports
+Tailscale tailnet — the ONLY path to the brain; zero public inbound ports
 ```
 
 | Surface | Role |
 |---|---|
-| **VPS "brain"** (Hetzner cpx21-class, Ubuntu 24.04) | Runs `goose serve` under systemd. Owns the one shared chat history (`sessions.db`). All state — sessions, secrets — sits on a LUKS-encrypted volume at `/data`. Reachable only over Tailscale, TLS + shared-secret auth, zero public inbound ports. |
-| **Goose** (hub agent, on the brain) | General-purpose agent under Linux Foundation / AAIF governance — explicitly "not just for code": research, writing, personal admin. MCP-native extensions, built-in Memory, custom providers for Zen and Together. Pinned to stable 1.x (2.0 is in RC churn). |
+| **Brain** (Hetzner cpx21-class, Ubuntu 24.04) | Runs `goose serve` under systemd. Owns the one shared chat history (`sessions.db`). All state — sessions, secrets — sits on a LUKS-encrypted volume at `/data`. Reachable only over Tailscale: TLS + shared-secret auth, zero public inbound ports. |
+| **Hub** (Goose, on the brain) | The general-purpose agent — research, writing, personal admin. MCP-native extensions, built-in memory, custom providers for Zen and Together. Pinned to stable 1.x (2.0 is in RC churn). |
 | **Goose Desktop** (Mac) | Full desktop UI, attached to the brain as a remote client over goose's Agent Client Protocol ("remote ACP" in the diagram). |
 | **goose CLI** (Mac) | Local offline fallback hub when the brain is unreachable. |
-| **Coding agents** (on the brain, herdr) | The coding-agent runtime: herdr manages the agent panes (OpenCode, Pi, and the setup-time catalog), the wizard wires the picked set, and the Mac attaches over SSH — no coding agent installs on the Mac. See [`docs/coding-agents.md`](docs/coding-agents.md). |
+| **Coding agents** (brain, herdr) | herdr manages the agent panes (OpenCode, Pi, and the setup-time catalog); the wizard wires the picked set; the Mac attaches over SSH. No coding agent installs on the Mac. See [`docs/coding-agents.md`](docs/coding-agents.md). |
 | **Tailscale** | WireGuard mesh — the only network path to the brain. |
-| **OpenCode Zen** | At-cost pay-as-you-go inference gateway, one key, per-family wire formats. Zero-retention/no-training on its hosted open models; caveats per tier in `docs/privacy.md`. |
-| **Together AI** | OpenAI-compatible inference over 200+ open models. ZDR by default, no training without opt-in, SOC 2, HIPAA/BAA posture — the sensitive (health/finance) tier lives here exclusively. |
+| **OpenCode Zen** | At-cost pay-as-you-go inference gateway, one key, per-family wire formats. Zero-retention/no-training on its hosted open models; per-tier caveats in [`docs/privacy.md`](docs/privacy.md). |
+| **Together AI** | OpenAI-compatible inference over 200+ open models. ZDR by default, no training without opt-in, SOC 2, HIPAA/BAA posture — the sensitive tier lives here exclusively. |
 
-## Repo map
+<a id="before-you-start"></a>
+
+## 🧭 Before you start
+
+| You need | Notes |
+|---|---|
+| A Mac | The runbooks are written for the Mac. The brain itself is Linux (Ubuntu 24.04) — what is Mac-only is the laptop's secret store (macOS Keychain) and Homebrew; a Linux laptop needs a keyring backend that does not exist here yet. Per-component table: [`docs/setup/00-overview.md`](docs/setup/00-overview.md#supported-platforms). |
+| Comfort with a terminal | You'll run scripts, `terraform apply`, and paste commands over SSH. Every step is written out; no improvisation required. |
+| ~$15–35/month | Breakdown in [Budget](#budget). The two inference accounts are pay-as-you-go with hard caps. |
+| Accounts you'll create | OpenCode Zen, Together AI, Hetzner, Tailscale (a todo app like Todoist is optional). Each has a runbook with the gotchas called out. |
+
+<a id="budget"></a>
+
+## 💸 Budget
+
+All figures verified as of 2026-08-20 — re-verify at signup (`scripts/verify/pin-models.sh` catches model/price drift monthly).
+
+| Item | ~Cost |
+|---|---|
+| Hetzner cpx21-class VPS + encrypted volume | ~€6–9/mo |
+| OpenCode Zen inference (PAYG — **disable auto-reload, set a cap**) | ~$5–20/mo typical |
+| Together AI inference (min $5 top-up; sensitive tier + default hub) | ~$5–10/mo |
+| Tailscale (personal plan) | $0 |
+| Coding agents on the brain (herdr panes) | no new account — bills to the Zen/Together lines above, plus disk |
+| **Total** | **~$15–35/mo** |
+
+Coding agents are the one line that can move the total on their own — an agent turn bills far more than a chat turn, and several can run at once (`opencode stats` inside a pane reports actual spend). They also consume **disk**: clones and worktrees live under `/data/herdr`, on the same 10 GB volume as everything else by default, and `check-herdr.sh` fails once they occupy 75% of it. Grow `data_volume_size` (Hetzner volumes grow without recreation) or clean old worktrees — see [`docs/coding-agents.md`](docs/coding-agents.md).
+
+Routing keeps costs predictable: daily chat runs on a cheap open model, escalating to a frontier model only when needed — prices and hard rules in [`docs/model-routing.md`](docs/model-routing.md).
+
+## 🗺️ Repo map
 
 <!-- GENERATED — do not edit between the markers; `bin/pai docs --write`
      re-renders this. The SHAPE (which paths appear, in which order, carrying
@@ -170,10 +174,11 @@ Goose CLI (offline fallback)                                      ├─ coding 
 ```text
 .
 ├── README.md                     # you are here: install, the add-on menu, the budget
+├── assets/                       # the README header logo
 ├── AGENTS.md                     # how agents work in this repo: the tracker, the labels, the domain docs
 ├── CONTEXT.md                    # the domain glossary: one term, one meaning, everywhere
 ├── LICENSE                       # MIT
-├── bin/pai                       # the one entry point: doctor, status, list, units, verify, docs
+├── bin/pai                       # the one entry point: doctor, status, list, units, secrets, verify, docs, remove
 ├── .gitignore                    # keeps secrets, tfstate/tfvars, OAuth tokens out of a public repo
 ├── .pre-commit-config.yaml       # gitleaks, ruff, yamllint, shellcheck before every commit
 ├── .github/workflows/            # the CI gates: secret scan, lint, types, coverage, install tests
@@ -227,39 +232,28 @@ Goose CLI (offline fallback)                                      ├─ coding 
 
 <!-- pai-docs:end repo-map -->
 
-## Adapting it to you
+<a id="adapting-it-to-you"></a>
+
+## 🔧 Adapting it to you
 
 The repo is a template; your identity and choices live outside it or in a handful of obvious places:
 
-- **Identity**: `config/goose/goosehints.example` has `<placeholders>` for your name/email/timezone; `infra/terraform/terraform.tfvars.example` for your SSH public key and region. Secrets go in your Keychain (Mac) and `/data/secrets.env` (brain) — never in the repo. The two Terraform secrets (Hetzner token, Tailscale auth key) are stored nowhere at all: Terraform prompts for them on each `plan`/`apply`.
-- **Different VPS host**: everything host-specific is confined to `infra/terraform/`. Porting to DigitalOcean/Vultr means rewriting that one directory; nothing else cares.
-- **Different models/providers**: providers are JSON files in `config/goose/custom_providers/`; the job→model routing (and the privacy rules that constrain it) is `docs/model-routing.md`. Any OpenAI- or Anthropic-compatible endpoint slots in.
-- **Different apps**: the shipped MCP extensions are Todoist (disabled by default), Tavily search, and Playwright — swap in your own. The todo choice is deliberately undecided (see `docs/roadmap.md`).
+- **Identity**: `<placeholders>` in `config/goose/goosehints.example` (name, email, timezone) and `infra/terraform/terraform.tfvars.example` (SSH public key, region). Secrets go in your Keychain (Mac) and `/data/secrets.env` (brain) — never in the repo. The two Terraform secrets are stored nowhere at all: Terraform prompts for them on every `plan`/`apply`.
+- **Different host**: everything host-specific is confined to `infra/terraform/` — porting to DigitalOcean or Vultr means rewriting that one directory; nothing else cares.
+- **Different models**: providers are JSON files in `config/goose/custom_providers/`; the job→model routing, and the privacy rules that constrain it, are [`docs/model-routing.md`](docs/model-routing.md). Any OpenAI- or Anthropic-compatible endpoint slots in.
+- **Different apps**: the shipped MCP extensions are Todoist, Tavily, and Playwright — all disabled by default; swap in your own. The todo choice is deliberately undecided ([`docs/roadmap.md`](docs/roadmap.md)).
 
-## Principles
+<a id="principles"></a>
 
-1. **One brain, one history.** The hub agent runs only on the VPS; its `sessions.db` is the single chat history. Every device — Desktop, CLI — is a client to the same brain, so a conversation started anywhere continues everywhere. That is the invariant of the base install, and every add-on on the menu above preserves it. Exactly one add-on deliberately does not put its chats in `sessions.db`, and it explains itself in its own doc: [`docs/coding-agents.md`](docs/coding-agents.md#why-coding-agent-work-is-not-in-the-shared-history).
-2. **Privacy tiers.** Every job class is pinned to a provider tier (`docs/model-routing.md`, `docs/privacy.md`). Health and finance data go to Together AI only (ZDR/HIPAA posture). Zen free models never see personal data. Claude/GPT via Zen never see health/finance data.
-3. **Everything as code.** Infrastructure is Terraform, configs are templates, host state is scripts + systemd units, and every manual step is a runbook. A dead laptop or dead VPS is an inconvenience, not a loss.
-4. **Public-repo hygiene.** Safe by construction: only placeholders are committed; secrets are injected from untracked files; gitleaks runs at commit time and in CI over full history; `docs/public-repo.md` gates the flip to public.
+## 📌 Principles
 
-## Budget
+1. **One brain, one history.** Every add-on on the menu preserves it; coding-agent work is the one deliberate exception, and it explains itself: [`docs/coding-agents.md`](docs/coding-agents.md#why-coding-agent-work-is-not-in-the-shared-history).
+2. **Privacy tiers.** Every job class is pinned to a provider tier ([`docs/model-routing.md`](docs/model-routing.md), [`docs/privacy.md`](docs/privacy.md)) — Zen free models never see personal data; Claude/GPT via Zen never see health/finance data.
+3. **Everything as code.** A dead laptop or a dead brain is an inconvenience, not a loss.
+4. **Public-repo hygiene.** Safe by construction: only placeholders are committed, secrets are injected from untracked files, gitleaks runs at commit time and in CI over full history, and [`docs/public-repo.md`](docs/public-repo.md) gates the flip to public.
 
-All figures verified as of 2026-08-20 — re-verify at signup (`scripts/verify/pin-models.sh` catches model/price drift monthly).
+<a id="license"></a>
 
-| Item | ~Cost |
-|---|---|
-| Hetzner cpx21-class VPS + encrypted volume | ~€6–9/mo |
-| OpenCode Zen inference (PAYG — **disable auto-reload, set a cap**) | ~$5–20/mo typical |
-| Together AI inference (min $5 top-up; sensitive tier + default hub) | ~$5–10/mo |
-| Tailscale (personal plan) | $0 |
-| Coding agents on the brain (herdr panes) | no new account — bills to the Zen/Together lines above, plus disk |
-| **Total** | **~$15–35/mo** |
-
-Coding agents are the one line that can move the total on their own: an agent turn consumes far more per session than a conversation, and several can run at once; `opencode stats` inside a pane reports actual spend. They also consume **disk** — canonical clones and per-task worktrees live under `/data/herdr`, on the same 10 GB volume as everything else by default, so `check-herdr.sh` fails once they occupy 75% of it. Grow `data_volume_size` (Hetzner volumes grow without recreation) or clean old worktrees; see [`docs/coding-agents.md`](docs/coding-agents.md).
-
-Routing keeps costs predictable: daily chat on `kimi-k2.6` ($0.95/$4.00 per 1M tokens), escalating to `claude-sonnet-5` ($2/$10) only when needed; the default hub and sensitive tier run on Together's `Qwen3.5-397B` ($0.60/$3.60). Full table with hard rules: [`docs/model-routing.md`](docs/model-routing.md).
-
-## License
+## ⚖️ License
 
 [MIT](LICENSE). Fork it, rebuild it, make it yours.
