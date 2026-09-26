@@ -25,6 +25,12 @@
     "MD033": false,
     // 363 hits of table-pipe cosmetics.
     "MD060": false,
+    // 1 hit: the README header's bold tagline is a slogan under the badges,
+    // not a heading -- the centered-header style puts it there on purpose.
+    "MD036": false,
+    // 1 hit: the README's centered header opens the file with HTML by design
+    // (logo above the H1, badges and tagline below, all inside the div).
+    "MD041": false,
     // 44 of 90 files carry YAML frontmatter, and its `title:` is the document
     // title -- without this, every one of them looks like it has two H1s.
     "MD025": { "front_matter_title": "" }
