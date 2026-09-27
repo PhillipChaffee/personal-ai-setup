@@ -37,8 +37,10 @@
 #      apply (#178) in the foreground — the Hetzner token and the tagged
 #      Tailscale auth key are typed at terraform's own interactive prompts,
 #      which the wizard inherits and never reads. The Tailscale web toggles
-#      stay hand-only; luks-setup.sh and the /data/secrets.env fill follow
-#      behind confirms. Before the SSH target the wizard checks the Mac's
+#      stay hand-only; luks-setup.sh is driven over SSH (#179 — FORMAT and
+#      the passphrase typed at the remote prompt, never read) and the
+#      /data/secrets.env fill follows behind a confirm. Before the SSH
+#      target the wizard checks the Mac's
 #      Tailscale state (#184 — hand-guides install and sign-in when it is
 #      off, since the Mac installer runs later) and pre-fills the fresh-path
 #      target agent@ai-brain.<MagicDNS suffix>, derived from this Mac's
@@ -528,8 +530,9 @@ done
 if [ "$SCOPE" = "fresh" ]; then
   say "Fresh end-to-end: new Mac + new brain. The provisioning gauntlet"
   say "(Tailscale toggles, terraform, LUKS, the secrets.env fill) prints behind"
-  say "confirms — terraform apply is driven by the wizard (#178, secrets typed"
-  say "at terraform's own prompt); the rest you run and it waits."
+  say "confirms — terraform apply and luks-setup.sh are driven by the wizard"
+  say "(#178, #179 — secrets and passphrases typed at the prompts they own);"
+  say "the Tailscale toggles stay hand-run."
 else
   say "Configure the existing ai-brain: both installers, the upgrade path,"
   say "and the one-time teardown checklist printed as hand steps before the"
@@ -703,9 +706,10 @@ if [ "$SCOPE" = "fresh" ]; then
   done
   pick_brain_shape
   say ""
-  say "The gauntlet, in order — terraform apply is run BY the wizard (#178); the"
-  say "Tailscale toggles and LUKS stay hand-run; every secret is typed at the"
-  say "prompt of the tool that asks for it, never read by this wizard:"
+  say "The gauntlet, in order — terraform apply and luks-setup.sh are run BY"
+  say "the wizard (#178, #179); the Tailscale toggles stay hand-run; every"
+  say "secret is typed at the prompt of the tool that asks for it, never read"
+  say "by this wizard:"
   pause "1/4 — Tailscale: account ready, Mac signed in, MagicDNS + HTTPS Certificates ON?"
   if [ "$HERDR" -eq 1 ] && below_floor "$BRAIN_SERVER_TYPE"; then
     warn "$BRAIN_SERVER_TYPE is below the herdr floor (4 vCPU / 8 GB); with herdr"
@@ -742,10 +746,38 @@ if [ "$SCOPE" = "fresh" ]; then
     warn "infra/terraform, then re-run this wizard."
     exit 1
   fi
-  confirm "3/4 — LUKS: luks-setup.sh --device <path> has run and /data is mounted (passphrase typed twice, FORMAT typed)?" || {
-    warn "Run luks-setup.sh first (docs/setup/50-vps-brain.md §3), then re-run this wizard."
+  # #179: the wizard drives luks-setup.sh over SSH — the last hand-run
+  # gauntlet step. The repo is not cloned on the brain yet (the deploy stage
+  # clones it), so the script is staged by stdin and run from a root-only
+  # path under a TTY: the FORMAT confirm and the passphrase (typed twice)
+  # belong to the REMOTE prompt; this wizard never reads them. agent gets
+  # NOPASSWD sudo from cloud-init.
+  LUKS_DEVICE="$(cd "$REPO_ROOT/infra/terraform" && terraform output -raw data_volume_linux_device 2>/dev/null || true)"
+  if [ -z "$LUKS_DEVICE" ]; then
+    warn "could not read terraform's data_volume_linux_device output —"
+    warn "terraform apply (2/4) must have run first (docs/setup/50-vps-brain.md §3)."
     exit 1
-  }
+  fi
+  if confirm "3/4 — LUKS: run luks-setup.sh over SSH now (device $LUKS_DEVICE)? Save the passphrase in your password manager FIRST — you'll type FORMAT and the passphrase (twice) at the REMOTE prompt."; then
+    say "Staging luks-setup.sh on the brain, then driving it with a TTY…"
+    ssh "$BRAIN_SSH" 'cat > /tmp/luks-setup.wizard.sh && chmod 700 /tmp/luks-setup.wizard.sh' \
+      < "$REPO_ROOT/scripts/vps/luks-setup.sh" || {
+      warn "staging failed — is the brain up and the SSH key authorized (docs/setup/50-vps-brain.md §3)?"
+      exit 1
+    }
+    ssh -t "$BRAIN_SSH" "sudo mv /tmp/luks-setup.wizard.sh /root/luks-setup.wizard.sh && sudo chmod 700 /root/luks-setup.wizard.sh && sudo /root/luks-setup.wizard.sh --device '$LUKS_DEVICE'" || {
+      warn "luks-setup failed or was aborted at its own prompts (its output is above)."
+      exit 1
+    }
+    ssh "$BRAIN_SSH" 'mountpoint -q /data' || {
+      warn "/data is not mounted after luks-setup — investigate before the deploy (docs/setup/50-vps-brain.md §3)."
+      exit 1
+    }
+    say "✓ /data is mounted — LUKS2, encrypted at rest, no key stored server-side."
+  else
+    warn "Run luks-setup.sh yourself per docs/setup/50-vps-brain.md §3, then re-run this wizard."
+    exit 1
+  fi
   if confirm "4/4 — secrets.env: scaffold /data/secrets.env from the repo's example over SSH now? (names only — no value is sent)"; then
     say "scaffolding /data/secrets.env from config/env/secrets.env.example (names only)…"
     if ssh "$BRAIN_SSH" 'umask 077; if [ -f /data/secrets.env ]; then echo "kept existing /data/secrets.env"; else cat > /data/secrets.env && chmod 600 /data/secrets.env && echo "created /data/secrets.env (0600)"; fi' \
