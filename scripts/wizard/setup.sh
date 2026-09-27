@@ -38,7 +38,12 @@
 #      Tailscale auth key are typed at terraform's own interactive prompts,
 #      which the wizard inherits and never reads. The Tailscale web toggles
 #      stay hand-only; luks-setup.sh and the /data/secrets.env fill follow
-#      behind confirms. The picker only records: the picks land in the local
+#      behind confirms. Before the SSH target the wizard checks the Mac's
+#      Tailscale state (#184 — hand-guides install and sign-in when it is
+#      off, since the Mac installer runs later) and pre-fills the fresh-path
+#      target agent@ai-brain.<MagicDNS suffix>, derived from this Mac's
+#      tailscale, explained as the address it will SSH to. The picker only
+#      records: the picks land in the local
 #      .env and ride terraform's -var flags — availability is terraform
 #      plan's to validate, never the wizard's (the wizard never touches the
 #      Hetzner token, and Hetzner guarantees nothing about per-location
@@ -432,6 +437,21 @@ below_floor() {
   [ "$(spec_vcpu "$1")" -lt 4 ] || [ "$(spec_ram "$1")" -lt 8 ]
 }
 
+# tailscale_state: how the Mac's Tailscale is doing, read from its CLI only.
+# Sets TS_OK (1 when `tailscale status` succeeds) and TS_SUFFIX (the tailnet's
+# MagicDNS suffix, e.g. tail5ac550.ts.net). Never prints a value; the suffix
+# is not a secret.
+tailscale_state() {
+  TS_OK=0
+  TS_SUFFIX=""
+  command -v tailscale >/dev/null 2>&1 || return 0
+  tailscale status >/dev/null 2>&1 || return 0
+  TS_OK=1
+  TS_SUFFIX="$(tailscale status --json 2>/dev/null \
+    | sed -n 's/.*"MagicDNSSuffix"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    | head -n1)"
+}
+
 pick_brain_shape() {
   # The picker records and points; it never touches the Hetzner token. The
   # gauntlet below runs terraform (#178) — the token is typed at terraform's
@@ -605,8 +625,49 @@ note "    every reboot (crypttab is noauto on purpose)"
 note "  • the coding-agent pane logins (subscription OAuth) — typed inside panes"
 note "  • Goose Desktop connect + settings"
 note "  • every /data/secrets.env row this wizard did not capture"
+# #184: the gauntlet and the SSH target both need the Mac on the tailnet, but
+# the Mac installer (stage 6) is the thing that installs the Tailscale cask —
+# too late for this stage. Detect the state now; hand-guide when it is off.
+tailscale_state
+if [ "$TS_OK" -eq 0 ]; then
+  while :; do
+    if command -v tailscale >/dev/null 2>&1; then
+      warn "Tailscale is installed but not signed in (or its app is not running)."
+    else
+      warn "Tailscale is not installed on this Mac — the brain is reachable only"
+      warn "over your tailnet. Install it first:"
+      note "    brew install --cask tailscale"
+    fi
+    note "Then open the Tailscale app, sign in, and turn ON MagicDNS and HTTPS"
+    note "Certificates — the two toggles gauntlet step 1/4 asks about."
+    if confirm "Tailscale ready now — re-check?"; then
+      tailscale_state
+      [ "$TS_OK" -eq 1 ] && break
+      warn "Still not ready."
+    else
+      confirm "Continue anyway without a working tailnet? (the scaffold, the deploy and the checks all need it)" || {
+        warn "Fix Tailscale, then re-run this wizard."
+        exit 1
+      }
+      break
+    fi
+  done
+fi
+say "The SSH target is where the wizard later SSHes to scaffold /data/secrets.env,"
+say "drive the deploy, and run the verify commands. On the fresh path the address"
+say "is known in advance — terraform names the server 'ai-brain' (infra/terraform/"
+say "main.tf) and cloud-init joins the tailnet with --hostname ai-brain."
+BRAIN_SSH_DEFAULT=""
+if [ "$SCOPE" = "fresh" ] && [ "$TS_OK" -eq 1 ] && [ -n "$TS_SUFFIX" ]; then
+  BRAIN_SSH_DEFAULT="agent@ai-brain.$TS_SUFFIX"
+fi
 while :; do
-  ask BRAIN_SSH "Brain SSH target (user@host — e.g. agent@your-brain.your-tailnet.ts.net):"
+  if [ -n "$BRAIN_SSH_DEFAULT" ] && [ -z "$(_existing BRAIN_SSH || true)" ]; then
+    ask BRAIN_SSH "Brain SSH target (user@host) [Enter = $BRAIN_SSH_DEFAULT]:"
+    [ -n "$BRAIN_SSH" ] || BRAIN_SSH="$BRAIN_SSH_DEFAULT"
+  else
+    ask BRAIN_SSH "Brain SSH target (user@host — e.g. agent@your-brain.your-tailnet.ts.net):"
+  fi
   case "$BRAIN_SSH" in *" "*) warn "no spaces in an ssh target" ;; "") warn "needed to drive the deploy over SSH" ;; *) break ;; esac
 done
 if [ "$SCOPE" = "fresh" ]; then
