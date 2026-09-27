@@ -1,12 +1,12 @@
 {
   "name": "zen-anthropic",
   "engine": "anthropic",
-  "display_name": "OpenCode Zen messages — no sensitive (Claude: 30-day)",
+  "display_name": "OpenCode Zen messages \u2014 no sensitive (Claude: 30-day)",
   "api_key_env": "OPENCODE_ZEN_API_KEY",
   "base_url": "https://opencode.ai/zen",
   "models": [
     {
-      "name": "claude-fable-5",
+      "name": "claude-fable-5-1",
       "context_limit": 131072
     },
     {
@@ -14,43 +14,11 @@
       "context_limit": 131072
     },
     {
-      "name": "claude-opus-4-5",
-      "context_limit": 131072
-    },
-    {
-      "name": "claude-opus-4-6",
-      "context_limit": 131072
-    },
-    {
-      "name": "claude-opus-4-7",
-      "context_limit": 131072
-    },
-    {
-      "name": "claude-opus-4-8",
-      "context_limit": 131072
-    },
-    {
-      "name": "claude-opus-5",
-      "context_limit": 131072
-    },
-    {
-      "name": "claude-sonnet-4",
-      "context_limit": 131072
-    },
-    {
-      "name": "claude-sonnet-4-5",
-      "context_limit": 131072
-    },
-    {
-      "name": "claude-sonnet-4-6",
+      "name": "claude-opus-5-5",
       "context_limit": 131072
     },
     {
       "name": "claude-sonnet-5",
-      "context_limit": 131072
-    },
-    {
-      "name": "qwen3.5-plus",
       "context_limit": 131072
     },
     {

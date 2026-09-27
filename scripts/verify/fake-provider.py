@@ -110,8 +110,8 @@ BEARER = "Bearer "
 # ~700 ids), and a mount that accepts 700 models cannot tell a pinned model from
 # a deprecated one. These three ids are exactly what check-providers.sh:93/106/155
 # and check-goose.sh:52 send, so a drift in either script lands as a 404 here.
-ZEN_MODELS = ("minimax-m2.7", "claude-haiku-4-5")
-TOGETHER_MODELS = ("openai/gpt-oss-120b",)
+ZEN_MODELS = ("glm-5.3-flash", "claude-sonnet-5", "claude-haiku-4-5")
+TOGETHER_MODELS = ("openai/gpt-oss-120b", "zai-org/GLM-5.3-Flash")
 
 
 @dataclass(frozen=True)

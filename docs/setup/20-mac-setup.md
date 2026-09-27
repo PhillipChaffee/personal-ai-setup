@@ -156,9 +156,10 @@ If you run OpenCode locally anyway, two things to know:
 - **Nothing here configures it.** There is no shipped `opencode.json`, no
   credential write, no `/connect` step — you point OpenCode at Zen yourself.
 - **The routing rules still apply.** Set models with `/models` per the
-  [routing table](../model-routing.md): **`kimi-k2.6`** for
-  daily coding, escalate to **`claude-sonnet-5`** manually when a problem
-  deserves it, and use **`big-pickle`** (free) only for throwaway code that
+  [routing table](../model-routing.md): **`zai-org/GLM-5.3-Flash`** (Together) for
+  daily coding — the same model the brain runs — escalate to
+  **`claude-sonnet-5`** (Zen) manually when a problem deserves it, and use
+  **`big-pickle`** (free) only for throwaway code that
   contains nothing personal — the free tier trains on your prompts.
 
 ## 4. Goose Desktop first run
@@ -169,8 +170,9 @@ If you run OpenCode locally anyway, two things to know:
    the custom providers the bootstrap installed. Set the default to
    **`together` / `zai-org/GLM-5.3-Flash`** (the hub daily driver — ZDR, so
    the default is also the most private option), with
-   **`zen-anthropic` / `claude-sonnet-5`** as the premium switch for
-   non-sensitive work and **`zen-openai` / `kimi-k2.6`** as the cost-saver —
+   **`zen-anthropic`** as the premium switch (its default is `glm-5.3-flash`
+   too; pick `claude-sonnet-5` there when you want Claude — non-sensitive
+   work only) and **`zen-openai` / `glm-5.3-flash`** as the cost-saver —
    the model picker changes this in two clicks. (`zen-free` is in the picker
    too; its display name reminds you those models train on your data.)
 3. Confirm the Developer extension is on (default) and leave the extension
@@ -210,7 +212,7 @@ each (base_url 404s, Zen auth, model IDs).
 Optional smoke test of the fallback hub itself:
 
 ```bash
-goose run --provider zen-openai --model kimi-k2.6 -t "Reply with exactly: local goose ok"
+goose run --provider zen-openai --model glm-5.3-flash -t "Reply with exactly: local goose ok"
 ```
 
 ## Done — where you are now

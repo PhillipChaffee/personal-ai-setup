@@ -61,10 +61,12 @@ twice the price for the same tier.
 The inference range is wide because it tracks your usage directly — that's the
 point of PAYG. What keeps it near the bottom of the range:
 
-- Daily chat runs on `kimi-k2.6` ($0.95/$4.00), escalating to
-  `claude-sonnet-5` ($2/$10) only when needed.
-- The sensitive tier tops out at `Qwen3.5-397B` ($0.60/$3.60), with big-PDF
-  work on DeepSeek V4 Flash ($0.14/$0.28).
+- Daily chat runs on `zai-org/GLM-5.3-Flash` ($0.15/$0.50), escalating to
+  `claude-sonnet-5` ($2/$10) only when needed (#200: GLM-5.3-Flash is the
+  default on every provider).
+- The sensitive tier runs GLM-5.3-Flash by default with `Qwen3.5-397B`
+  ($0.60/$3.60) as the heavier pick, and big-PDF work on DeepSeek V4 Flash
+  ($0.14/$0.28).
 - **Zen auto-reload gets disabled and a monthly cap set on day one**
   ([10-accounts.md](10-accounts.md)) — the two settings that stop a runaway
   loop from becoming a runaway bill.

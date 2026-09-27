@@ -82,7 +82,7 @@ your shell? see `scripts/mac/keychain-secrets.sh`), or Zen changed its auth.
    `headers` field in `config/goose/custom_providers/zen-anthropic.json`, or
    use the fallback: **drop the `zen-anthropic` provider**. Claude stays
    available through OpenCode on the Mac, and the hub's daily driver falls
-   back to `zen-openai`/`kimi-k2.6` — see `docs/model-routing.md`.
+   back to `zen-openai`/`glm-5.3-flash` — see `docs/model-routing.md`.
 
 ## A client gets a TLS error (or Desktop suddenly can't connect)
 

@@ -134,12 +134,12 @@ fi
 # ---- 2. Zen: POST /chat/completions (openai wire format) -------------------
 request -H "Authorization: Bearer $OPENCODE_ZEN_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"minimax-m2.7","messages":[{"role":"user","content":"hi"}],"max_tokens":1}' \
+  -d '{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hi"}],"max_tokens":1}' \
   "$ZEN_BASE/chat/completions"
 if [ "$HTTP_STATUS" = "200" ]; then
-  pass "Zen POST /chat/completions with minimax-m2.7 (HTTP 200)"
+  pass "Zen POST /chat/completions with glm-5.3-flash (HTTP 200)"
 else
-  fail "Zen POST /chat/completions with minimax-m2.7 (HTTP $HTTP_STATUS)"
+  fail "Zen POST /chat/completions with glm-5.3-flash (HTTP $HTTP_STATUS)"
   echo "      body: $(body_snippet)"
   echo "      (404 on the model? run scripts/verify/pin-models.sh — Zen deprecates aggressively)"
 fi

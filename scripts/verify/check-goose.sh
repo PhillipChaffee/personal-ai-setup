@@ -19,8 +19,8 @@ Usage: check-goose.sh [--help]
 Runs, per provider:
   goose run --no-session --quiet -t 'Reply with exactly OK' --provider X --model Y
 
-Pairs tested: zen-openai/minimax-m2.7, zen-anthropic/claude-haiku-4-5,
-together/openai/gpt-oss-120b. Needs the goose CLI, the custom-provider JSONs
+Pairs tested: zen-openai/glm-5.3-flash, zen-anthropic/claude-sonnet-5,
+together/zai-org/GLM-5.3-Flash. Needs the goose CLI, the custom-provider JSONs
 in ~/.config/goose/custom_providers/, and OPENCODE_ZEN_API_KEY +
 TOGETHER_API_KEY in the environment. Exits non-zero if any provider fails.
 Cost: three one-line completions.
@@ -49,7 +49,7 @@ OUT_FILE="$(mktemp)"
 trap 'rm -f "$OUT_FILE"' EXIT
 
 # provider:model pairs (model IDs verified as of 2026-08-20)
-PAIRS="zen-openai:minimax-m2.7 zen-anthropic:claude-haiku-4-5 together:openai/gpt-oss-120b"
+PAIRS="zen-openai:glm-5.3-flash zen-anthropic:claude-sonnet-5 together:zai-org/GLM-5.3-Flash"
 
 # base_url variants per provider, for the failure hint. Verified against
 # goose v1.46.0: the openai engine accepts both forms (it appends

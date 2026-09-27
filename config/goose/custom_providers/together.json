@@ -1,7 +1,7 @@
 {
   "name": "together",
   "engine": "openai",
-  "display_name": "Together AI — ZDR, sensitive-safe",
+  "display_name": "Together AI \u2014 ZDR, sensitive-safe",
   "api_key_env": "TOGETHER_API_KEY",
   "base_url": "https://api.together.xyz/v1/chat/completions",
   "models": [
@@ -266,10 +266,6 @@
       "context_limit": 131072
     },
     {
-      "name": "deepcogito/cogito-v2-1-671b",
-      "context_limit": 163840
-    },
-    {
       "name": "deepseek-ai/DeepSeek-OCR-2",
       "context_limit": 8192
     },
@@ -300,10 +296,6 @@
     {
       "name": "deepseek-ai/DeepSeek-V4-Flash-0731",
       "context_limit": 1048576
-    },
-    {
-      "name": "deepseek-ai/DeepSeek-V4-Pro",
-      "context_limit": 512000
     },
     {
       "name": "deepseek-ai/DeepSeek-V4-Pro-0813",
@@ -348,10 +340,6 @@
     {
       "name": "google/gemma-3-4b-it",
       "context_limit": 65536
-    },
-    {
-      "name": "google/gemma-3n-E4B-it",
-      "context_limit": 32768
     },
     {
       "name": "google/gemma-4-12B-it",
@@ -594,19 +582,11 @@
       "context_limit": 131072
     },
     {
-      "name": "pearl-ai/gemma-4-31b-it",
-      "context_limit": 262144
-    },
-    {
       "name": "sarvamai/sarvam-m",
       "context_limit": 32768
     },
     {
       "name": "thinkingmachines/Inkling",
-      "context_limit": 524288
-    },
-    {
-      "name": "thinkingmachines/Inkling-Small",
       "context_limit": 524288
     },
     {

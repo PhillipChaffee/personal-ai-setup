@@ -40,7 +40,7 @@ FAILS, naming itself: nothing else in this repo would notice it. One that has a
 smoke test but is not enabled SKIPs — a machine without that connector is not
 penalised for it.
 
-All runs are pinned to zen-openai/kimi-k2.6 (cheap, Tier-2-safe — connector
+All runs are pinned to together/zai-org/GLM-5.3-Flash (cheap, ZDR — connector
 content must not go to free models; docs/privacy.md). Verify the printed
 output looks like YOUR real tasks/pages — the script can only check that the
 runs completed. Exits non-zero if a non-skipped check fails.
@@ -76,8 +76,8 @@ GOOSE_BIN="$(resolve_goose_bin --required)"
 PY_CMD="$(py_runner)"
 read -r -a PY <<<"$PY_CMD"
 
-PROVIDER="zen-openai"
-MODEL="kimi-k2.6"
+PROVIDER="together"
+MODEL="zai-org/GLM-5.3-Flash"
 OUT_FILE="$(mktemp)"
 trap 'rm -f "$OUT_FILE"' EXIT
 

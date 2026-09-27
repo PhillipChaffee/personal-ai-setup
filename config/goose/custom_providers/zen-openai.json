@@ -1,12 +1,12 @@
 {
   "name": "zen-openai",
   "engine": "openai",
-  "display_name": "OpenCode Zen chat — zero-retention",
+  "display_name": "OpenCode Zen chat \u2014 zero-retention",
   "api_key_env": "OPENCODE_ZEN_API_KEY",
   "base_url": "https://opencode.ai/zen/v1/chat/completions",
   "models": [
     {
-      "name": "deepseek-v4-flash",
+      "name": "deepseek-v4.1-flash",
       "context_limit": 131072
     },
     {
@@ -14,23 +14,11 @@
       "context_limit": 131072
     },
     {
-      "name": "glm-5",
+      "name": "glm-5.3",
       "context_limit": 131072
     },
     {
-      "name": "glm-5.1",
-      "context_limit": 131072
-    },
-    {
-      "name": "glm-5.2",
-      "context_limit": 131072
-    },
-    {
-      "name": "kimi-k2.5",
-      "context_limit": 131072
-    },
-    {
-      "name": "kimi-k2.6",
+      "name": "glm-5.3-flash",
       "context_limit": 131072
     },
     {
@@ -39,14 +27,6 @@
     },
     {
       "name": "kimi-k3",
-      "context_limit": 131072
-    },
-    {
-      "name": "minimax-m2.5",
-      "context_limit": 131072
-    },
-    {
-      "name": "minimax-m2.7",
       "context_limit": 131072
     },
     {

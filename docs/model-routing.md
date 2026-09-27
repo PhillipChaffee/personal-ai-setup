@@ -15,15 +15,15 @@ pricing/model pages). Both catalogs churn — re-verify at signup and monthly vi
 
 | Job class | Route | Model | Price |
 |---|---|---|---|
-| Interactive coding (daily) | OpenCode → Zen | `kimi-k2.6` | $0.95/$4.00 |
-| Coding escalation | OpenCode → Zen | `claude-sonnet-5` | $2/$10 |
+| Interactive coding (daily) — **default** | OpenCode → Together | `zai-org/GLM-5.3-Flash` | $0.15/$0.50 (verified 2026-09-26) |
+| Coding escalation | OpenCode | manual pick — `claude-sonnet-5` via Zen, or `zai-org/GLM-5.3` on Together ($1.40/$4.40) | $2/$10 (Zen Claude: 30-day retention — non-sensitive only) |
 | Throwaway/non-personal code | OpenCode → Zen | `big-pickle` (free) | $0 — **never personal data** |
 | Hub daily driver (brain) — **default** | Goose → `together` | `zai-org/GLM-5.3-Flash` | $0.15/$0.50, cached $0.03 (ZDR — private by default; verified 2026-09-26) |
-| Hub premium alternative (non-sensitive) | Goose → `zen-anthropic` | `claude-sonnet-5` | $2/$10 (30-day retention) |
-| Hub cost-saver | Goose → `zen-openai` | `kimi-k2.6` | $0.95/$4.00 |
-| Sensitive doc Q&A | Goose → `together` | `Qwen3.5-397B-A17B` | $0.60/$3.60 (ZDR/HIPAA) |
+| Hub premium alternative (non-sensitive) | Goose → `zen-anthropic` | `claude-sonnet-5` — this provider runs Zen's Anthropic `/messages` engine, which does not serve `glm-5.3-flash`; the GLM fallback for the tier is `zen-openai` | $2/$10 (30-day retention) |
+| Hub cost-saver | Goose → `zen-openai` | default `glm-5.3-flash` (#200 — same model, same price, second route) | $0.15/$0.50 |
+| Sensitive doc Q&A | Goose → `together` | `zai-org/GLM-5.3-Flash` (default) or `Qwen/Qwen3.5-397B-A17B` | $0.15/$0.50 or $0.60/$3.60 (ZDR/HIPAA) |
 | Sensitive long-context (big PDFs) | Goose → `together` | DeepSeek V4 Flash | $0.14/$0.28, 1M ctx |
-| Code agents (brain, per-chat containers) | OpenCode in container → Zen/Together | **owner's choice at kick-off** — default `deepseek-v4-flash` | Zen: peak/off-peak; Together alt $0.14/$0.28 |
+| Code agents (brain, per-chat containers) | OpenCode in container → Together | **owner's choice at kick-off** — default `zai-org/GLM-5.3-Flash` (the Mac's practice; DeepSeek-V4-Flash-0731 alt $0.14/$0.28) | $0.15/$0.50 |
 | Image/screenshot chats | Goose → `together` | `google/gemma-4-31B-it` | serverless vision, ZDR |
 | Embeddings (roadmap RAG) | Together | M2-BERT-80M-32K | ~$0.01 |
 
@@ -85,9 +85,11 @@ Notes on reading the table:
    budget, it belongs on the sensitive tier.
 3. **Sensitive tier = Together (ZDR default, HIPAA/BAA posture) or Zen paid open models
    only.** Any session that touches health or finance data belongs on `together` — switch
-   the session there. Zen's paid open models (Kimi, GLM, MiniMax, DeepSeek, Qwen — zero retention,
-   no training) are the acceptable fallback if Together is down or rate-limited. Never
-   Claude/GPT via Zen, never a free model.
+   the session there. Zen's paid open models (GLM, Kimi, MiniMax, DeepSeek, Qwen — zero retention,
+   no training) are the acceptable fallback if Together is down or rate-limited —
+   `zen-openai`'s default is the same GLM-5.3-Flash (#200) at the same price, so the
+   fallback needs no model change; `zen-anthropic` (the Claude engine) has no GLM row.
+   Never Claude/GPT via Zen, never a free model.
 
 ## How to switch models
 

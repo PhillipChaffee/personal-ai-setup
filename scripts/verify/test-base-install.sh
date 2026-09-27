@@ -908,7 +908,7 @@ for r in rows[int(sys.argv[2]):]:
     # without a single correct request; these six rows are not.
     cat >"$WORK/expect-d3.txt" <<'EOF'
 zen GET /zen/v1/models bearer true - 200
-zen POST /zen/v1/chat/completions bearer true minimax-m2.7 200
+zen POST /zen/v1/chat/completions bearer true glm-5.3-flash 200
 zen POST /zen/v1/messages bearer true claude-haiku-4-5 200
 zen POST /zen/v1/messages x-api-key true claude-haiku-4-5 200
 together GET /together/v1/models bearer true - 200
@@ -939,9 +939,9 @@ EOF
     # PASS, for all three providers.
     D4_ODD="$(count_in "$G_OUT" 'PASS \(odd output\)')"
     D4_ROWS=0
-    grep -qE '^ +zen-openai +minimax-m2\.7 +PASS$' "$G_OUT" && D4_ROWS=$((D4_ROWS + 1))
-    grep -qE '^ +zen-anthropic +claude-haiku-4-5 +PASS$' "$G_OUT" && D4_ROWS=$((D4_ROWS + 1))
-    grep -qE '^ +together +openai/gpt-oss-120b +PASS$' "$G_OUT" && D4_ROWS=$((D4_ROWS + 1))
+    grep -qE '^ +zen-openai +glm-5\.3-flash +PASS$' "$G_OUT" && D4_ROWS=$((D4_ROWS + 1))
+    grep -qE '^ +zen-anthropic +claude-sonnet-5 +PASS$' "$G_OUT" && D4_ROWS=$((D4_ROWS + 1))
+    grep -qE '^ +together +zai-org/GLM-5\.3-Flash +PASS$' "$G_OUT" && D4_ROWS=$((D4_ROWS + 1))
     [ "$G_RC" -eq 0 ] && [ "$D4_ROWS" -eq 3 ] && [ "$D4_ODD" -eq 0 ] &&
       ok "D4: check-goose.sh exited 0 with 3 recap rows of exactly PASS (0 'odd output')" || {
       bad "D4: check-goose exited $G_RC with $D4_ROWS/3 clean PASS rows and $D4_ODD 'odd output' row(s)"
@@ -953,9 +953,9 @@ EOF
     # anthropic engine's convention, and it is what makes zen-anthropic's bare
     # base_url a tested claim rather than a documented one.
     cat >"$WORK/expect-d5.txt" <<'EOF'
-zen POST /zen/v1/chat/completions bearer true minimax-m2.7 200
-zen POST /zen/v1/messages x-api-key true claude-haiku-4-5 200
-together POST /together/v1/chat/completions bearer true openai/gpt-oss-120b 200
+zen POST /zen/v1/chat/completions bearer true glm-5.3-flash 200
+zen POST /zen/v1/messages x-api-key true claude-sonnet-5 200
+together POST /together/v1/chat/completions bearer true zai-org/GLM-5.3-Flash 200
 EOF
     rows_since "$MARK" >"$WORK/actual-d5.txt" || true
     if diff -u "$WORK/expect-d5.txt" "$WORK/actual-d5.txt" >"$WORK/d5.diff" 2>&1; then

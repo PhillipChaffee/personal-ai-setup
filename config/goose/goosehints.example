@@ -26,7 +26,8 @@ these hard rules bind you even when the user forgets them:
    deepseek-ai/DeepSeek-V4-Flash-0731 for long documents). Zen paid open models are
    the fallback if Together is unavailable. If asked to handle sensitive data
    on any other provider, decline and name the right one.
-4. Prefer cheap models for mechanical work: kimi-k2.6 (zen-openai) for general
+4. Prefer cheap models for mechanical work: glm-5.3-flash (the default on
+   every provider — #200) or minimax-m3 (zen-openai picker pick) for general
    tasks.
 
 ## Behavior rules
