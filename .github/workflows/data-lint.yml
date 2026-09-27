@@ -688,8 +688,8 @@ jobs:
           # A reason was only required in the `false` state, so
           # {supported: true, reason: ""} passed — and `pai remove` would have
           # printed a blank explanation for the one state that needs one.
-          probe reason coding-pack \
-            "coding-pack.uninstall.supported is true but reason is empty"
+          probe reason herdr \
+            "herdr.uninstall.supported is true but reason is empty"
 
       # The monthly run. continue-on-error until the catalog closes: --strict
       # also promotes the two REVERSE-closure checks, and every check-*.sh and

@@ -66,13 +66,11 @@ THE EIGHT PROPERTIES, and what each catches that the others do not:
   P8 installer table     bootstrap-mac.sh resolves --with/--without/--only
                          against a COPY of this catalog: UNIT_IDS, REQUIRES_*
                          and OWNS_* are bash globals, because the selection has
-                         to be computed before `uv` (and therefore PyYAML)
-                         exists on a fresh Mac. This is the check that stops the
-                         copy from drifting — and it is the reason the copy is
-                         allowed to exist. It also closes the catalog over
-                         config/skills/: a skill directory no unit claims is a
-                         skill the installer will never install.
-                         AND IT RUNS THE SCRIPT. (a)-(d) read the declarations;
+to be computed before `uv` (and therefore PyYAML)
+                          exists on a fresh Mac. This is the check that stops the
+                          copy from drifting — and it is the reason the copy is
+                          allowed to exist.
+                          AND IT RUNS THE SCRIPT. (a)-(d) read the declarations;
                          between them and any answer a user sees sits a `case`
                          dispatch, and one word changed inside it plans a
                          one-unit install with no uv while every declaration
@@ -123,7 +121,6 @@ REPO_ROOT: Final = Path(__file__).resolve().parents[2]
 UNITS_DIR: Final = REPO_ROOT / "config" / "units"
 VERIFY_DIR: Final = REPO_ROOT / "scripts" / "verify"
 SECRETS_EXAMPLE: Final = REPO_ROOT / "config" / "env" / "secrets.env.example"
-SKILLS_DIR: Final = REPO_ROOT / "config" / "skills"
 BOOTSTRAP_MAC: Final = REPO_ROOT / "scripts" / "mac" / "bootstrap-mac.sh"
 # The credential checklist whose "Mac Keychain" column P6 closes over. It is a
 # DOC, deliberately: after #39 the Keychain roster is the manifests, so the only
@@ -139,9 +136,6 @@ MANIFEST_VERSION: Final = 1
 SUMMARY_MAX: Final = 120
 PROMPT_MAX: Final = 200
 STALE_DAYS: Final = 180
-# `config/skills/<name>` -- exactly three parts. A deeper path is a file INSIDE
-# a skill, which is that skill's business rather than a claim on the directory.
-SKILL_PATH_PARTS: Final = 3
 
 # All 17 keys are required. A key with nothing to say is present and explicitly
 # null or []; omitting it is a FAIL, and so is adding an eighteenth.
@@ -1485,7 +1479,7 @@ def compare_sets(where: str, declared: Iterable[str], expected: Iterable[str]) -
 def check_table_order(ids: Sequence[str], requires: dict[str, list[str]]) -> list[str]:
     """P8(b): UNIT_IDS must be a topological order of the graph it spans.
 
-    bootstrap-mac.sh calls its five units in UNIT_IDS order and filters that
+    bootstrap-mac.sh calls its two units in UNIT_IDS order and filters that
     order rather than re-deriving one, so a unit listed before something it
     requires would install against a dependency that has not run yet.
     """
@@ -1502,42 +1496,8 @@ def check_table_order(ids: Sequence[str], requires: dict[str, list[str]]) -> lis
     return out
 
 
-def check_skill_claims(units: Sequence[Manifest]) -> list[str]:
-    """P8(e): every config/skills/<name>/ is claimed by exactly one unit.
-
-    THE TOTALITY GATE. bootstrap-mac.sh installs skills from two hardcoded
-    per-unit lists rather than from a glob, precisely so `--without opencode`
-    cannot quietly install a coding-pack skill. The cost of that choice is that
-    a thirteenth skill directory would be installed by nobody and noticed by
-    nothing -- which is what this closes, and why it is a FAIL rather than the
-    NOTE that `--offline` would turn a soft finding into.
-    """
-    if not SKILLS_DIR.is_dir():
-        return [f"config/skills/ does not exist at {SKILLS_DIR}"]
-    claims: dict[str, list[str]] = {}
-    for unit in units:
-        for entry in unit.list_of("owns"):
-            if text_field(entry, "kind") != "repo_file":
-                continue
-            parts = Path(text_field(entry, "target")).parts
-            if parts[:2] == ("config", "skills") and len(parts) == SKILL_PATH_PARTS:
-                claims.setdefault(parts[2], []).append(unit.stem)
-    out: list[str] = []
-    for path in sorted(SKILLS_DIR.iterdir()):
-        if not path.is_dir():
-            continue
-        owners = claims.get(path.name, [])
-        if not owners:
-            out.append(f"config/skills/{path.name}/ is claimed by no unit — nothing installs it")
-        elif len(owners) > 1:
-            out.append(f"config/skills/{path.name}/ is claimed by {len(owners)} units: "
-                       f"{', '.join(sorted(owners))}")
-    return out
-
-
 def prop_installer_table(units: Sequence[Manifest]) -> Findings:
     result = Findings()
-    result.hard.extend(check_skill_claims(units))
     if not BOOTSTRAP_MAC.is_file():
         result.hard.append(f"{MAC_INSTALLER} is missing — its unit table cannot be checked")
         return result
@@ -1548,9 +1508,11 @@ def prop_installer_table(units: Sequence[Manifest]) -> Findings:
                            f'resolves --with/--without/--only against that table')
         return result
     expected = mac_installer_units(units)
-    # The declaration findings, kept apart from the skill-closure ones above:
-    # P8(f) below is only meaningful against a table that already matches, and
-    # an unclaimed config/skills/ directory says nothing about that table.
+    # The declaration findings sit in their own list: P8(f) below is only
+    # meaningful against a table that already matches, and a divergence in the
+    # declarations says nothing about the dispatch. (The skills-closure check
+    # that used to run first left with the coding pack, #164 -- there is no
+    # config/skills/ for it to close over any more.)
     table: list[str] = []
     table.extend(compare_sets("UNIT_IDS", declared, expected))
     # compare_sets is a SET comparison, so {a, b, a} == {a, b} and a repeated id

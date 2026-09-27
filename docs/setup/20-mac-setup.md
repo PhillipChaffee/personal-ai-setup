@@ -41,11 +41,6 @@ What it does (it's idempotent — safe to re-run after a failed step):
   | `config/goose/config.yaml` | `~/.config/goose/config.yaml` |
   | `config/goose/custom_providers/*.json` | `~/.config/goose/custom_providers/` |
   | `config/goose/goosehints.example` | `~/.config/goose/.goosehints` |
-  | `config/skills/*/` | `~/.agents/skills/` |
-
-  The ported OpenCode agents and the global AGENTS.md stay in
-  `config/opencode/` — paste them into a self-installed OpenCode by hand (they
-  left the shipped install with the herdr pivot, 2026-09-25).
 
 The four custom-provider JSONs are the heart of it: they define the
 `together` (default), `zen-openai`, `zen-anthropic`, and `zen-free` providers
@@ -53,41 +48,10 @@ The four custom-provider JSONs are the heart of it: they define the
 them up from `~/.config/goose/custom_providers/` automatically — reference:
 [custom providers](https://github.com/aaif-goose/goose/blob/main/documentation/docs/getting-started/providers.md).
 
-### Skills, agents, and global rules
-
-The last three rows are the part of the install that is easiest to miss,
-because nothing on this machine is named after it.
-
-**`~/.agents/skills/`** is a single directory read by **both** tools: OpenCode
-treats it as its agent-compatible global skills dir (if you run OpenCode — the
-repo ships no OpenCode install or config; you input your own settings), and
-goose ≥ 1.16 reads
-skills from it too. Each skill is a directory holding a Claude-compatible
-`SKILL.md` — a short instruction file the model loads when the task matches.
-The bootstrap installs them **atomically** (copy to a temp dir, then `mv`), so
-an interrupted run can never leave a half-copied skill that the no-clobber rule
-would then keep forever.
-
-One unit puts the skills there — the eleven Cursor-ported ones (`code-review`,
-`ship`, `deep-research`, …), from the Cursor port, dispatching into the OpenCode
-subagents. What was ported, adapted and dropped is
-[`docs/cursor-port.md`](../cursor-port.md).
-
-**`~/.config/opencode/agents/`** holds the subagents those skills dispatch **by
-name**, and **`~/.config/opencode/AGENTS.md`** is the global rule set OpenCode
-reads in every project. Both are OpenCode-only; goose does not read either.
-Per-project rule snippets deliberately stay in the repo
-(`config/opencode/project-rules/`) — you paste the ones you want into a
-project yourself.
-
-Nothing here is overwritten on a re-run, so a skill or agent file you have
-edited stays edited. The flip side: an edited file is also never *updated* —
-delete it and re-run the bootstrap to take a new version from the repo.
-
 ### Choosing what to install
 
-The bootstrap is three **units**, one per manifest in
-[`config/units/`](../../config/units/README.md). With no flags all three run,
+The bootstrap is two **units**, one per manifest in
+[`config/units/`](../../config/units/README.md). With no flags both run,
 which is what the section above describes. The flags pick a subset:
 
 | Flag | Meaning |
@@ -103,20 +67,19 @@ The units and their dependencies:
 |---|---|---|
 | `base-toolchain` | uv, node, jq, the Tailscale cask | — |
 | `base-goose` | goose CLI + Desktop cask, the pin, `~/.config/goose` | `base-toolchain` |
-| `coding-pack` | the eleven ported skills, the agents, `AGENTS.md` | — |
 
 ```bash
 ./scripts/mac/bootstrap-mac.sh --dry-run              # what would happen, and nothing else
 ./scripts/mac/bootstrap-mac.sh --only base-toolchain  # just uv/node/jq/Tailscale
-./scripts/mac/bootstrap-mac.sh --without base-goose   # toolchain + coding-pack, no goose
+./scripts/mac/bootstrap-mac.sh --without base-goose   # just the toolchain, no goose
 ```
 
 Three things worth knowing before you use them:
 
-- **`--only` replaces the default set; `--with` adds to it.** `--only coding-pack`
-  installs one unit — coding-pack requires nothing since the OpenCode unit left
-  the catalog — and leaves the goose units out. `--with coding-pack`
-  installs all three, because coding-pack was already in the default set.
+- **`--only` replaces the default set; `--with` adds to it.** `--only
+  base-toolchain` installs one unit — base-toolchain requires nothing — and
+  leaves base-goose out. `--with base-toolchain` adds nothing to the default
+  set, because base-toolchain is already in it: both units install.
 - **Excluding something another unit needs is refused, not half-done.**
   `--without base-toolchain` also drops `base-goose` and says so on stdout,
   because nothing else needs base-toolchain. But `--only base-goose --without
@@ -126,10 +89,10 @@ Three things worth knowing before you use them:
   `uname`. It answers before the macOS check and before the Homebrew check, so
   it works on a Mac that has neither.
 
-One residual: `pai doctor` is **not** selection-aware yet. On a selective
-install it reports the units you left out as missing skills and tells you to
-re-run the bootstrap. That is recorded on `coding-pack`'s manifest and is
-tracked separately; nothing is actually wrong with the install.
+One residual: `pai doctor` is **not** selection-aware yet — the enabled-unit
+registry is still open (#40). On a selective install it reports what you left
+out (the custom providers, if you skipped base-goose) as missing rather than
+as deliberately absent; nothing is actually wrong with the install.
 
 ## 2. Store your keys in the Keychain
 

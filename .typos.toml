@@ -28,7 +28,8 @@ hel = "hel"
 # the connector id tailnet-redirect-unregisterable is a live identifier; both
 # spellings are accepted English and this repo's is the longer one
 unregisterable = "unregisterable"
-# this repo's chosen spelling, used consistently in config/skills/ship
+# this repo's chosen spelling (it was used consistently in the coding pack's
+# `ship` skill, which left the repo with #164)
 waiveable = "waiveable"
 # this repo's chosen spelling across the verify scripts' fixtures and
 # comments ("an unparseable manifest is a FAIL"); both spellings are

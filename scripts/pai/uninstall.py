@@ -5,28 +5,28 @@ THIS FILE DELETES NOTHING. Not behind a flag, not for one unit, not ever — the
 module imports no `shutil`, calls no `unlink`/`rmtree`/`rmdir`, and opens no
 file for writing, and scripts/verify/test-pai.sh asserts that LEXICALLY as well
 as by hashing a fixture before and after. `pai remove` is a READER over the
-`uninstall: {supported, reason}` block that all eighteen manifests already
-carry, and over their `owns:` lists. It prints, it refuses, it exits 2.
+`uninstall: {supported, reason}` block that every manifest in config/units/
+already carries, and over their `owns:` lists. It prints, it refuses, it exits 2.
 
 WHY THE REMOVING HALF IS NOT HERE, since "a remove that removes nothing" is a
 claim that has to be justified rather than apologised for:
 
   1. NOTHING CAN TELL WHAT THE INSTALLER WROTE FROM WHAT YOU WROTE. Every
-     install in this repo is no-clobber — `copy_no_clobber` and `install_skill`
-     in scripts/mac/bootstrap-mac.sh both KEEP a pre-existing destination and
-     say "kept existing". So `~/.agents/skills/ship` may be the repo's copy or
-     the one you wrote before you ever ran the bootstrap, and the installer
+     install in this repo is no-clobber — `copy_no_clobber` in
+     scripts/mac/bootstrap-mac.sh KEEPS a pre-existing destination and says
+     "kept existing". So `~/.config/goose/.goosehints` may be the repo's copy
+     or the one you wrote before you ever ran the bootstrap, and the installer
      recorded no difference between those two histories. Driving `rm` off
      `owns:` deletes both. The only sound predicate is content equality against
      the repo source, and that is the removing half's problem to solve.
   2. REMOVAL IS WORSE THAN ABSENCE UNTIL `pai doctor` LEARNS "DELIBERATELY
-     ABSENT". check_skills (scripts/pai/doctor.py) FAILs when any directory
-     under config/skills/ is missing from ~/.agents/skills, and --fix
-     explicitly does not repair it (OUT_OF_SCOPE: "--fix touches goose's
-     extension config and nothing else"). So removing the eleven coding-pack
-     skills today would leave `pai doctor` printing
-     `FAIL 11 of 12 shipped skills are not installed` forever, with no --fix
-     path and a remedy line telling you to re-run the bootstrap.
+     ABSENT". check_providers (scripts/pai/doctor.py) FAILs when a provider
+     JSON the repo ships is missing from ~/.config/goose/custom_providers, and
+     --fix explicitly does not repair it (OUT_OF_SCOPE: "--fix touches goose's
+     extension config and nothing else"). So removing one today would leave
+     `pai doctor` printing `FAIL provider <name> is not installed` forever,
+     with no --fix path — doctor has no way to be told that a unit is
+     DELIBERATELY absent.
   3. AN ACP EXTENSION REMOVED HERE IS RE-ADDED BY THE NEXT `doctor --fix`,
      which plans "absent from the live config -> add it" for every key the
      repo's templates declare. A removal a routine repair undoes is not a
@@ -34,18 +34,18 @@ claim that has to be justified rather than apologised for:
 
 So AC #1 (`remove` then `verify <id>` fails) and AC #6 (install -> verify ->
 remove -> verify end to end) of issue #43 are UNMET and say so out loud, here
-and in the PR that shipped this file. AC #2, #3 and #4 are met in full, for all
-eighteen units, today: every one of them refuses, with its own written reason,
-and names every target it would keep regardless.
+and in the PR that shipped this file. AC #2, #3 and #4 are met in full, for
+every unit in the catalog, today: every one of them refuses, with its own
+written reason, and names every target it would keep regardless.
 
-THE CLASSIFICATION IS THE FEATURE. All seventeen manifests say
-`uninstall.supported: false`, so all seventeen take the same arm here; what
+THE CLASSIFICATION IS THE FEATURE. Every manifest says
+`uninstall.supported: false`, so every one of them takes the same arm here; what
 differs is WHY, and every one of those reasons is in the manifest, not in this
 file, which has no vocabulary of its own to drift from the data. One of them
-(coding-pack) names a concrete residue rather than a machine-global
+(herdr) names a concrete residue rather than a machine-global
 side effect, which is where a removing half would start — but nothing in this
-file treats it differently, and `pai remove coding-pack` prints
-coding-pack.yaml's sentence and nothing else.
+file treats it differently, and `pai remove herdr` prints
+herdr.yaml's sentence and nothing else.
 
     pai remove <id>      refuse, with the manifest's reason. Writes nothing.
     pai remove --help    the above, plus the two doctor facts.
@@ -254,7 +254,7 @@ def refusal_for(manifest: Manifest) -> list[str]:
                  personal-ai, which this command does not do at any tier. Its
                  manifest reason is printed too — AC #2 asks for the reason, not
                  for a different message.
-      declared   `uninstall.supported: false`, which is all eighteen manifests
+      declared   `uninstall.supported: false`, which is every manifest
                  today. The reason is the MANIFEST'S, verbatim modulo
                  re-wrapping. Nothing here has a fallback string, so a manifest
                  that stopped explaining itself would print an empty reason —
@@ -399,31 +399,30 @@ Usage: pai remove <id>
   is no --force and there will not be one until the two facts below stop being
   true.
 
-  All eighteen units refuse today, and all eighteen refuse the SAME WAY: every
+  Every unit refuses today, and every one refuses the SAME WAY: every
   manifest in config/units/ says `uninstall.supported: false`, so what comes
   back is that manifest's own written reason and nothing this file composed.
-  There is no per-unit special case in here — `pai remove coding-pack` prints
-  coding-pack.yaml's no-clobber sentence and mentions doctor nowhere.
+  There is no per-unit special case in here — `pai remove herdr` prints
+  herdr.yaml's teardown sentence and mentions doctor nowhere.
 
   The two facts below are why the removing half was never written AT ALL. They
   are about this repo, not about any one unit, which is why they are in this
   help text and not in a manifest:
 
-    * REMOVING FILES LEAVES `pai doctor` PERMANENTLY RED. doctor's check_skills
-      FAILs on any config/skills/ directory missing from ~/.agents/skills, and
-      `doctor --fix` deliberately does not repair it ("--fix touches goose's
-      extension config and nothing else"). Removing the eleven coding-pack
-      skills would print `FAIL 11 of 12 shipped skills are not installed`
-      forever, with no --fix path. doctor has no way to be told that a unit is
-      DELIBERATELY absent.
+    * REMOVING FILES LEAVES `pai doctor` PERMANENTLY RED. doctor's checks read
+      the live home against what the repo declares, and `doctor --fix`
+      deliberately does not repair what it finds ("--fix touches goose's
+      extension config and nothing else"): remove a provider JSON the repo
+      ships and `pai doctor` prints `FAIL provider <name> is not installed`
+      forever. doctor has no way to be told that a unit is DELIBERATELY absent.
     * REMOVING A goose EXTENSION IS UNDONE BY THE NEXT `doctor --fix`, which
       plans "absent from the live config -> add it" for every key the repo's
       own templates declare. A removal that a routine repair reverses is not a
       removal.
 
-  And the install side cannot tell its own work from yours: copy_no_clobber and
-  install_skill in scripts/mac/bootstrap-mac.sh both KEEP a pre-existing
-  destination, so a skill directory may be the repo's copy or the one you wrote
+  And the install side cannot tell its own work from yours: copy_no_clobber in
+  scripts/mac/bootstrap-mac.sh KEEPS a pre-existing destination, so
+  ~/.config/goose/.goosehints may be the repo's copy or the one you wrote
   first, and nothing recorded which.
 
 Exit: 0 for --help, 2 for everything else (refusal is the outcome, not an

@@ -247,18 +247,17 @@ else
 fi
 
 # ---- A1: the byte comparison, one region at a time ---------------------------
-# The broken input is the exact regression this whole PR exists for: a skill
-# directory appears and the README's count does not move.
+# The broken input is the exact regression this whole PR exists for: a unit
+# manifest appears and the README's count does not move.
 fresh
-mkdir -p "$TREE/config/skills/zz-probe"
-printf '# probe skill\n' >"$TREE/config/skills/zz-probe/SKILL.md"
+printf 'id: zz-probe\n' >"$TREE/config/units/zz-probe.yaml"
 run_docs
-expect_fail "A1: a new skill directory makes the repo map STALE" \
+expect_fail "A1: a new manifest makes the repo map STALE" \
   "README.md region 'repo-map' is STALE"
 # And the count really came from the filesystem rather than from a literal: the
-# render says 12 where the committed file says 11.
-expect_line "A1: the stale render counts the 12 skills that are on disk" \
-  "12 skills, Claude-compatible"
+# render says 9 where the committed file says 8.
+expect_line "A1: the stale render counts the 9 unit manifests that are on disk" \
+  "9 unit manifests"
 
 # The other region, driven by the other source. A summary is data no glob can
 # see, so this also proves the menu is rendered from the manifests.
@@ -307,16 +306,16 @@ expect_fail "A3: a new directory at the REPO ROOT that no map line covers is cau
   "zz-probe-dir is not on the repo map"
 
 # ---- A4: a hardcoded count ---------------------------------------------------
-# The "11 skills" regression, re-created: replace the {n} placeholder with the
+# The count-drift regression, re-created: replace the {n} placeholder with the
 # number that happens to be right today. A1 alone would then compare a
 # hand-typed number to itself forever.
 fresh
 subst "$TREE/scripts/verify/docs_lint.py" \
-  '"{n} skills, Claude-compatible' \
-  '"12 skills, Claude-compatible'
+  '"{n} connector manifests' \
+  '"9 connector manifests'
 run_docs
 expect_fail "A4: a note that hardcodes its count instead of deriving it is caught" \
-  "the repo map's note for 'config/skills' hardcodes a count"
+  "the repo map's note for 'config/connectors' hardcodes a count"
 
 # ---- A5: a duplicated marker, and the --write refusal ------------------------
 # The failure mode A5 exists for is not a confusing message, it is DATA LOSS:
@@ -457,8 +456,7 @@ expect_fail "read_exact: a wholly CRLF README is refused, not silently normalise
 # first, so "README.md is byte-identical afterwards" is a claim about a write
 # that was REFUSED, not about a write that had nothing to do.
 fresh
-mkdir -p "$TREE/config/skills/zz-probe"
-printf '# probe skill\n' >"$TREE/config/skills/zz-probe/SKILL.md"
+printf 'id: zz-probe\n' >"$TREE/config/units/zz-probe.yaml"
 BEFORE="$(cksum <"$TREE/README.md")"
 run_docs --write --check
 AFTER="$(cksum <"$TREE/README.md")"
@@ -486,8 +484,7 @@ expect_fail "the wrapper turns a traceback into a FAIL rather than a silent pass
 # ---- --write actually repairs ------------------------------------------------
 # A --write that did nothing would leave every probe above passing.
 fresh
-mkdir -p "$TREE/config/skills/zz-probe"
-printf '# probe skill\n' >"$TREE/config/skills/zz-probe/SKILL.md"
+printf 'id: zz-probe\n' >"$TREE/config/units/zz-probe.yaml"
 run_docs --write
 expect_ok "--write re-renders the stale region and the re-check that follows passes"
 

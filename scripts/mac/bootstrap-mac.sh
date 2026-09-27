@@ -3,19 +3,19 @@
 #
 # Installs (via Homebrew): goose CLI + Goose Desktop, uv, node, jq, Tailscale;
 # pins the goose CLI formula; lays down the repo's config templates into
-# ~/.config plus the ported skills (~/.agents/skills — read by goose) and the
-# global AGENTS.md rules (never overwriting existing files). Idempotent — safe
-# to re-run after a failed step. See docs/setup/20-mac-setup.md and
-# docs/cursor-port.md.
+# ~/.config (never overwriting existing files). Idempotent — safe to re-run
+# after a failed step. See docs/setup/20-mac-setup.md. (The coding pack — the
+# ported skills and the paste-in OpenCode material — left the repo entirely,
+# #164: no skill installs on the Mac any more.)
 #
-# THE INSTALL IS THREE UNITS: unit_base_toolchain, unit_base_goose,
-# unit_coding_pack, called in that (dependency) order at the bottom of this
-# file. Each one is the installer named by a manifest in config/units/
+# THE INSTALL IS TWO UNITS: unit_base_toolchain, unit_base_goose, called in
+# that (dependency) order at the bottom of this file. Each one is the installer
+# named by a manifest in config/units/
 # (config/units/base-goose.yaml's `installer.function`, for instance), checked
 # against this file by scripts/verify/check-units.sh, so a renamed function or
 # an uncalled one is a failing gate rather than a comment that went stale.
 #
-# WHICH of the four run is chosen by --with/--without/--only, resolved ONCE in
+# WHICH of the two run is chosen by --with/--without/--only, resolved ONCE in
 # the prelude into $SELECTED; --dry-run prints that resolution and exits without
 # touching anything. The unit table those flags are resolved against (UNIT_IDS,
 # REQUIRES_*, OWNS_*) is checked against the manifests by units_lint.py's P8, so
@@ -30,8 +30,7 @@
 # helpers are strict no-ops -- `${PAI_EXEC:+...}` expands to nothing, so the
 # command runs verbatim with its own exit status, redirections and pipes. What
 # does NOT go through the seam, on purpose: mkdir/cp/mv/rm (a fake $HOME
-# substitutes for all of them, which keeps the no-clobber and atomic-skill
-# logic REAL), and python3/uv (local compute over config/pins.yaml -- routing
+# substitutes for all of them, which keeps the no-clobber logic REAL), and python3/uv (local compute over config/pins.yaml -- routing
 # them would fake away the pin comparison). scripts/verify/fake-exec.sh is the
 # only implementation; scripts/verify/test-base-install.sh drives it.
 set -euo pipefail
@@ -50,7 +49,7 @@ config templates (no-clobber) into place. Run it from your clone of the repo;
 re-running is safe. Follow-ups it will point you at: keychain-secrets.sh and
 the scripts/verify/ checks.
 
-With no flags it installs all three units, which is what it has always done.
+With no flags it installs both units, which is what it has always done.
 
   --with ID[,ID]     add ID (and whatever it requires) to the default set
   --without ID[,ID]  drop ID, and anything left needing it, from the set
@@ -59,16 +58,14 @@ With no flags it installs all three units, which is what it has always done.
                      needs no Homebrew, and does not even ask what OS this is
   -h, --help         this text
 
-The three units, in dependency order:
+The two units, in dependency order:
 
   base-toolchain   uv, node, jq, the Tailscale cask
   base-goose       the goose CLI + Desktop cask, the pin, ~/.config/goose
-  coding-pack      the eleven ported skills
 
-`--only coding-pack` therefore installs one unit: coding-pack requires nothing
-since the OpenCode unit left the catalog (coding agents are the brain's, under
-herdr). Excluding a unit something else still needs is refused with exit 2
-rather than half-installed.
+`--only base-toolchain` therefore installs one unit and leaves base-goose out:
+base-toolchain requires nothing. Excluding a unit something else still needs
+is refused with exit 2 rather than half-installed.
 EOF
 }
 
@@ -148,14 +145,14 @@ if [ -n "${PAI_EXEC:-}" ]; then
 fi
 
 # ------------------------------------------------------------- The unit table --
-# The three units, what each requires, and what each puts on the machine. This
+# The two units, what each requires, and what each puts on the machine. This
 # is a COPY of config/units/*.yaml and it is a copy ON PURPOSE.
 #
 # The selection has to be resolved BEFORE anything is installed, and a YAML read
 # in the install path would be fail-CLOSED where the rest of this script is
 # fail-tolerant. unit_base_goose()'s pins ladder is the evidence sitting in this
 # same file: PyYAML is not guaranteed on a fresh Mac, and its fallback is `uv`
-# -- which THIS SCRIPT installs, in the first unit. `--only coding-pack` could
+# -- which THIS SCRIPT installs, in the first unit. `--only base-goose` could
 # therefore need a parser that does not exist yet, and a PyYAML-less Mac would
 # go from "installs everything" to "installs nothing" with no test able to see
 # it: the harness dies without PyYAML long before it reaches that path.
@@ -170,15 +167,14 @@ fi
 # an indirectly-read global is SC2034 (unused) to ShellCheck 0.11.0, and a
 # warning is a red gate here. (This paragraph deliberately does not start a line
 # with the linter's own name -- that spelling parses as a directive.)
-UNIT_IDS="base-toolchain base-goose coding-pack"
+UNIT_IDS="base-toolchain base-goose"
 
-# `requires`, restricted to the three units this script installs. base-goose
+# `requires`, restricted to the two units this script installs. base-goose
 # also requires base-secrets in the manifests; base-secrets has
 # `installer: null` (the Keychain is a human's job), so it is elided rather
 # than ordered, and P8(c) asserts exactly that elision instead of assuming it.
 REQUIRES_BASE_TOOLCHAIN=""
 REQUIRES_BASE_GOOSE="base-toolchain"
-REQUIRES_CODING_PACK=""
 
 # `owns`, at the manifests' granularity: brew: / cask: / home: prefixes over the
 # manifest's brew_formula, brew_cask and home_path targets, in manifest order.
@@ -188,19 +184,12 @@ OWNS_BASE_TOOLCHAIN="brew:uv brew:node brew:jq cask:tailscale"
 OWNS_BASE_GOOSE="brew:block-goose-cli cask:block-goose
 home:~/.config/goose/config.yaml home:~/.config/goose/custom_providers
 home:~/.config/goose/.goosehints"
-OWNS_CODING_PACK="home:~/.agents/skills/ci-lint-test home:~/.agents/skills/clean-plan
-home:~/.agents/skills/code-review home:~/.agents/skills/deep-research
-home:~/.agents/skills/looping-code-review home:~/.agents/skills/looping-plan-review
-home:~/.agents/skills/mr-review home:~/.agents/skills/plan-review
-home:~/.agents/skills/pre-mr-checklist home:~/.agents/skills/refactor-planner
-home:~/.agents/skills/ship"
 
 requires_of() {
   # requires_of <id> -- the ids this unit needs, restricted to UNIT_IDS.
   case "$1" in
     base-toolchain) printf '%s' "$REQUIRES_BASE_TOOLCHAIN" ;;
     base-goose)     printf '%s' "$REQUIRES_BASE_GOOSE" ;;
-    coding-pack)    printf '%s' "$REQUIRES_CODING_PACK" ;;
   esac
 }
 
@@ -209,7 +198,6 @@ owns_of() {
   case "$1" in
     base-toolchain) printf '%s' "$OWNS_BASE_TOOLCHAIN" ;;
     base-goose)     printf '%s' "$OWNS_BASE_GOOSE" ;;
-    coding-pack)    printf '%s' "$OWNS_CODING_PACK" ;;
   esac
 }
 
@@ -273,8 +261,8 @@ for want_id in $ONLY_IDS; do
 done
 
 # --only replaces the default set; --with adds to it. That is the whole
-# difference, and it is why `--only base-goose` leaves coding-pack out while
-# `--with base-goose` does not.
+# difference, and it is why `--only base-toolchain` leaves base-goose out while
+# `--with base-toolchain` does not.
 if [ "$ONLY_COUNT" -gt 0 ]; then
   SELECTED="$ONLY_IDS $WITH_IDS"
 else
@@ -428,13 +416,14 @@ fi
 
 # ---------------------------------------------------------- Shared helpers --
 # These four are TOP LEVEL and they stay top level. The install below IS a set
-# of per-unit functions now (unit_base_toolchain, unit_base_goose, ...), and a
+# of per-unit functions now (unit_base_toolchain, unit_base_goose), and a
 # helper defined inside one of those is not defined until that one has RUN --
 # bash only globalises a nested definition after the outer function returns. A
 # selective install that skips the defining unit would then die at
 # `command not found` under `set -e`, on a machine nobody can debug from here.
 # copy_no_clobber is the concrete case: it used to be defined in the middle of
-# the config-templates step and is called from two of the three units.
+# the config-templates step and is called from base_goose(), which a selective
+# run can skip.
 #
 # Each brew helper takes ONE argument: a space-separated package list, split
 # inside the function on purpose. `brew_formula "$FORMULAE_BASE_TOOLCHAIN"`
@@ -480,23 +469,6 @@ copy_no_clobber() {
   fi
 }
 
-install_skill() {
-  # $1 = a skill source directory under config/skills/. Copies it into
-  # ~/.agents/skills atomically (temp dir + mv), no-clobber: an interrupted
-  # `cp -R` must not leave a partial skill dir that no-clobber then keeps
-  # forever. The caller creates ~/.agents/skills and sweeps stale temps.
-  local skill_name tmp_dir
-  skill_name="$(basename "$1")"
-  if [ -e "$HOME/.agents/skills/$skill_name" ]; then
-    echo "    kept existing ~/.agents/skills/$skill_name"
-  else
-    tmp_dir="$HOME/.agents/skills/.personal-ai-tmp.$skill_name"
-    cp -R "$1" "$tmp_dir"
-    mv "$tmp_dir" "$HOME/.agents/skills/$skill_name"
-    echo "    installed ~/.agents/skills/$skill_name"
-  fi
-}
-
 # ------------------------------------------------- Per-unit package lists ---
 # One list per unit, and they are GLOBALS rather than `local`s inside the unit
 # functions below because install-test.yml's negative test mutates
@@ -516,21 +488,9 @@ install_skill() {
 FORMULAE_BASE_TOOLCHAIN="uv node jq"
 FORMULAE_BASE_GOOSE="block-goose-cli"
 
-# The eleven Cursor-ported skills, ENUMERATED and never "everything in
-# config/skills/". The glob would install a future
-# skill silently, would make a selective run quietly install it anyway, and
-# would make coding-pack.yaml's `owns` list decorative instead of authoritative.
-# This list is the manifest's list: config/units/coding-pack.yaml `owns` the
-# same eleven names as repo_file entries, and units_lint.py's P8(e) is the
-# totality check that FAILS a twelfth directory neither unit claims -- the price
-# of enumerating instead of globbing, paid where the manifests can see it.
-SKILLS_CODING_PACK="ci-lint-test clean-plan code-review deep-research
-looping-code-review looping-plan-review mr-review plan-review
-pre-mr-checklist refactor-planner ship"
-
 # ------------------------------------------------------------- The units ----
-# Below this line the install is three functions, one per config/units/*.yaml
-# manifest that names this script. All three are still CALLED unconditionally;
+# Below this line the install is two functions, one per config/units/*.yaml
+# manifest that names this script. Both are still CALLED unconditionally;
 # what changed with the flag surface is that each one opens with `want <id> ||
 # return 0`, so the selection decides inside the body and never at the call
 # site. With no flags every unit is selected, want() never prints, and the
@@ -644,48 +604,16 @@ unit_base_goose() {
   return 0
 }
 
-unit_coding_pack() {
-  want coding-pack || return 0
-  # Ported from PhillipChaffee/.cursor (docs/cursor-port.md): eleven skills.
-  # The OpenCode half of the port (30 subagents + the global AGENTS.md) left
-  # the shipped install with the herdr pivot (#144, 2026-09-25): no coding
-  # agent installs on the Mac — they live in herdr panes on the brain — so
-  # writing ~/.config/opencode/ served nothing in the shipped story, and the
-  # repo sets nothing for people (#135). The files stay in the repo under
-  # config/opencode/ as paste-in material for a self-installed OpenCode, same
-  # as project-rules/. Same no-clobber rule throughout: a skill directory you
-  # have edited locally is never overwritten.
-  local skill_name
-
-  echo "==> Installing skills (no-clobber)"
-  mkdir -p "$HOME/.agents/skills"
-  rm -rf "$HOME/.agents/skills"/.personal-ai-tmp.* 2>/dev/null || true
-
-  # By name, from SKILLS_CODING_PACK — deliberately NOT a glob, and deliberately
-  # unguarded: a name in that list with no directory in the repo is a bug in the
-  # list, and `cp -R` failing loudly under `set -e` is how it gets found.
-  for skill_name in $SKILLS_CODING_PACK; do
-    install_skill "$REPO_ROOT/config/skills/$skill_name"
-  done
-
-  echo "    (the ported OpenCode agents and the global AGENTS.md stay in the repo:"
-  echo "     config/opencode/ — paste them into a self-installed OpenCode by hand;"
-  echo "     per-project rule snippets: config/opencode/project-rules/, docs/cursor-port.md)"
-  return 0
-}
-
-# THE THREE CALLS. Bare, column 0, contiguous, and with no comment, no `if` and
+# THE TWO CALLS. Bare, column 0, contiguous, and with no comment, no `if` and
 # no `||` on the call lines themselves — see rule 2 above, and note that
 # units_lint.py's P3 counts these lexically (`^unit_x$`), so a trailing space or
 # a wrapper changes what the manifests are checked against.
 #
 # The order is a topological order of the manifest graph restricted to these
-# three: base-goose needs base-toolchain. (base-secrets is in base-goose's
-# `requires` and has no installer at all, so it is elided rather than ordered;
-# coding-pack requires nothing since the OpenCode unit left the catalog.)
+# two: base-goose needs base-toolchain. (base-secrets is in base-goose's
+# `requires` and has no installer at all, so it is elided rather than ordered.)
 unit_base_toolchain
 unit_base_goose
-unit_coding_pack
 
 # -------------------------------------------------------------- Next steps --
 # The step NUMBER follows step 1, which is why the tail is a separate heredoc:
