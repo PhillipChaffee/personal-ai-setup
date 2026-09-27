@@ -217,7 +217,7 @@ Routing keeps costs predictable: daily chat runs on a cheap open model, escalati
 │   └── env/secrets.env.example   # every secret VAR NAME (no values) — copy to /data/secrets.env
 └── scripts/
     ├── pai/                      # the `pai` dispatcher, doctor, goosecfg
-    ├── wizard/                   # the front door: six questions, then it drives both installers
+    ├── wizard/                   # the front door: seven questions, then it drives both installers
     ├── mac/                      # bootstrap-mac.sh, keychain-secrets.sh
     ├── vps/                      # deploy-vps.sh, LUKS setup/unlock, systemd units
     ├── sync-models.sh            # refresh provider model lists from the live Zen/Together catalogs
