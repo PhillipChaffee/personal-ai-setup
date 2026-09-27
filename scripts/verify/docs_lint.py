@@ -325,7 +325,7 @@ MAP_ENTRIES: Final[tuple[MapEntry, ...]] = (
     row(1, "scripts/", "scripts"),
     row(2, "pai/", "scripts/pai", "the `pai` dispatcher, doctor, goosecfg"),
     row(2, "wizard/", "scripts/wizard",
-        "the front door: six questions, then it drives both installers"),
+        "the front door: seven questions, then it drives both installers"),
     row(2, "mac/", "scripts/mac", "bootstrap-mac.sh, keychain-secrets.sh"),
     row(2, "vps/", "scripts/vps",
         "deploy-vps.sh, LUKS setup/unlock, systemd units"),
