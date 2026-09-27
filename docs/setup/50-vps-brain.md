@@ -218,6 +218,14 @@ Three things to know:
   `herdr.service`; herdr restores the layout and resumes agent sessions, but a
   mid-turn pane does not come back mid-turn.
 
+When teardown means deleting the server itself (Hetzner console or hcloud —
+human-only), remember the volume: `hcloud server delete` does not remove an
+attached volume, and these volumes ship **delete-protected** — clear
+protection first (API action `change_protection {"delete": false}`; the hcloud
+CLI has no flag), then delete. A stranded volume keeps billing and is
+reattached by the next `terraform apply` (#180, found in the 2026-09-26 live
+teardown).
+
 If the unit fails, the deploy stops there and names it — `ERROR: unit
 'herdr' failed`, plus which units completed and which never ran — and
 the safety-net trap brings `goose-serve` back up before exiting. Re-run just

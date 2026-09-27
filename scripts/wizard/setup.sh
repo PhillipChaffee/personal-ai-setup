@@ -841,7 +841,14 @@ else
     [ ] USER_GOOGLE_EMAILS, USER_GOOGLE_EMAIL, GOOGLE_OAUTH_*, TELEGRAM_BOT_TOKEN,
         NTFY_TOPIC, NTFY_EMAIL, NTFY_AGENT_TOPIC, and the vault deploy key
     vault (the live /data/life-vault stays untouched — records, not code)
-    [ ] GitHub: delete the vault deploy key by hand
+    [ ] GitHub: delete the vault deploy key by hand (only if a life-vault
+        repo with a deploy key exists — setups without one: skip)
+    Hetzner side (the server is deleted in the console or via hcloud — human-only)
+    [ ] hcloud volume list — anything left (e.g. ai-brain-data)? These volumes
+        ship delete-protected and the CLI has no protection flag: clear it via
+        the API action change_protection {"delete": false}, then delete. A
+        stranded volume keeps billing AND gets reattached by the next
+        terraform apply.
     Mac
     [ ] rm -rf ~/.agents/skills/connect-service  (no-clobber-installed; no uninstall path)
 EOF
