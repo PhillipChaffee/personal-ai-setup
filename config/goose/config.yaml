@@ -30,12 +30,15 @@ active_provider: together
 providers:
   # DEFAULT / hub daily driver. Together's ZDR posture also makes this the
   # sensitive tier, so the default is the most private option.
-  # Qwen3.5-397B is Together's flagship open model with verified function
-  # calling; drop to openai/gpt-oss-120b when you want cheaper.
+  # GLM-5.3-Flash (#194, owner decision 2026-09-26): 320B MoE / 18B active,
+  # 1M context, verified function calling, $0.15/$0.50 per 1M tokens — the
+  # same model the Mac's OpenCode already runs. Qwen3.5-397B ($0.60/$3.60)
+  # is the heavier alternative; drop to openai/gpt-oss-120b when you want
+  # cheapest.
   together:
     enabled: true
     configured: true
-    model: Qwen/Qwen3.5-397B-A17B
+    model: zai-org/GLM-5.3-Flash
 
   # Premium alternative for non-sensitive work when you want Claude.
   # Anthropic-billed via Zen => 30-day retention, so NON-SENSITIVE work only

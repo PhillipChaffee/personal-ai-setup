@@ -18,7 +18,7 @@ pricing/model pages). Both catalogs churn — re-verify at signup and monthly vi
 | Interactive coding (daily) | OpenCode → Zen | `kimi-k2.6` | $0.95/$4.00 |
 | Coding escalation | OpenCode → Zen | `claude-sonnet-5` | $2/$10 |
 | Throwaway/non-personal code | OpenCode → Zen | `big-pickle` (free) | $0 — **never personal data** |
-| Hub daily driver (brain) — **default** | Goose → `together` | `Qwen/Qwen3.5-397B-A17B` | $0.60/$3.60 (ZDR — private by default) |
+| Hub daily driver (brain) — **default** | Goose → `together` | `zai-org/GLM-5.3-Flash` | $0.15/$0.50, cached $0.03 (ZDR — private by default; verified 2026-09-26) |
 | Hub premium alternative (non-sensitive) | Goose → `zen-anthropic` | `claude-sonnet-5` | $2/$10 (30-day retention) |
 | Hub cost-saver | Goose → `zen-openai` | `kimi-k2.6` | $0.95/$4.00 |
 | Sensitive doc Q&A | Goose → `together` | `Qwen3.5-397B-A17B` | $0.60/$3.60 (ZDR/HIPAA) |
@@ -57,7 +57,7 @@ Notes on reading the table:
   flagged `public_throwaway` in the allowlist, and only Tier 1/2 repos are allowlistable
   at all, so the free-tier and retention rules cannot be violated by a model pick.
 - Together model IDs are full registry IDs: `openai/gpt-oss-120b`,
-  `Qwen/Qwen3.5-397B-A17B`, and `deepseek-ai/DeepSeek-V4-Flash-0731` — Together publishes dated
+  `zai-org/GLM-5.3-Flash`, and `deepseek-ai/DeepSeek-V4-Flash-0731` — Together publishes dated
   variants of DeepSeek V4 Flash, so confirm the exact live ID with
   `scripts/verify/pin-models.sh` before pinning it anywhere new.
 - DeepSeek V4 Flash is priced differently per route: flat $0.14/$0.28 with 1M context on
@@ -100,7 +100,7 @@ Three levers, from most to least persistent:
 - **Per run** — `goose run` (and `goose session`) accept overrides:
 
   ```bash
-  goose run --provider together --model "Qwen/Qwen3.5-397B-A17B" -t "..."
+  goose run --provider together --model "zai-org/GLM-5.3-Flash" -t "..."
   ```
 
 - **Environment** — `GOOSE_PROVIDER`/`GOOSE_MODEL` env vars: a manual override

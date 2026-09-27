@@ -662,6 +662,10 @@
       "context_limit": 1048576
     },
     {
+      "name": "zai-org/GLM-5.3-Flash",
+      "context_limit": 1048576
+    },
+    {
       "name": "zai-org/GLM-OCR",
       "context_limit": 131072
     }

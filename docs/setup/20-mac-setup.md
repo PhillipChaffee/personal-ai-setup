@@ -167,7 +167,7 @@ If you run OpenCode locally anyway, two things to know:
    permissions).
 2. On the provider/model screen, skip the built-in provider list and select
    the custom providers the bootstrap installed. Set the default to
-   **`together` / `Qwen/Qwen3.5-397B-A17B`** (the hub daily driver — ZDR, so
+   **`together` / `zai-org/GLM-5.3-Flash`** (the hub daily driver — ZDR, so
    the default is also the most private option), with
    **`zen-anthropic` / `claude-sonnet-5`** as the premium switch for
    non-sensitive work and **`zen-openai` / `kimi-k2.6`** as the cost-saver —
