@@ -90,7 +90,7 @@ pai() { # pai <command> <home> [flags...]
 # permanently red on every real install.
 make_clean() {
   local home="$1"
-  mkdir -p "$home/.config/goose/custom_providers" "$home/.agents/skills"
+  mkdir -p "$home/.config/goose/custom_providers"
   "${FIX_PY[@]}" - "$REPO_ROOT" "$home" <<'PY'
 import json, pathlib, sys
 import yaml
@@ -116,9 +116,6 @@ for src in (repo / "config/goose/custom_providers").glob("*.json"):
     # job and doctor must call it a NOTE rather than a failure.
     obj["models"] = obj.get("models", [])[:1]
     (home / ".config/goose/custom_providers" / src.name).write_text(json.dumps(obj))
-for skill in (repo / "config/skills").glob("*"):
-    if skill.is_dir():
-        (home / ".agents/skills" / skill.name).mkdir(parents=True, exist_ok=True)
 (home / ".config/goose/.goosehints").write_text("I am Phillip. Timezone America/New_York.\n")
 PY
 }
@@ -171,7 +168,6 @@ d["extensions"]["todoist"].pop("available_tools")
 p.write_text(yaml.safe_dump(d))
 PY
 }
-mut_drop_skill() { rm -rf "$1/.agents/skills/ship"; }
 mut_hints() { printf 'I am <your name>.\n' > "$1/.config/goose/.goosehints"; }
 mut_wiring() { "${FIX_PY[@]}" - "$1" <<'PY'
 import json, pathlib, sys
@@ -190,7 +186,6 @@ PY
 
 drift_case "apps re-enabled (a security control)" "apps.enabled" mut_apps_on
 drift_case "todoist's allowlist dropped" "todoist.available_tools" mut_unpin
-drift_case "a shipped skill is not installed" "shipped skills are not installed" mut_drop_skill
 drift_case "goosehints still has placeholders" "placeholder" mut_hints
 drift_case "provider WIRING changed" "wiring differs" mut_wiring
 drift_case "a declared extension is missing entirely" "absent from the live config" mut_drop_ext
@@ -2085,14 +2080,15 @@ rm_fingerprint() {
 # the assertion's verdict depends on where the wrap happened to land.
 rm_flat() { printf '%s' "$1" | tr '\n' ' ' | tr -s ' '; }
 
-# The fixture is what `pai remove coding-pack` would be pointed at on a real
-# Mac: the eleven ported skills, all present and all identical to the repo's
-# copies — plus ONE FILE THE USER
+# The fixture is what `pai remove base-goose` would be pointed at on a real
+# Mac: the three home targets base-goose owns, all present and all identical to
+# the repo's copies — plus ONE FILE THE USER
 # WROTE that no manifest claims. That last file is the whole safety argument in
-# one line: the install side is no-clobber (install_skill "keeps existing"), so
-# nothing on disk records who wrote what, and a remover driven by a directory
-# rather than by `owns` takes it with everything else. (The OpenCode agents and
-# AGENTS.md left both the installer and this fixture with the herdr pivot,
+# one line: the install side is no-clobber (copy_no_clobber "keeps existing"),
+# so nothing on disk records who wrote what, and a remover driven by a
+# directory rather than by `owns` takes it with everything else. (The coding
+# pack and its eleven skill targets left both the installer and this fixture
+# with #164; the OpenCode agents and AGENTS.md left with the herdr pivot,
 # #144: the manifest no longer owns any ~/.config/opencode/ path.)
 #
 # `cd "$WORK" && pwd` rather than "$WORK/remove-home": $TMPDIR ends in a slash
@@ -2100,35 +2096,36 @@ rm_flat() { printf '%s' "$1" | tr '\n' ' ' | tr -s ' '; }
 # would compare that literal against a path pathlib had already collapsed. A
 # subshell, so this script's own cwd is untouched.
 RM_HOME="$(cd "$WORK" && pwd)/remove-home"
-mkdir -p "$RM_HOME/.agents/skills"
-for skill_src in "$REPO_ROOT"/config/skills/*/; do
-  [ -d "$skill_src" ] || continue
-  cp -R "$skill_src" "$RM_HOME/.agents/skills/$(basename "$skill_src")"
+mkdir -p "$RM_HOME/.config/goose/custom_providers"
+cp "$REPO_ROOT/config/goose/config.yaml" "$RM_HOME/.config/goose/config.yaml"
+for provider_json in "$REPO_ROOT"/config/goose/custom_providers/*.json; do
+  cp "$provider_json" "$RM_HOME/.config/goose/custom_providers/$(basename "$provider_json")"
 done
-printf 'a skill I wrote myself, claimed by no manifest\n' \
-  > "$RM_HOME/.agents/skills/my-own-notes.md"
+cp "$REPO_ROOT/config/goose/goosehints.example" "$RM_HOME/.config/goose/.goosehints"
+printf 'a goose config file I wrote myself, claimed by no manifest\n' \
+  > "$RM_HOME/.config/goose/my-own-notes.md"
 
 RM_BEFORE="$(rm_fingerprint "$RM_HOME")"
 RM_RC=0
-RM_OUT="$(pai_remove "$RM_HOME" coding-pack 2>&1)" || RM_RC=$?
+RM_OUT="$(pai_remove "$RM_HOME" base-goose 2>&1)" || RM_RC=$?
 RM_AFTER="$(rm_fingerprint "$RM_HOME")"
 if [ "$RM_RC" -eq 2 ]; then
-  pass "remove coding-pack refuses (exit 2) on a fully-populated home"
+  pass "remove base-goose refuses (exit 2) on a fully-populated home"
 else
-  fail "remove coding-pack exited $RM_RC, not 2:"$'\n'"$RM_OUT"
+  fail "remove base-goose exited $RM_RC, not 2:"$'\n'"$RM_OUT"
 fi
 if [ "$RM_BEFORE" = "$RM_AFTER" ]; then
   pass "...and deleted nothing: every path and every byte hashes identically"
 else
   fail "pai remove MODIFIED the home it was refusing to touch"
 fi
-# The refusal is not silence, and it is not a plan half-executed: the eleven
-# skills coding-pack owns are named as retained, by the manifest's own spelling.
-if printf '%s\n' "$RM_OUT" | grep -qxF "    RETAIN  ~/.agents/skills/ship" \
-  && printf '%s\n' "$RM_OUT" | grep -qxF "    RETAIN  ~/.agents/skills/ci-lint-test"; then
-  pass "...and names the skill targets it kept, verbatim from owns:"
+# The refusal is not silence, and it is not a plan half-executed: the home
+# targets base-goose owns are named as retained, by the manifest's own spelling.
+if printf '%s\n' "$RM_OUT" | grep -qxF "    RETAIN  ~/.config/goose/config.yaml" \
+  && printf '%s\n' "$RM_OUT" | grep -qxF "    RETAIN  ~/.config/goose/.goosehints"; then
+  pass "...and names the home targets it kept, verbatim from owns:"
 else
-  fail "remove coding-pack did not name its home_path targets:"$'\n'"$RM_OUT"
+  fail "remove base-goose did not name its home_path targets:"$'\n'"$RM_OUT"
 fi
 
 # THE MANIFEST'S OWN WORDS, not a generic string. Hardcode "uninstall is not
@@ -2192,7 +2189,7 @@ fi
 RM_RC=0
 RM_OUT="$(pai_remove "$RM_HOME" --help 2>&1)" || RM_RC=$?
 if [ "$RM_RC" -eq 0 ] \
-  && printf '%s\n' "$RM_OUT" | grep -qF "11 of 12 shipped skills are not installed" \
+  && printf '%s\n' "$RM_OUT" | grep -qF "FAIL provider <name> is not installed" \
   && printf '%s\n' "$RM_OUT" | grep -qF "absent from the live config -> add it"; then
   pass "--help states both reasons the removing half is unwritten (exit 0)"
 else
@@ -2252,7 +2249,7 @@ import pathlib, sys
 import yaml
 repo, fixture = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
 units = fixture / "config/units"
-d = yaml.safe_load((repo / "config/units/coding-pack.yaml").read_text())
+d = yaml.safe_load((repo / "config/units/base-goose.yaml").read_text())
 d.update({
     "id": "zz-removable",
     "tier": "opt_in",
@@ -2323,7 +2320,7 @@ manifests = {
     p.stem: yaml.safe_load(p.read_text())
     for p in sorted((REPO / "config/units").glob("*.yaml"))
 }
-assert len(manifests) >= 9, len(manifests)
+assert len(manifests) >= 8, len(manifests)
 
 # ---- 0. THE PROOF THAT IT CANNOT DELETE, over the SYNTAX and not the text ---
 # The fingerprint assertion above proves one fixture survived a handful of
@@ -2428,9 +2425,10 @@ home_targets = [
 # that goes red on an unrelated edit gets deleted. What this guards is the
 # derivation itself — an empty or one-element list would make the set
 # comparison below trivially true, which is the failure mode that matters.
-# (The two ~/.config/opencode home targets left with #144's coding-pack drop:
-# the floor holds the derivation, not the catalog's exact size.)
-assert len(home_targets) >= 18, len(home_targets)
+# (The eleven ~/.agents/skills targets left with #164's coding-pack removal,
+# and the two ~/.config/opencode ones with #144's drop before that: the floor
+# holds the derivation, not the catalog's exact size.)
+assert len(home_targets) >= 5, len(home_targets)
 unresolved = {t for t in home_targets if mod.parse_home_target(t, HOME) is None}
 assert unresolved == PROSE, sorted(unresolved ^ PROSE)
 # And the other side: everything that DOES resolve lands strictly inside home.
@@ -2500,7 +2498,7 @@ for stem, data in manifests.items():
         assert any(raw in line for line in lines), (stem, lines)
 
 # The three arms, distinguished. base-goose takes the tier arm AND prints its
-# manifest reason; coding-pack takes the declared arm alone; zz-removable takes
+# manifest reason; herdr takes the declared arm alone; zz-removable takes
 # the arm no shipped manifest can reach.
 base = mod.refusal_for(mod.load_manifest(REPO, "base-goose"))
 assert len(base) == 2, base
@@ -2513,14 +2511,14 @@ assert "brew pin block-goose-cli" in base[1], base
 # manifests say `supported: false`, so both take the declared arm and print
 # their own sentence. Nothing went red, because the --help assertion greps the
 # help output for strings this file writes. These grep the REFUSAL instead.
-coding_pack = mod.refusal_for(mod.load_manifest(REPO, "coding-pack"))
-assert len(coding_pack) == 1, coding_pack
-assert coding_pack[0].startswith("the manifest says so:"), coding_pack
+herdr = mod.refusal_for(mod.load_manifest(REPO, "herdr"))
+assert len(herdr) == 1, herdr
+assert herdr[0].startswith("the manifest says so:"), herdr
 
 # THE REASON IS THE MANIFEST'S, WORD FOR WORD. Compared whitespace-normalised,
 # because the manifest's line breaks are the YAML file's and not the sentence's.
-raw = " ".join(manifests["coding-pack"]["uninstall"]["reason"].split())
-assert raw in coding_pack[0], (raw, coding_pack[0])
+raw = " ".join(manifests["herdr"]["uninstall"]["reason"].split())
+assert raw in herdr[0], (raw, herdr[0])
 # And no unit's refusal mentions doctor AT ALL. The two doctor facts are facts
 # about this repo and they live in --help; a refusal that repeated one would be
 # the per-unit special-casing the help text now says does not exist.
@@ -2673,8 +2671,8 @@ fi
 # THE PAI_HOME SEAM, THROUGH THE CLI. The probe asserts parse_home_target
 # honours its argument; this asserts the CLI actually passes PAI_HOME to it, so
 # the resolved path in the output is the fixture's and never this Mac's.
-RM_OUT="$(pai_remove "$RM_HOME" coding-pack 2>&1 || true)"
-if printf '%s\n' "$RM_OUT" | grep -qF "resolves to $RM_HOME/.agents/skills/ship"; then
+RM_OUT="$(pai_remove "$RM_HOME" base-goose 2>&1 || true)"
+if printf '%s\n' "$RM_OUT" | grep -qF "resolves to $RM_HOME/.config/goose/config.yaml"; then
   pass "PAI_HOME retargets the resolved home_path in the output"
 else
   fail "remove did not resolve against PAI_HOME:"$'\n'"$RM_OUT"

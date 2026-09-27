@@ -308,7 +308,7 @@ The selection has to be computed **before anything is installed**, and a YAML re
 fail-closed where the rest of that script is fail-tolerant. The evidence is in the same
 file: its pins comparison falls back from `python3 -c 'import yaml'` to `uv run --with
 pyyaml`, and `uv` is installed by `unit_base_toolchain()` — the *first* unit. So
-`--only coding-pack` on a fresh Mac could need a parser that does not exist yet, and a
+`--only base-goose` on a fresh Mac could need a parser that does not exist yet, and a
 PyYAML-less Mac would go from "installs everything" to "installs nothing". No test in this
 repo could see it, because the harness dies on a missing PyYAML long before that path.
 
@@ -408,11 +408,14 @@ below, because an assertion that cannot fail is the only kind that is never noti
    (c) each `REQUIRES_<ID>`
    equals the manifest's `requires` **intersected with `UNIT_IDS`**, so `base-goose`
    dropping `base-secrets` (which has `installer: null`) is asserted rather than assumed;
-   (d) each `OWNS_<ID>` equals the manifest's `brew_formula` / `brew_cask` / `home_path`
-   targets; (e) **reverse**, every `config/skills/<name>/` is claimed as a `repo_file` by
-   exactly one unit; (f) **executed**, `--dry-run --only <id>` for every id prints a plan
-   that is the manifests' `requires` closure in a topological order, and a "would install"
-   list that is exactly those units' `owns` entries, in plan order.
+(d) each `OWNS_<ID>` equals the manifest's `brew_formula` / `brew_cask` / `home_path`
+    targets; (e) — **retired with the coding pack (#164)**: it closed the catalog over
+    `config/skills/` ("every `config/skills/<name>/` is claimed by exactly one unit"),
+    and the repo no longer ships skills, so there is nothing for that totality gate to
+    close over. The (f) letter below keeps its name, which every other file cites;
+    (f) **executed**, `--dry-run --only <id>` for every id prints a plan
+    that is the manifests' `requires` closure in a topological order, and a "would install"
+    list that is exactly those units' `owns` entries, in plan order.
 
 8(f) is what covers the `case` dispatch (§5 above): (a)–(d) read the declarations, and a
 one-word change to `requires_of` or `owns_of` leaves every declaration correct while
@@ -434,11 +437,6 @@ different workflow, so "P8 fails on any divergence" was true only of the diverge
 looking for. No separate negative control: the mutation is one word in `UNIT_IDS`, and what
 would be at risk of going inert is P8 as a whole, which "a case arm that ignores its
 REQUIRES_* must fail" already covers.
-
-8(e) is the totality gate. The installer enumerates skills per unit by name rather than
-globbing `config/skills/`, precisely so a selective run cannot quietly install a
-`coding-pack` skill. The cost is that a thirteenth skill directory would be installed by
-nobody, so an unclaimed one is a FAIL naming the directory.
 
 `UNCLAIMABLE` is `{check-coverage.sh, check-goose-template.sh, check-units.sh}`: all three
 are repo/CI gates rather than unit checks, so demanding an owner for them would mint a fake

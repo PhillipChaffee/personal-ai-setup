@@ -161,12 +161,11 @@ MAP_IGNORE: Final[dict[str, str]] = {
 
 # A4's roster: directories whose SIZE is a fact the README states. Every one of
 # these must carry a count_glob and a `{n}` placeholder, so the number can only
-# ever come from the tree. This set is the answer to "11 skills".
+# ever come from the tree. (config/skills and config/opencode/agents were on
+# this roster until the coding pack left the repo entirely, #164.)
 MUST_COUNT: Final[frozenset[str]] = frozenset({
     "config/connectors",
     "config/goose/extensions.d",
-    "config/opencode/agents",
-    "config/skills",
     "config/units",
     "docs/setup",
     "scripts/verify",
@@ -198,6 +197,10 @@ RETIRED_TERMS: Final[dict[str, str]] = {
                    "itself, and the unit manifests said connect-zen is GONE, not "
                    "demoted (the OpenCode unit has since left the catalog -- "
                    "coding agents are the brain's, under herdr)"),
+    "`coding-pack`": ("#164 -- the coding pack left the repo entirely: the unit "
+                      "manifest, the eleven ported skills and the paste-in "
+                      "OpenCode material are all deleted, and nothing in the "
+                      "repo installs or documents them any more"),
 }
 
 # A9's scope, one file. README.md is the file this engine owns and the only one
@@ -289,8 +292,6 @@ MAP_ENTRIES: Final[tuple[MapEntry, ...]] = (
         "coding agents: the herdr runtime, the setup-time catalog, isolation"),
     row(2, "providers.md", "docs/providers.md",
         "email/calendar provider convention (multi-account today, more next)"),
-    row(2, "cursor-port.md", "docs/cursor-port.md",
-        "the Cursor kit ported to Goose + OpenCode: what went where and why"),
     row(2, "security.md", "docs/security.md",
         "threat model, LUKS design, Tailscale-only exposure, serve TLS/secret"),
     row(2, "public-repo.md", "docs/public-repo.md",
@@ -315,15 +316,6 @@ MAP_ENTRIES: Final[tuple[MapEntry, ...]] = (
         "identity, routing rules, PHI standing rules"),
     row(2, "goose/acp-contract.json", "config/goose/acp-contract.json",
         "the captured ACP method list check-connectors.sh asserts against"),
-    row(2, "opencode/AGENTS.md", "config/opencode/AGENTS.md",
-        "global coding/workflow rules — paste-in for a self-installed OpenCode"),
-    row(2, "opencode/agents/", "config/opencode/agents",
-        "{n} review/research subagents — paste-in for a self-installed OpenCode", "*.md"),
-    row(2, "opencode/project-rules/", "config/opencode/project-rules",
-        "per-project rule snippets (python, django, linear…) — paste-in"),
-    row(2, "skills/", "config/skills",
-        "{n} skills, Claude-compatible SKILL.md (→ ~/.agents/skills)"
-        " — read by BOTH OpenCode and goose", "*/SKILL.md"),
     row(2, "connectors/", "config/connectors",
         "{n} connector manifests + the contract in that directory's README", "*.yaml"),
     row(2, "herdr/config.toml", "config/herdr/config.toml",

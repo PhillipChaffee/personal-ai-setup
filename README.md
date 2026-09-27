@@ -48,8 +48,8 @@ Prefer to drive the installers yourself? `bootstrap-mac.sh` is the same base ins
 
 ```bash
 ./scripts/mac/bootstrap-mac.sh --dry-run              # print the plan, touch nothing
-./scripts/mac/bootstrap-mac.sh --only base-goose      # that unit plus what it requires
-./scripts/mac/bootstrap-mac.sh --without coding-pack  # everything except that one
+./scripts/mac/bootstrap-mac.sh --only base-toolchain  # just the toolchain, no goose
+./scripts/mac/bootstrap-mac.sh --without base-goose   # everything except that one
 ./scripts/mac/bootstrap-mac.sh --help                 # the units, in dependency order
 ```
 
@@ -90,7 +90,6 @@ Everything past the base is a **unit** in `config/units/`; the table is rendered
 | [base-goose](docs/setup/20-mac-setup.md) | base | mac | Pinned goose CLI and Desktop cask, four custom providers, config template. | `bootstrap-mac.sh` | `check-goose.sh`, `check-providers.sh` |
 | [base-secrets](docs/setup/20-mac-setup.md) | base | both | Keychain roster on the Mac, /data/secrets.env on the brain, and the deploy gate. | by hand | — |
 | [base-toolchain](docs/setup/20-mac-setup.md) | base | mac | macOS guard, Homebrew presence check, and the uv/node/jq formulae. | `bootstrap-mac.sh` | — |
-| [coding-pack](docs/cursor-port.md) | default_on | mac | Eleven ported Cursor skills; the ported OpenCode agents and AGENTS.md stay in the repo as paste-in material. | `bootstrap-mac.sh` | — |
 | [goose-desktop](docs/setup/20-mac-setup.md) | default_on | mac | Human-only, turn OFF Desktop auto-update and pick the custom providers on first run. | by hand | — |
 | [brain](docs/setup/50-vps-brain.md) | opt_in | vps | Hetzner VPS, LUKS /data, goose's path root on it, and goose-serve over tailnet TLS. | `deploy-vps.sh` (planned) | `check-brain.sh`, `check-security.sh --local` |
 | [connectors](docs/connecting.md) | opt_in | both | The connector vetting registry and the three disabled extension fragments. | by hand | `check-connectors.sh`, `check-mcp.sh` |
@@ -200,24 +199,19 @@ Routing keeps costs predictable: daily chat runs on a cheap open model, escalati
 │   ├── privacy.md                # data classification per provider tier; encryption model and residual risk
 │   ├── coding-agents.md          # coding agents: the herdr runtime, the setup-time catalog, isolation
 │   ├── providers.md              # email/calendar provider convention (multi-account today, more next)
-│   ├── cursor-port.md            # the Cursor kit ported to Goose + OpenCode: what went where and why
 │   ├── security.md               # threat model, LUKS design, Tailscale-only exposure, serve TLS/secret
 │   ├── public-repo.md            # what may/may-not be committed; go-public checklist
 │   ├── troubleshooting.md        # base_url 404s, pairing, LUKS, rate limits
 │   └── roadmap.md                # SearXNG, memory, budgeting-app API
 ├── infra/terraform/              # Hetzner server, deny-all firewall, encrypted volume, cloud-init
 ├── config/
-│   ├── units/                    # 9 unit manifests — the add-on menu above is rendered from these
+│   ├── units/                    # 8 unit manifests — the add-on menu above is rendered from these
 │   ├── pins.yaml                 # the versions the installers pin and the checks compare against
 │   ├── goose/config.yaml         # GENERATED from config.base.yaml + extensions.d/
 │   ├── goose/extensions.d/       # 3 MCP extension fragments, one file each
 │   ├── goose/custom_providers/   # together (DEFAULT), zen-openai, zen-anthropic, zen-free (trains on data)
 │   ├── goose/goosehints.example  # identity, routing rules, PHI standing rules
 │   ├── goose/acp-contract.json   # the captured ACP method list check-connectors.sh asserts against
-│   ├── opencode/AGENTS.md        # global coding/workflow rules — paste-in for a self-installed OpenCode
-│   ├── opencode/agents/          # 30 review/research subagents — paste-in for a self-installed OpenCode
-│   ├── opencode/project-rules/   # per-project rule snippets (python, django, linear…) — paste-in
-│   ├── skills/                   # 11 skills, Claude-compatible SKILL.md (→ ~/.agents/skills) — read by BOTH OpenCode and goose
 │   ├── connectors/               # 3 connector manifests + the contract in that directory's README
 │   ├── herdr/config.toml         # the herdr server config template: six keys, every one explicit
 │   └── env/secrets.env.example   # every secret VAR NAME (no values) — copy to /data/secrets.env

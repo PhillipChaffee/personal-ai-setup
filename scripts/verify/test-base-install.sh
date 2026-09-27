@@ -8,8 +8,8 @@
 #
 # Seven phases, and each exists because it asserts something no other one can:
 #
-#   A  fresh install      the 14-line brew golden, the config copy, the skills,
-#                         the pins comparison, the deny-PATH invariant
+#   A  fresh install      the 14-line brew golden, the config copy, the pins
+#                         comparison, the deny-PATH invariant
 #   B  immediate re-run   idempotence -- the claim at bootstrap-mac.sh:8-9 that
 #                         nothing in this repo has ever tested -- and no-clobber
 #   C  version mismatch   the pins WARNING arm, which is otherwise dead code
@@ -380,7 +380,7 @@ run_bootstrap_flags() {
   # instead of this run's flags, and would pass whatever the flags did.
   #
   # `"$@"` and not `$ARGS`: a string of flags word-split by the shell is how a
-  # test starts passing vacuously (`--only coding-pack` arriving as one argument
+  # test starts passing vacuously (`--only no-such-unit` arriving as one argument
   # is an unknown-id exit 2 that looks exactly like the assertion succeeding).
   local tag home rc=0
   tag="$1"; home="$2"; shift 2
@@ -503,21 +503,13 @@ check_copy "$REPO_ROOT/config/goose/goosehints.example" "$HOME/.config/goose/.go
   ok "A6: all $COPY_N config templates installed byte-identical to the repo copies" ||
   bad "A6: $COPY_BAD of $COPY_N config templates missing or altered"
 
-# A7 — the atomic skill install. A leftover .personal-ai-tmp.* is a partial
-# directory that the no-clobber rule would then keep forever.
-SKILL_BAD=0; SKILL_N=0
-for skill_dir in "$REPO_ROOT"/config/skills/*/; do
-  [ -d "$skill_dir" ] || continue
-  SKILL_N=$((SKILL_N + 1))
-  [ -d "$HOME/.agents/skills/$(basename "$skill_dir")" ] || SKILL_BAD=$((SKILL_BAD + 1))
-done
-TMP_LEFT=0
-for leftover in "$HOME/.agents/skills"/.personal-ai-tmp.*; do
-  [ -e "$leftover" ] && TMP_LEFT=$((TMP_LEFT + 1))
-done
-[ "$SKILL_BAD" -eq 0 ] && [ "$SKILL_N" -gt 0 ] && [ "$TMP_LEFT" -eq 0 ] &&
-  ok "A7: all $SKILL_N skills installed, no .personal-ai-tmp.* left behind" ||
-  bad "A7: $SKILL_BAD of $SKILL_N skills missing, $TMP_LEFT partial temp dir(s) left"
+# A7 — THE SKILLS DID NOT COME BACK. The coding pack's install used to fill
+# ~/.agents/skills (and a leftover .personal-ai-tmp.* there was a partial
+# directory the no-clobber rule would then keep forever); the pack left the
+# repo entirely (#164), so a default run must not even create the directory.
+[ ! -e "$HOME/.agents/skills" ] &&
+  ok "A7: the default install creates nothing under ~/.agents/skills (the coding pack is gone)" ||
+  bad "A7: ~/.agents/skills exists after a default run — the skill install came back?"
 
 # A8 — names the shape. The golden would also have caught it; this says which.
 [ -s "$STATE/unhandled.log" ] && {
@@ -530,12 +522,12 @@ done
 # lines means the selection surface changed what the plain install does. This
 # assertion lives in phase A, unconditionally, because every leg runs phase A
 # and the property it names ("no flags == the install this repo has always had")
-# is the entire safety argument for the flag surface. A6/A7 prove the same
+# is the entire safety argument for the flag surface. A6 proves the same
 # thing about the installed files; this is the cheap half that also runs before
 # any copy is compared.
 A9_SKIPS="$(count_in "$A_OUT" '^==> skipping ')"
 [ "$A9_SKIPS" -eq 0 ] &&
-  ok "A9: a no-flag run selected all four units (0 '==> skipping' lines)" || {
+  ok "A9: a no-flag run selected every unit (0 '==> skipping' lines)" || {
   bad "A9: a no-flag run skipped $A9_SKIPS unit(s) — the default selection is no longer everything"
   evidence "$A_OUT"
 }
@@ -657,8 +649,8 @@ if leg select; then
   # F3 — DEPENDENCY ORDER SURVIVES AN EXCLUSION, and it survives LOUDLY. A unit
   # named on the command line is never dropped by --without's cascade, so this
   # command line resolves to "install base-goose without the base it needs" —
-  # which is a broken install that would otherwise exit 0 having copied a skill
-  # onto a machine where the dependency never ran. Both ids must appear in the
+  # which is a broken install that would otherwise exit 0 having installed a
+  # unit onto a machine where the dependency never ran. Both ids must appear in the
   # complaint: the thing that cannot run, and the thing it needed.
   F3_RC="$(run_bootstrap_flags f3 "$WORK/home-f3" --only base-goose --without base-toolchain)"
   [ "$F3_RC" = "2" ] && grep -qF "base-goose requires base-toolchain" "$WORK/out/f3.log" &&
@@ -682,44 +674,38 @@ if leg select; then
   }
 
   # F5/F6 — THE PAIR. --only X and --with X must not mean the same thing. With
-  # base-skills gone (2026-09-23), the observable is the goose units: --only
-  # coding-pack must leave goose config.yaml ABSENT (the goose units were
-  # never selected) while --with coding-pack leaves it present. An assertion
+  # coding-pack gone (#164), the observable is the goose units: --only
+  # base-toolchain must leave goose config.yaml ABSENT (the goose unit was
+  # never selected) while --with base-toolchain leaves it present. An assertion
   # that passed for both would be testing neither.
-  F5_RC="$(run_bootstrap_flags f5 "$WORK/home-f5" --only coding-pack)"
+  F5_RC="$(run_bootstrap_flags f5 "$WORK/home-f5" --only base-toolchain)"
   F5_HOME="$WORK/home-f5"
-  # THE EMPTY BREW LOG IS WHAT OBSERVES the closure's shape: coding-pack asks
-  # brew for nothing, so a resolved plan of exactly {coding-pack} must reach the
-  # seam zero times. An assertion over a non-empty golden here would be testing
-  # a closure that no longer exists; an EMPTY-FILE check is the one that holds.
-  # Measured, before this was rewritten: under the pre-pivot graph --only
-  # coding-pack pulled base-toolchain + base-goose + opencode behind it and the
-  # log held 16 lines; deleting requires_of's opencode arm without touching this
-  # assertion left a 49/0 run with a 12-line log. This row is what holds it.
+  # THE SKIP LINE IS WHAT OBSERVES the closure's shape: base-toolchain requires
+  # nothing, so a resolved plan of exactly {base-toolchain} skips exactly one
+  # unit — base-goose — and reaches brew only for the toolchain's four items.
+  # (The old empty-brew-log observable died with the coding pack: that unit was
+  # the one resolved plan that asked brew for nothing.)
   F5_SKIPS="$(count_in "$WORK/out/f5.log" '^==> skipping ')"
-  F5_BREW_LINES="$(count_in "$WORK/brew-f5.log" '.')"
   [ "$F5_RC" = "0" ] &&
-    [ ! -e "$F5_HOME/.agents/skills/connect-service" ] &&
-    [ -d "$F5_HOME/.agents/skills/ship" ] &&
-    [ ! -e "$F5_HOME/.config/opencode/AGENTS.md" ] &&
     [ ! -e "$F5_HOME/.config/goose/config.yaml" ] &&
-    [ "$F5_BREW_LINES" -eq 0 ] &&
-    [ "$F5_SKIPS" -eq 2 ] &&
-    grep -qF "==> skipping base-toolchain" "$WORK/out/f5.log" &&
+    [ ! -e "$F5_HOME/.agents/skills" ] &&
+    [ "$F5_SKIPS" -eq 1 ] &&
     grep -qF "==> skipping base-goose" "$WORK/out/f5.log" &&
-    ok "F5: --only coding-pack installs exactly {coding-pack} (empty brew log) and skips the other two" || {
-    bad "F5: --only coding-pack did not resolve to exactly {coding-pack} (rc=$F5_RC, $F5_SKIPS skip line(s), $F5_BREW_LINES brew line(s))"
+    grep -qF "brew install uv" "$WORK/brew-f5.log" &&
+    ! grep -qF "brew install block-goose-cli" "$WORK/brew-f5.log" &&
+    ok "F5: --only base-toolchain installs exactly {base-toolchain} and skips base-goose" || {
+    bad "F5: --only base-toolchain did not resolve to exactly {base-toolchain} (rc=$F5_RC, $F5_SKIPS skip line(s))"
     evidence "$WORK/out/f5.log"
   }
 
-  F6_RC="$(run_bootstrap_flags f6 "$WORK/home-f6" --with coding-pack)"
+  F6_RC="$(run_bootstrap_flags f6 "$WORK/home-f6" --with base-toolchain)"
   F6_HOME="$WORK/home-f6"
   F6_SKIPS="$(count_in "$WORK/out/f6.log" '^==> skipping ')"
   [ "$F6_RC" = "0" ] &&
-        [ -d "$F6_HOME/.agents/skills/ship" ] &&
+    [ -e "$F6_HOME/.config/goose/config.yaml" ] &&
     [ "$F6_SKIPS" -eq 0 ] &&
-    ok "F6: --with coding-pack ADDS to the default set — the goose config lands too, 0 skips" || {
-    bad "F6: --with coding-pack did not keep the default set (rc=$F6_RC, $F6_SKIPS skip line(s))"
+    ok "F6: --with base-toolchain keeps the default set — the goose config lands too, 0 skips" || {
+    bad "F6: --with base-toolchain did not keep the default set (rc=$F6_RC, $F6_SKIPS skip line(s))"
     evidence "$WORK/out/f6.log"
   }
 fi
@@ -731,18 +717,20 @@ if leg select; then
   H_HOME="$WORK/home-dry"
   H_RC="$(run_bootstrap_flags h "$H_HOME" --dry-run)"
 
-  # H1 — THE WHOLE DEFAULT DRY RUN, hand-typed. Thirty lines: the plan header,
-  # the four units in dependency order, the `would install` banner, and all 24
-  # items the four units own. Typed out of config/units/*.yaml's `owns` blocks
+  # H1 — THE WHOLE DEFAULT DRY RUN, hand-typed. Thirteen lines: the plan header,
+  # the two units in dependency order, the `would install` banner, and all 9
+  # items the two units own. Typed out of config/units/*.yaml's `owns` blocks
   # in manifest order, NEVER pasted from a run of the script — the same rule as
   # A1, for the same reason (an expectation derived from the code under test
   # compares the code to itself and can never fail).
   #
   # RE-TYPED for the pivot (#142): the opencode unit left the catalog and took
   # its three `owns` rows (the formula, opencode.json and auth.json) with it.
-  # Typed out of the manifests by hand, in manifest order, exactly as the rule
-  # requires — the temptation on a rebase is to paste the new run's output and
-  # call the golden updated, which converts this assertion into a tautology.
+  # RE-TYPED AGAIN for the coding pack's removal (#164): the unit left the
+  # catalog with its eleven skill rows. Typed out of the manifests by hand, in
+  # manifest order, exactly as the rule requires — the temptation on a rebase
+  # is to paste the new run's output and call the golden updated, which
+  # converts this assertion into a tautology.
   #
   # It is the whole file and not `head -N`. This assertion USED to clip to six
   # lines, which meant the banner and every owns line were compared to nothing:
@@ -750,19 +738,19 @@ if leg select; then
   # list -- with the whole harness green. Measured, before this was widened:
   # 49 passed.
   #
-  # This is also the ONLY assertion anywhere that sees coding-pack's owns
-  # lines. H4 pins a whole log too, but for `--dry-run --without base-toolchain`,
-  # whose plan excludes base-goose by construction.
+  # This is also the ONLY assertion anywhere that sees the two units' owns
+  # lines as a whole. H4 pins a whole log too, but for
+  # `--dry-run --without base-toolchain`, whose plan excludes base-goose by
+  # construction.
   #
   # Kebab-cased and indented, both deliberately: a column-0 unit_*() name
   # printed here would be counted as a call site by units_lint.py's P3. And
   # there is no `==> personal-ai Mac bootstrap` banner above the plan --
   # --dry-run answers before the platform guard, so nothing precedes it.
   cat >"$WORK/golden-h.txt" <<'EOF'
-==> plan (3 units, in dependency order):
+==> plan (2 units, in dependency order):
   base-toolchain
   base-goose
-  coding-pack
 ==> would install:
   brew formula  uv
   brew formula  node
@@ -773,22 +761,11 @@ if leg select; then
   file          ~/.config/goose/config.yaml
   file          ~/.config/goose/custom_providers
   file          ~/.config/goose/.goosehints
-  file          ~/.agents/skills/ci-lint-test
-  file          ~/.agents/skills/clean-plan
-  file          ~/.agents/skills/code-review
-  file          ~/.agents/skills/deep-research
-  file          ~/.agents/skills/looping-code-review
-  file          ~/.agents/skills/looping-plan-review
-  file          ~/.agents/skills/mr-review
-  file          ~/.agents/skills/plan-review
-  file          ~/.agents/skills/pre-mr-checklist
-  file          ~/.agents/skills/refactor-planner
-  file          ~/.agents/skills/ship
 EOF
   if [ "$H_RC" = "0" ] && diff -u "$WORK/golden-h.txt" "$WORK/out/h.log" >"$WORK/h1.diff" 2>&1; then
-    ok "H1: --dry-run prints exactly the 29-line three-unit plan and its 21 owned items"
+    ok "H1: --dry-run prints exactly the 13-line two-unit plan and its 9 owned items"
   else
-    bad "H1: the default --dry-run output is not the 29-line golden (rc=$H_RC)"
+    bad "H1: the default --dry-run output is not the 13-line golden (rc=$H_RC)"
     evidence "$WORK/h1.diff"
   fi
 
@@ -807,9 +784,9 @@ EOF
   # ~/.config, which on a fresh home is absent and on a real Mac is not. So the
   # populated case is the one that matters, and it is asserted as `diff -r`
   # against a snapshot taken immediately before the run rather than as "no
-  # error". The snapshot is a copy of phase A's install: 28 files, every
-  # template and every skill (the 30 agents left the install with the herdr
-  # pivot, #144).
+  # error". The snapshot is a copy of phase A's install: 6 files, every template
+  # (the eleven skills left the install with the coding pack's removal, #164,
+  # after the 30 agents had left it with the herdr pivot, #144).
   H_POP="$WORK/home-dry-pop"
   H_REF="$WORK/home-dry-ref"
   rm -rf "$H_POP" "$H_REF"
@@ -817,11 +794,11 @@ EOF
   cp -R "$FAKE_HOME" "$H_REF"
   H2B_BEFORE="$(find "$H_REF" -type f | wc -l | tr -d ' ')"
   H2B_RC="$(run_bootstrap_flags h-pop "$H_POP" --dry-run)"
-  if [ "$H2B_RC" = "0" ] && [ "$H2B_BEFORE" -ge 28 ] &&
+  if [ "$H2B_RC" = "0" ] && [ "$H2B_BEFORE" -ge 6 ] &&
      diff -r "$H_REF" "$H_POP" >"$WORK/h2b.diff" 2>&1; then
     ok "H2b: --dry-run over a populated \$HOME ($H2B_BEFORE files) left every byte where it was"
   else
-    bad "H2b: --dry-run modified a populated \$HOME (rc=$H2B_RC, files=$H2B_BEFORE want >=28)"
+    bad "H2b: --dry-run modified a populated \$HOME (rc=$H2B_RC, files=$H2B_BEFORE want >=6)"
     evidence "$WORK/h2b.diff"
   fi
 
@@ -847,33 +824,23 @@ EOF
     evidence "$WORK/deny-h.log"
   }
 
-  # H4 — the whole output for a cascading exclusion, hand-typed. Seventeen lines
-  # that pin, in one artifact: the cascade announcement, the one-unit plan, its
-  # order, and — by their absence — that not one base-toolchain or base-goose
-  # path is offered. A "no goose line" grep would pass on an empty file.
+  # H4 — the whole output for a cascading exclusion, hand-typed. Three lines
+  # that pin, in one artifact: the cascade announcement, the empty plan (both
+  # units were dropped — base-goose by the cascade, base-toolchain by name, and
+  # the coding pack that used to survive it left the repo, #164), and — by
+  # their absence — that not one base-toolchain or base-goose path is offered.
+  # A "no goose line" grep would pass on an empty file.
   H4_RC="$(run_bootstrap_flags h-noc "$WORK/home-dry-noc" --dry-run --without base-toolchain)"
   cat >"$WORK/golden-h4.txt" <<'EOF'
 ==> --without base-toolchain also drops: base-goose
-==> plan (1 units, in dependency order):
-  coding-pack
+==> plan (0 units, in dependency order):
 ==> would install:
-  file          ~/.agents/skills/ci-lint-test
-  file          ~/.agents/skills/clean-plan
-  file          ~/.agents/skills/code-review
-  file          ~/.agents/skills/deep-research
-  file          ~/.agents/skills/looping-code-review
-  file          ~/.agents/skills/looping-plan-review
-  file          ~/.agents/skills/mr-review
-  file          ~/.agents/skills/plan-review
-  file          ~/.agents/skills/pre-mr-checklist
-  file          ~/.agents/skills/refactor-planner
-  file          ~/.agents/skills/ship
 EOF
   if [ "$H4_RC" = "0" ] &&
      diff -u "$WORK/golden-h4.txt" "$WORK/out/h-noc.log" >"$WORK/h4.diff" 2>&1; then
-    ok "H4: --dry-run --without base-toolchain prints exactly the 15-line one-unit plan, cascade announced"
+    ok "H4: --dry-run --without base-toolchain prints exactly the 3-line empty plan, cascade announced"
   else
-    bad "H4: the cascading dry-run plan is not the 15-line golden (rc=$H4_RC)"
+    bad "H4: the cascading dry-run plan is not the 3-line golden (rc=$H4_RC)"
     evidence "$WORK/h4.diff"
   fi
 fi

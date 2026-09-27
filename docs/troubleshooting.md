@@ -254,20 +254,18 @@ written nothing. There is no `--force`, and no unit is exempt — all eighteen r
 **Why there is no removing half yet.** Two facts in this tree make a removal today
 worse than the absence it produces:
 
-- **`pai doctor` would stay permanently red.** `check_skills` FAILs when any directory
-  under `config/skills/` is missing from `~/.agents/skills`, and `doctor --fix`
-  deliberately does not repair it ("--fix touches goose's extension config and nothing
-  else"). Removing `coding-pack`'s eleven skills would print
-  `FAIL 11 of 12 shipped skills are not installed` forever, with a remedy line telling
-  you to re-run the bootstrap and no `--fix` path. doctor has no way of being told that
-  a unit is *deliberately* absent.
+- **`pai doctor` has no way of being told a unit is *deliberately* absent.** Its
+  checks read the live home against what the repo declares: remove a provider
+  JSON the repo ships and `pai doctor` prints `FAIL provider <name> is not
+  installed` forever, and `doctor --fix` deliberately does not repair it
+  ("--fix touches goose's extension config and nothing else").
 - **A removed goose extension comes straight back.** `doctor --fix` plans
   "absent from the live config → add it" for every key the repo's own templates declare.
   A removal that a routine repair reverses is not a removal.
 
-**And the install side cannot tell its own work from yours.** `copy_no_clobber` and
-`install_skill` in `scripts/mac/bootstrap-mac.sh` both keep a pre-existing destination
-and print `kept existing`. So `~/.agents/skills/ship` may be this repo's copy or the one
+**And the install side cannot tell its own work from yours.** `copy_no_clobber` in
+`scripts/mac/bootstrap-mac.sh` keeps a pre-existing destination and prints
+`kept existing`. So `~/.config/goose/.goosehints` may be this repo's copy or the one
 you wrote first, and nothing on disk records which. A remover driven off `owns:` deletes
 both; the only sound predicate is content equality against the repo source.
 

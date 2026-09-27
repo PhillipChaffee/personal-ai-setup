@@ -405,9 +405,8 @@ pause "Press Enter to continue"
 
 # ── Stage 3 · Mac extras ───────────────────────────────────────────────────
 stage "Mac extras"
-say "The Mac base is not a question: toolchain, goose CLI + Desktop, and the"
-say "coding pack (eleven ported skills, read by goose) install as the thin"
-say "client. No coding agent installs on the Mac."
+say "The Mac base is not a question: toolchain, goose CLI + Desktop install as"
+say "the thin client. No coding agent installs on the Mac."
 if [ "$HERDR" -eq 1 ]; then
   say "They live in herdr panes on the brain."
 fi
@@ -564,10 +563,9 @@ pause "Press Enter to continue"
 
 # ── Stage 6 · Mac installer ─────────────────────────────────────────────────
 stage "Mac installer — bootstrap-mac.sh"
-say "Three units, in dependency order: base-toolchain (uv, node, jq, the"
-say "Tailscale cask), base-goose (goose CLI + Desktop, the pin, ~/.config/goose),"
-say "coding-pack (the eleven ported skills — the OpenCode agents and AGENTS.md"
-say "stay in the repo as paste-in material). No-clobber; re-running is safe."
+say "Two units, in dependency order: base-toolchain (uv, node, jq, the"
+say "Tailscale cask), then base-goose (goose CLI + Desktop, the pin,"
+say "and ~/.config/goose). No-clobber; re-running is safe."
 bash "$REPO_ROOT/scripts/mac/bootstrap-mac.sh"
 stage "Mac secrets — keychain-secrets.sh"
 say "Hidden prompts for every Keychain row the wizard did not already store"
