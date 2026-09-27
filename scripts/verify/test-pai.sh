@@ -2736,12 +2736,12 @@ WANT_MAC_BASE="OPENCODE_ZEN_API_KEY TOGETHER_API_KEY"
 # ten names left); TELEGRAM_BOT_TOKEN left with the telegram gateway.
 WANT_MAC_ALL="GOOSE_SERVER__SECRET_KEY OPENCODE_ZEN_API_KEY \
 TAVILY_API_KEY TOGETHER_API_KEY"
-# The default vps selection (base + default_on): herdr is default_on, so its
-# pick-aware roster joins the three names deploy-vps.sh's preflight
+# The default vps selection (base + default_on): herdr is opt_in since #163,
+# so the default roster is exactly the three names deploy-vps.sh's preflight
 # hard-requires (GOOSE_SERVER__SECRET_KEY, OPENCODE_ZEN_API_KEY,
-# TOGETHER_API_KEY — all present here).
-WANT_VPS_DEFAULT="ANTHROPIC_API_KEY GITHUB_CODE_AGENT_PAT GOOSE_SERVER__SECRET_KEY \
-OPENAI_API_KEY OPENCODE_ZEN_API_KEY TOGETHER_API_KEY"
+# TOGETHER_API_KEY). herdr's pick-aware rows (ANTHROPIC_API_KEY,
+# OPENAI_API_KEY, GITHUB_CODE_AGENT_PAT) join only via --units herdr.
+WANT_VPS_DEFAULT="GOOSE_SERVER__SECRET_KEY OPENCODE_ZEN_API_KEY TOGETHER_API_KEY"
 
 secret_names() { # secret_names <flags...> -- the key column, space-separated
   pai secrets "$CLEAN" "$@" | cut -f1 | tr '\n' ' ' | sed 's/ $//'

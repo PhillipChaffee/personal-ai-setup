@@ -10,14 +10,15 @@
 # --only plus the new --coding-agents flag, and it is OFF BY DEFAULT: a bare
 # `deploy-vps.sh` installs brain core + goose-serve only, because hand runs
 # never write credentials unasked (#138's "unpicked = nothing written"). The
-# tier below is the WIZARD menu's default, not this installer's — see the
-# blocker on the two defaults.
+# tier below is opt_in too (#163): the wizard asks a y/N whose default is No,
+# so both sides — wizard and installer — default to off and agree (the
+# opt-in-on-both-sides blocker).
 id: herdr
 manifest_version: 1
 verified_on: "2026-09-24"
 summary: The herdr server, its dedicated user and namespace, the pinned binary, and the coding-agent catalog.
 host: vps
-tier: default_on
+tier: opt_in
 requires: [brain]
 
 # Copied VERBATIM from the "Budget" table in README.md (the validator requires
@@ -160,13 +161,13 @@ blockers:
       the workspace layout and resumes official-integration sessions by id,
       but a mid-turn pane does not come back mid-turn. Deploy when nothing is
       mid-turn — the old plane's rule, carried over.
-  - id: two-defaults-and-why
+  - id: opt-in-on-both-sides
     severity: note
-    detail: "tier: default_on is the WIZARD menu's default (the wizard pre-checks
-      the unit), while deploy-vps.sh's bare run selects nothing: a hand run
-      must never write credentials unasked (#138). The wizard passes --with
-      herdr --coding-agents <picked> explicitly; a human opts in with the same
-      flags. The tier does not, and must not, change the installer's default."
+    detail: "tier: opt_in and the installer's bare-run default agree since #163:
+      the wizard asks a y/N whose default is No and passes --with herdr
+      --coding-agents <picked> only on Yes, a human opts in with the same
+      flags, and a hand run never writes credentials unasked (#138). Neither
+      default selects the unit."
   - id: vendor-first-is-deterministic
     severity: note
     detail: When both a vendor key (ANTHROPIC_API_KEY / OPENAI_API_KEY) and the
