@@ -12,6 +12,10 @@ _Avoid_: VPS, "the cloud", server (when naming the whole machine)
 Goose running on the brain as the one shared assistant; every chat surface is a client to it.
 _Avoid_: brain agent, goose server (the command, not the role)
 
+**Fallback**:
+The Mac's own goose (and any local herdr panes) used when the brain is unreachable. A client and a safety net — never a place that hosts the brain or holds state.
+_Avoid_: local brain, backup hub, offline mode
+
 **Wizard**:
 The repo's single front-door script that sets up a machine or the brain by asking questions and driving units. Generated with the `wizard` skill.
 _Avoid_: bootstrap (as the front door), installer

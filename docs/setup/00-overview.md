@@ -32,7 +32,7 @@ script. Total hands-on time: roughly a weekend, spread out however you like.
 
 | Phase | Doc | Time | Milestone |
 |---|---|---|---|
-| 1 — Day-1 minimal viable | [10-accounts.md](10-accounts.md) → [20-mac-setup.md](20-mac-setup.md) | ~1–2 h | You can chat with your own models from the Mac (goose CLI + Desktop) — no server, working on day one. |
+| 1 — Day-1 minimal viable | [10-accounts.md](10-accounts.md) → [20-mac-setup.md](20-mac-setup.md) | ~1–2 h | You can chat with your own models from the Mac (goose CLI + Desktop) — a client-and-fallback stage, working on day one; the brain arrives in Phase 2 and never runs on the Mac. |
 | 2 — The brain | [50-vps-brain.md](50-vps-brain.md) | ~3 h | **Your chat history lives on the brain.** This is the payoff phase. |
 | 3 — Go public + roadmap | [`docs/public-repo.md`](../public-repo.md), [`docs/roadmap.md`](../roadmap.md) | ~1 h | Guardrails green (gitleaks full-history scan, placeholder audit) and the repo flipped public; roadmap items queued. |
 

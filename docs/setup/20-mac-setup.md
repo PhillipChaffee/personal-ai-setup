@@ -4,16 +4,17 @@ The Mac gets two tools: **Goose** (Desktop + CLI) and the supporting kit (uv,
 node, jq, Tailscale). One bootstrap script installs everything and lays down
 the config templates; one secrets script puts your keys in the Keychain; then
 you verify. The coding agents are not on this list — they run on the brain
-under herdr (Phase 3), and the Mac reaches them as a client.
+under herdr (Phase 2), and the Mac reaches them as a client.
 
 Prerequisite: [10-accounts.md](10-accounts.md) §1–2 done — you have
 `OPENCODE_ZEN_API_KEY` and `TOGETHER_API_KEY` ready to paste.
 
-One framing note before you start: the goose you install here is the
-**fallback/offline surface**. From Phase 3 on, the always-on brain on the VPS
-is the primary hub — Goose Desktop attaches to it as a remote client, and the
-Mac-local agent is what you use when the brain is unreachable or you're
-offline. Don't invest in making the local goose perfect; it just has to work.
+One framing note before you start: the Mac never hosts the brain. The brain is
+the Hetzner VPS (Phase 2) — the only place that holds state — and what you
+install here is the **client and offline fallback**: from Phase 2 on, Goose
+Desktop attaches to the brain as a remote client, and the Mac-local agent is
+what you use when the brain is unreachable or you're offline. Don't invest in
+making the local goose perfect; it just has to work.
 
 ## 1. Run the bootstrap
 
@@ -32,7 +33,7 @@ What it does (it's idempotent — safe to re-run after a failed step):
 - **Pins goose to 1.x.** Goose releases roughly weekly and 2.0 is in churn;
   the script pins the CLI formula (`brew pin block-goose-cli`) and keeps the
   Desktop cask off auto-update, so goose upgrades only happen when you decide
-  to. The brain (Phase 3) runs the same pinned major version.
+  to. The brain (Phase 2) runs the same pinned major version.
 - **Copies config templates, no-clobber** — existing files are never
   overwritten, so your local edits survive re-runs:
 
@@ -145,7 +146,7 @@ echo "${#OPENCODE_ZEN_API_KEY} chars"   # non-zero means the export worked
 ## 3. OpenCode → Zen
 
 OpenCode is no longer part of this install: the coding agents run on the brain
-under herdr (Phase 3), and the repo ships no OpenCode config for anyone —
+under herdr (Phase 2), and the repo ships no OpenCode config for anyone —
 people input their own settings. There is nothing to do here. What step 2
 stored still matters: the Mac's goose providers and the verify scripts bill
 against Zen through `$OPENCODE_ZEN_API_KEY`.
@@ -173,7 +174,7 @@ If you run OpenCode locally anyway, two things to know:
    the model picker changes this in two clicks. (`zen-free` is in the picker
    too; its display name reminds you those models train on your data.)
 3. Confirm the Developer extension is on (default) and leave the extension
-   list minimal for now — connector adoption is [Phase 2](../connecting.md)
+   list minimal for now — connector adoption is [connecting](../connecting.md)
    territory, and every shipped connector fragment starts disabled.
 
 Desktop apps launched from Finder don't inherit your shell environment. The
@@ -217,8 +218,9 @@ goose run --provider zen-openai --model kimi-k2.6 -t "Reply with exactly: local 
 - Goose Desktop + CLI work locally against all three providers.
 - The Cursor-ported skills are in place for goose (and for any OpenCode you
   run yourself).
-- This is the complete **Phase 1** stack: usable on
-  day one, no server.
+- This is the complete **Phase 1** stack: client-and-fallback
+  only, usable on day one — no brain yet, and the Mac never
+  becomes one.
 
-Next: Phase 3 stands up the brain and demotes this Mac
+Next: Phase 2 stands up the brain and demotes this Mac
 setup to fallback duty.
