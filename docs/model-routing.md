@@ -46,7 +46,7 @@ Notes on reading the table:
   reaches Zen's GPT models natively, and OpenAI's open-weight `gpt-oss` models are
   already on `together`.)
 - "OpenCode → Zen" rows run wherever OpenCode runs — the brain under herdr
-  (Phase 3), or a local OpenCode you installed yourself. The repo ships no
+  (Phase 2), or a local OpenCode you installed yourself. The repo ships no
   OpenCode config and writes no credential; you connect OpenCode to Zen
   yourself. Those rows never pass through Goose.
 - The **coding agents** row is the one deliberately unpinned job class: model choice is
