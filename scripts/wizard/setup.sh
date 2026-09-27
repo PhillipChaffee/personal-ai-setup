@@ -570,12 +570,19 @@ pause "Press Enter to continue"
 
 # ── Stage 3 · Mac extras ───────────────────────────────────────────────────
 stage "Mac extras"
-say "The Mac base is not a question: toolchain, goose CLI + Desktop install as"
-say "the thin client. No coding agent installs on the Mac."
+say "The Mac's base is fixed — nothing to choose in this stage: the build"
+say "toolchain, goose CLI and Goose Desktop install as the thin client, and"
+say "no coding agent ever installs on the Mac."
 if [ "$HERDR" -eq 1 ]; then
-  say "They live in herdr panes on the brain."
+  say "Coding agents live in herdr panes on the brain."
 fi
-if confirm "Print the connectors adoption path as a hand-step? (adoption stays the documented hand edit — a fragment flip, a config re-render, a credential in goose's own store)"; then
+say ""
+say "Connectors are optional MCP links from goose to outside services (mail"
+say "and calendar via IMAP/CalDAV or Proton, Todoist) — shipped disabled in"
+say "config/connectors/. Adopting one is a hand edit by design: enable its"
+say "fragment, re-render goose's config, store its credential. The wizard"
+say "never installs or configures a connector."
+if confirm "Print the connectors adoption steps as a hand-step at the end?"; then
   CONNECTORS=1
 fi
 pause "Press Enter to continue"
