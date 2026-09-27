@@ -695,6 +695,16 @@ if [ "$SCOPE" = "fresh" ]; then
   # and var-file flags for the secrets (the wizard never sees them), and
   # -input=false (the prompts must stay interactive).
   if confirm "2/4 — run terraform apply now from infra/terraform (location $BRAIN_LOCATION, type $BRAIN_SERVER_TYPE; you will type the Hetzner token and the tagged auth key at TERRAFORM's prompts)?"; then
+    # #186: mint-while-waiting — open the two consoles the values come from,
+    # stage-5 style; terraform's prompts simply wait for the pasted values.
+    open_url "https://console.hetzner.cloud"
+    note "  → pick the project → Security → API tokens → Create API token (read"
+    note "    + write; the value shows once) — terraform's var.hcloud_token awaits it."
+    note "  → no Hetzner account yet? register in that same console — a payment"
+    note "    method is needed before servers can launch. Terraform waits."
+    open_url "https://login.tailscale.com/admin/settings/keys"
+    note "  → Generate auth key: reusable, pre-authorized, tagged (e.g. tag:server)"
+    note "    (docs/setup/50-vps-brain.md §1) — terraform's var.tailscale_authkey."
     say "Running terraform apply — its prompts are yours to answer…"
     if [ "$BRAIN_LOCATION" = "hel1" ] && [ "$BRAIN_SERVER_TYPE" = "cpx32" ]; then
       (cd "$REPO_ROOT/infra/terraform" && terraform apply)
