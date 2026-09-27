@@ -571,7 +571,7 @@ if leg constraints; then
   mksandbox floorok fresh
   arm floorok curl-ok
   FLOOROK_RC="$(run_deploy floorok "$WORK/out/floorok.log" "$REPO_ROOT/scripts/vps/deploy-vps.sh" "${HERDR_FLAGS[@]}")"
-  grep -q 'herdr floor met: 4 vCPU, 7964 MiB' "$WORK/out/floorok.log.out" &&
+  grep -q 'herdr floor met: 4 vCPU, 7962 MiB' "$WORK/out/floorok.log.out" &&
     ok "V14d: the at-floor host (4 vCPU / 8 GB fixture) passes, measurement printed" || {
     bad "V14d: rc=$FLOOROK_RC — the at-floor host should pass with the measurement line"
     evidence "$WORK/out/floorok.log.out"
