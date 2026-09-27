@@ -580,4 +580,49 @@ else
   fail "herdr.yaml tier is not opt_in — the wizard y/N (default No) and the manifest disagree"
 fi
 
+# 6b. THE BRAIN'S SHAPE IS PICKABLE WITH SHARED DEFAULTS (#165). The picker
+# asks region and server type, defaulting hel1 + cpx32 — the SAME defaults
+# infra/terraform/variables.tf declares, so Enter in the wizard and a plain
+# `terraform apply` cannot disagree; that pair is the interlock this section
+# pins, exactly like the y/N + tier pair above. The picker validates
+# availability NOWHERE on purpose: Hetzner guarantees nothing about
+# per-location stock, so the drift warning must be present and must point at
+# terraform plan — the only validator this flow has, because the wizard never
+# touches the Hetzner token. The floor is enforced by deploy-vps.sh's
+# preflight on the machine's own numbers; its constants are pinned here so a
+# tolerance change is forced through a human's eyes.
+TFVARS="$REPO_ROOT/infra/terraform/variables.tf"
+DEPLOY="$REPO_ROOT/scripts/vps/deploy-vps.sh"
+MISSING_DEFAULTS=""
+grep -qF 'default     = "hel1"' "$TFVARS" || MISSING_DEFAULTS="$MISSING_DEFAULTS location"
+grep -qF 'default     = "cpx32"' "$TFVARS" || MISSING_DEFAULTS="$MISSING_DEFAULTS server_type"
+if [ -z "$MISSING_DEFAULTS" ]; then
+  pass "terraform defaults are hel1 + cpx32 — the wizard's Enter path cannot drift from them"
+else
+  fail "variables.tf lost the #165 defaults:$MISSING_DEFAULTS — the picker and terraform disagree"
+fi
+REGION_MISS=""
+for code in fsn1 nbg1 hel1 ash hil sin; do
+  grep -qF -- "$code" "$WIZARD" || REGION_MISS="$REGION_MISS $code"
+done
+if [ -z "$REGION_MISS" ]; then
+  pass "the picker's region validation names all six Hetzner locations"
+else
+  fail "setup.sh lost region codes:$REGION_MISS — the picker cannot validate what it does not name"
+fi
+if grep -qF 'Availability drifts per location' "$WIZARD" &&
+   grep -qF "'terraform plan' errors with a not-available message" "$WIZARD"; then
+  pass "the picker warns about availability drift and points at terraform plan as the validator"
+else
+  fail "the drift warning is gone — the picker must not pretend to know Hetzner's stock"
+fi
+FLOOR_MISS=""
+grep -qF 'FLOOR_NPROC=4' "$DEPLOY" || FLOOR_MISS="$FLOOR_MISS vCPU"
+grep -qF 'FLOOR_MEMTOTAL_KB=7864320' "$DEPLOY" || FLOOR_MISS="$FLOOR_MISS MemTotal"
+if [ -z "$FLOOR_MISS" ]; then
+  pass "deploy-vps.sh carries the herdr floor: 4 vCPU, 7.5 GiB MemTotal (an 8 GB tier post-reservation)"
+else
+  fail "the herdr floor constants are gone from deploy-vps.sh ($FLOOR_MISS) — the #165 floor is unenforced"
+fi
+
 finish --skips

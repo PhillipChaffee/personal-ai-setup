@@ -11,6 +11,8 @@
 #    -T, runs the migration once per host per deploy whatever is selected,
 #    selects NOTHING on a bare run, honours --with/--without/--only and the
 #    --coding-agents gating (agents require herdr; the catalog is enforced),
+#    measures the machine and refuses herdr under the 4 vCPU / 8 GB floor
+#    before the first mutation while a bare run on the same host installs,
 #    installs the herdr plane in the recorded order (user, pinned digest-
 #    checked binary, config, pick-aware env, unit), exits 0 on a re-run
 #    without re-downloading or re-creating the user or superseding anything,
@@ -52,7 +54,7 @@
 #   V3/V3b   the -T constraint, both directions V7          idempotence
 #   V4a      the EXIT trap                      V8/V9       the /status gate, ERR
 #   V6       the migration runs once            V11         check-herdr skip
-#   V13      the plane's install shape
+#   V13      the plane's install shape          V14         the herdr floor (#165)
 #
 # NOTHING HERE MAY CONTAIN A LITERAL SECRET-SHAPED CONSTANT. The fixture
 # secrets.env is generated with `openssl rand -hex 32` at run time, and no
@@ -169,7 +171,7 @@ for tool in $PATHMIN_TOOLS; do
   ln -sf "$real" "$PATHMIN/$tool"
 done
 
-SHIM_NAMES="sudo systemctl apt-get usermod loginctl tailscale curl mountpoint git goose sleep date ln mv cp rm rmdir install chmod mkdir id useradd npm"
+SHIM_NAMES="sudo systemctl apt-get usermod loginctl tailscale curl mountpoint git goose sleep date ln mv cp rm rmdir install chmod mkdir id useradd npm nproc"
 DENY_NAMES="podman apt-get usermod loginctl npm useradd"
 
 # ---- 2b. the fixture secrets ------------------------------------------------
@@ -204,8 +206,17 @@ mksandbox() {
   local tag="$1" kind="$2" deny="${3:-}"
   local sb="$WORK/sb-$tag" aux="$WORK/aux-$tag"
   mkdir -p "$sb/home/agent" "$sb/data" "$sb/etc/systemd/system" "$sb/bin" \
-           "$sb/repo" "$sb/repo-pins" "$aux/state" "$aux/shims" "$aux/deny"
+           "$sb/repo" "$sb/repo-pins" "$sb/proc" "$aux/state" "$aux/shims" "$aux/deny"
   : >"$sb/etc/subuid"
+
+  # ---- the machine the floor check measures (#165) ----
+  # Deterministic, not incidental: every leg runs against an AT-FLOOR host —
+  # an 8 GB server's real MemTotal (~7.9 GB post-reservation) and cpx32's 4
+  # cores — so a green herdr leg here means the floor PASSED, not that the CI
+  # runner happened to be big. Legs that test the refusal overwrite these two
+  # files before run_deploy.
+  printf 'MemTotal:  8153468 kB\nMemAvailable:  7800120 kB\n' >"$sb/proc/meminfo"
+  printf '4\n' >"$aux/state/host-nproc"
 
   # The repo the deploy pulls and copies templates out of. Symlinks to the real
   # thing: config/ and scripts/ are INPUTS to both sides of every assertion and
@@ -346,6 +357,7 @@ run_deploy() {
   PAI_GOOSE_BIN="$sb/bin/goose" \
   PAI_SUBUID_FILE="$sb/etc/subuid" \
   PAI_PINS_FILE="$sb/repo-pins/pins.yaml" \
+  PAI_PROC_MEMINFO="$sb/proc/meminfo" \
   PAI_HOST_LOG="$log" \
   PAI_HOST_STATE="$aux/state" \
   PAI_HOST_SHIMS="$aux/shims" \
@@ -502,6 +514,68 @@ if leg constraints; then
     ok "V4a: a failed herdr download still leaves goose-serve started by the EXIT trap" || {
     bad "V4a: rc=$TRAPA_RC, last systemctl line was '$TRAPA_LAST' — the brain would be left offline"
     evidence "$WORK/out/trapa.log"
+  }
+
+  # V14 — CONSTRAINT: the herdr floor (#165). Whenever herdr is selected the
+  # preflight measures the machine — nproc and MemTotal — and refuses under
+  # 4 vCPU / 8 GB BEFORE any mutation: no repo pull, no systemctl, nothing.
+  # The fixture host is at-floor (see build_sandbox), so every green herdr leg
+  # in this file is the floor's pass arm; what needs its own runs is the
+  # refusal, the floor's tie to herdr rather than to the host, the dry-run's
+  # plan-only placement, and the printed measurement.
+  mksandbox small1 fresh
+  printf 'MemTotal:  3940000 kB\n' >"$WORK/sb-small1/proc/meminfo"
+  printf '2\n' >"$WORK/aux-small1/state/host-nproc"
+  SMALL1_RC="$(run_deploy small1 "$WORK/out/small1.log" "$REPO_ROOT/scripts/vps/deploy-vps.sh" "${HERDR_FLAGS[@]}")"
+  [ "$SMALL1_RC" = "1" ] &&
+  grep -q 'herdr needs at least 4 vCPU / 8 GB' "$WORK/out/small1.log.err" &&
+  grep -q 'reports 2 vCPU and 3847 MiB' "$WORK/out/small1.log.err" &&
+  { ! grep -q 'Updating repo' "$WORK/out/small1.log.out"; } &&
+    ok "V14: a 2 vCPU / 4 GB host refuses herdr by name, quoting the machine's own numbers, before the first mutation" || {
+    bad "V14: rc=$SMALL1_RC — the floor did not stop a sub-floor host (or stopped it too late)"
+    evidence "$WORK/out/small1.log.err"
+    evidence "$WORK/out/small1.log.out"
+  }
+
+  # V14b — the floor is tied to herdr, not to the host: the same small host
+  # installs bare (brain core + goose-serve) without a murmur, because
+  # hub-only carries no floor (the settled shape).
+  mksandbox small2 fresh
+  arm small2 curl-ok
+  printf 'MemTotal:  3940000 kB\n' >"$WORK/sb-small2/proc/meminfo"
+  printf '2\n' >"$WORK/aux-small2/state/host-nproc"
+  SMALL2_RC="$(run_deploy small2 "$WORK/out/small2.log" "$REPO_ROOT/scripts/vps/deploy-vps.sh")"
+  [ "$SMALL2_RC" = "0" ] &&
+    ok "V14b: the same sub-floor host installs bare — no floor without herdr" || {
+    bad "V14b: rc=$SMALL2_RC — the floor leaked beyond herdr"
+    evidence "$WORK/out/small2.log.err"
+  }
+
+  # V14c — --dry-run stays plan-only: it prints the plan and exits 0 on the
+  # small host, because the floor is measured in the preflight and the
+  # dry-run exits before it. Placement, pinned so a later refactor cannot
+  # quietly move a machine gate above the plan.
+  mksandbox small3 fresh
+  printf 'MemTotal:  3940000 kB\n' >"$WORK/sb-small3/proc/meminfo"
+  printf '2\n' >"$WORK/aux-small3/state/host-nproc"
+  SMALL3_RC="$(run_deploy small3 "$WORK/out/small3.log" "$REPO_ROOT/scripts/vps/deploy-vps.sh" --dry-run "${HERDR_FLAGS[@]}")"
+  [ "$SMALL3_RC" = "0" ] && { grep -q 'run:  herdr' "$WORK/out/small3.log.out"; } &&
+    ok "V14c: --dry-run still plans herdr on a sub-floor host — the floor is a preflight measure, not a plan one" || {
+    bad "V14c: rc=$SMALL3_RC — dry-run grew a machine gate or lost the plan"
+    evidence "$WORK/out/small3.log.err"
+    evidence "$WORK/out/small3.log.out"
+  }
+
+  # V14d — the pass arm, printed not implied: the at-floor fixture host gets
+  # the preflight's measurement line, then the deploy proceeds.
+  mksandbox floorok fresh
+  arm floorok curl-ok
+  FLOOROK_RC="$(run_deploy floorok "$WORK/out/floorok.log" "$REPO_ROOT/scripts/vps/deploy-vps.sh" "${HERDR_FLAGS[@]}")"
+  grep -q 'herdr floor met: 4 vCPU, 7962 MiB' "$WORK/out/floorok.log.out" &&
+    ok "V14d: the at-floor host (4 vCPU / 8 GB fixture) passes, measurement printed" || {
+    bad "V14d: rc=$FLOOROK_RC — the at-floor host should pass with the measurement line"
+    evidence "$WORK/out/floorok.log.out"
+    evidence "$WORK/out/floorok.log.err"
   }
 fi
 

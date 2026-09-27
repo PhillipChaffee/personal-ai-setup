@@ -875,7 +875,7 @@ def check_docs(unit: Manifest) -> list[str]:
 
 
 # THE INSTALLER LINE REFERENCES. Manifests cite the installers by line
-# (`deploy-vps.sh:634`), and a carve renumbers the whole file — so every one of
+# (`deploy-vps.sh:1165`), and a carve renumbers the whole file — so every one of
 # those citations has to be re-anchored by hand, and the sweep that finds them
 # is `grep -rn 'deploy-vps.sh:[0-9]'`. A CONTINUATION written as a bare `:400`
 # is invisible to that sweep, which is not a hypothetical: #37 and #41 both
@@ -901,7 +901,7 @@ def check_docs(unit: Manifest) -> list[str]:
 # mistakes — of the eleven bare installer continuations this rule was written
 # for, it flags ten; brain.yaml's `the script says so itself at :242-244` is the
 # eleventh, and it is missed because `secrets.yaml` and `config.yaml` appear
-# between it and the `deploy-vps.sh:390-516` it continues. The obvious widening
+# between it and the `deploy-vps.sh:511-630` it continues. The obvious widening
 # — flag a bare ref whenever an installer appears anywhere earlier in the same
 # paragraph — was tried and rejected: on this tree it fires on eight refs, of
 # which exactly one is that bug and seven are correct references to cli.sh,

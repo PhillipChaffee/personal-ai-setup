@@ -34,8 +34,19 @@ firewall, the data volume, and cloud-init — is declared in
 
    Edit `terraform.tfvars`: `ssh_public_key` (your public key, for
    bootstrap/rescue), plus server type/location/timezone if the defaults don't
-   suit. The **timezone matters**: sessions, logs, and any scheduled work you
-   add later run in the brain's local time.
+   suit. The defaults are **hel1 (Helsinki) + cpx32 (4 vCPU / 8 GB)** — the
+   least-Eyes-exposure region at the EU price, sized to the herdr floor; the
+   setup wizard's provisioning stage picks region and type interactively and
+   prints the exact `terraform apply` line for non-default picks. The
+   **timezone matters**: sessions, logs, and any scheduled work you add later
+   run in the brain's local time.
+
+   Availability drifts per location and Hetzner guarantees nothing — let
+   `terraform plan` be the validator: if it errors with a not-available
+   message, pick another type. Two pricing notes: prices exclude the primary
+   IPv4 (€0.50/mo) and the 10 GB volume (~€0.44/mo); and rescaling an
+   existing server permanently reprices it at the current table — a
+   legacy-priced cpx21 rescaled after 2026-06-15 pays the new tier's price.
 
    The two secrets do **not** go in that file. `hcloud_token` (from
    10-accounts §5) and `tailscale_authkey` (step 1) have no default, so

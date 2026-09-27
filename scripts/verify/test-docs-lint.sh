@@ -193,12 +193,12 @@ expect_same() {
 # that, and this is what notices if the rewrite moved a character.
 budget_rows() {
   cat <<'EOF'
-| Hetzner cpx21-class VPS + encrypted volume | ~€6–9/mo |
+| Hetzner cpx32 VPS (4 vCPU / 8 GB) + encrypted volume | ~$43/mo |
 | OpenCode Zen inference (PAYG — **disable auto-reload, set a cap**) | ~$5–20/mo typical |
 | Together AI inference (min $5 top-up; sensitive tier + default hub) | ~$5–10/mo |
 | Tailscale (personal plan) | $0 |
 | Coding agents on the brain (herdr panes) | no new account — bills to the Zen/Together lines above, plus disk |
-| **Total** | **~$15–35/mo** |
+| **Total** | **~$50–75/mo** |
 EOF
   return 0
 }
@@ -494,7 +494,7 @@ fresh
 # shellcheck disable=SC2016  # `$15` and `$99` are dollars in a budget table,
 # not shell expansions; single quotes are what keeps them literal.
 subst "$TREE/README.md" \
-  '| **Total** | **~$15–35/mo** |' \
+  '| **Total** | **~$50–75/mo** |' \
   '| **Total** | **~$99/mo** |'
 assert_budget "$TREE"
 probe

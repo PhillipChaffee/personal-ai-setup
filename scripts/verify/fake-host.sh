@@ -466,6 +466,20 @@ case "$NAME" in
     record sleep "$@"
     ;;
 
+  # ---- nproc. The herdr floor's CPU half (#165): deploy-vps.sh's preflight
+  # measures the machine with `nproc` before it will install herdr. Only the
+  # core count is overridable, and only when the harness has pinned it —
+  # $PAI_HOST_STATE/host-nproc — the same shape as the `date` arm above: a
+  # fixture-free run still measures its actual host rather than inventing one.
+  nproc)
+    record nproc "$@"
+    if [ -f "$PAI_HOST_STATE/host-nproc" ]; then
+      cat "$PAI_HOST_STATE/host-nproc"
+    else
+      exec "$(real_bin nproc)" "$@"
+    fi
+    ;;
+
   # ---- date. Only the one format deploy-vps.sh asks for is overridable, and
   # only when the harness has pinned it: $STAMP feeds the `.superseded.<stamp>`
   # names, and two runs that straddle a second boundary would differ there for

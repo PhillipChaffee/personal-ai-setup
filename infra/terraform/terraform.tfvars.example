@@ -30,7 +30,11 @@
 ssh_public_key = "ssh-ed25519 AAAA...your-key... you@example.com"
 
 # Optional overrides (defaults shown; see variables.tf for the caveats).
-# server_type      = "cx22" # US locations may require cpx21 instead
-# location         = "ash"  # fsn1 | nbg1 | hel1 | ash | hil | sin
+# Defaults are hel1 (Helsinki) + cpx32 (4 vCPU / 8 GB) — the herdr floor and
+# the least-Eyes-exposure region. Availability drifts per location and Hetzner
+# guarantees nothing: let `terraform plan` be the validator, and re-check
+# hetzner.com when it errors with "not available".
+# server_type      = "cpx32" # US locations (ash/hil) carry the cpx11/21/31/41 lineup; sin carries a reduced CPX set
+# location         = "hel1" # fsn1 | nbg1 | hel1 | ash | hil | sin
 # timezone         = "America/New_York"
 # data_volume_size = 10

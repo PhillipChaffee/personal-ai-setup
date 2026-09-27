@@ -23,7 +23,7 @@ A self-owned personal AI: one hub, one shared history, on a brain you control.
 
 ## ✨ What you get
 
-The complete, reproducible blueprint: Terraform for the brain, config templates for every component, a verify script for every piece that has one, and a runbook for every manual step. Running cost, all in: **~$15–35/month**.
+The complete, reproducible blueprint: Terraform for the brain, config templates for every component, a verify script for every piece that has one, and a runbook for every manual step. Running cost, all in: **~$50–75/month**.
 
 - **One AI, one history.** A [Goose](https://github.com/aaif-goose/goose) hub runs 24/7 on the brain and your Mac is a thin client — start a conversation on the laptop, continue it on the brain.
 - **A serious coding agent.** [OpenCode](https://github.com/anomalyco/opencode) and Pi first-class under [herdr](https://github.com/herdrdev/herdr) on the brain (opt-in at setup) — real terminal panes, with Claude Code, Codex, and Grok Build in the setup-time catalog. See [`docs/coding-agents.md`](docs/coding-agents.md).
@@ -119,7 +119,7 @@ Tailscale tailnet — the ONLY path to the brain; zero public inbound ports
 
 | Surface | Role |
 |---|---|
-| **Brain** (Hetzner cpx21-class, Ubuntu 24.04) | Runs `goose serve` under systemd. Owns the one shared chat history (`sessions.db`). All state — sessions, secrets — sits on a LUKS-encrypted volume at `/data`. Reachable only over Tailscale: TLS + shared-secret auth, zero public inbound ports. |
+| **Brain** (Hetzner cpx32, Ubuntu 24.04) | Runs `goose serve` under systemd. Owns the one shared chat history (`sessions.db`). All state — sessions, secrets — sits on a LUKS-encrypted volume at `/data`. Reachable only over Tailscale: TLS + shared-secret auth, zero public inbound ports. |
 | **Hub** (Goose, on the brain) | The general-purpose agent — research, writing, personal admin. MCP-native extensions, built-in memory, custom providers for Zen and Together. Pinned to stable 1.x (2.0 is in RC churn). |
 | **Goose Desktop** (Mac) | Full desktop UI, attached to the brain as a remote client over goose's Agent Client Protocol ("remote ACP" in the diagram). |
 | **goose CLI** (Mac) | Local offline fallback hub when the brain is unreachable. |
@@ -136,23 +136,23 @@ Tailscale tailnet — the ONLY path to the brain; zero public inbound ports
 |---|---|
 | A Mac | The runbooks are written for the Mac. The brain itself is Linux (Ubuntu 24.04) — what is Mac-only is the laptop's secret store (macOS Keychain) and Homebrew; a Linux laptop needs a keyring backend that does not exist here yet. Per-component table: [`docs/setup/00-overview.md`](docs/setup/00-overview.md#supported-platforms). |
 | Comfort with a terminal | You'll run scripts, `terraform apply`, and paste commands over SSH. Every step is written out; no improvisation required. |
-| ~$15–35/month | Breakdown in [Budget](#budget). The two inference accounts are pay-as-you-go with hard caps. |
+| ~$50–75/month | Breakdown in [Budget](#budget). The two inference accounts are pay-as-you-go with hard caps. |
 | Accounts you'll create | OpenCode Zen, Together AI, Hetzner, Tailscale (a todo app like Todoist is optional). Each has a runbook with the gotchas called out. |
 
 <a id="budget"></a>
 
 ## 💸 Budget
 
-All figures verified as of 2026-08-20 — re-verify at signup (`scripts/verify/pin-models.sh` catches model/price drift monthly).
+All figures verified as of 2026-09-26 — re-verify at signup (`scripts/verify/pin-models.sh` catches model/price drift monthly). Hetzner repriced on 2026-06-15 ([official table](https://docs.hetzner.com/general/infrastructure-and-availability/price-adjustment/)); the row below is the brain's default (hel1 + cpx32) — a US location runs roughly twice the price for the same tier.
 
 | Item | ~Cost |
 |---|---|
-| Hetzner cpx21-class VPS + encrypted volume | ~€6–9/mo |
+| Hetzner cpx32 VPS (4 vCPU / 8 GB) + encrypted volume | ~$43/mo |
 | OpenCode Zen inference (PAYG — **disable auto-reload, set a cap**) | ~$5–20/mo typical |
 | Together AI inference (min $5 top-up; sensitive tier + default hub) | ~$5–10/mo |
 | Tailscale (personal plan) | $0 |
 | Coding agents on the brain (herdr panes) | no new account — bills to the Zen/Together lines above, plus disk |
-| **Total** | **~$15–35/mo** |
+| **Total** | **~$50–75/mo** |
 
 Coding agents are the one line that can move the total on their own — an agent turn bills far more than a chat turn, and several can run at once (`opencode stats` inside a pane reports actual spend). They also consume **disk**: clones and worktrees live under `/data/herdr`, on the same 10 GB volume as everything else by default, and `check-herdr.sh` fails once they occupy 75% of it. Grow `data_volume_size` (Hetzner volumes grow without recreation) or clean old worktrees — see [`docs/coding-agents.md`](docs/coding-agents.md).
 

@@ -420,16 +420,16 @@ jobs:
           set -euo pipefail
           work="$RUNNER_TEMP/units-negative-lineref"; rm -rf "$work"; mkdir -p "$work"
           git archive HEAD | tar -x -C "$work"
-          before="$(grep -c 'then deploy-vps.sh:624 needs a tailnet IPv4' "$work/config/units/brain.yaml")"
+          before="$(grep -c 'then deploy-vps.sh:1156 needs a tailnet IPv4' "$work/config/units/brain.yaml")"
           [ "$before" -eq 1 ] \
             || { echo "::error::the anchor line is gone (found $before) — this control is inert"; exit 1; }
-          sed -i 's|then deploy-vps.sh:624 needs a tailnet IPv4|then :624 needs a tailnet IPv4|' \
+          sed -i 's|then deploy-vps.sh:1156 needs a tailnet IPv4|then :1156 needs a tailnet IPv4|' \
             "$work/config/units/brain.yaml"
           if out="$("$work/scripts/verify/check-units.sh" --offline 2>&1)"; then
-            echo "::error::check-units.sh accepted a bare ':624' continuation of a deploy-vps.sh reference"
+            echo "::error::check-units.sh accepted a bare ':1156' continuation of a deploy-vps.sh reference"
             exit 1
           fi
-          printf '%s\n' "$out" | grep -qF "continues a deploy-vps.sh reference as a bare ':624'" || {
+          printf '%s\n' "$out" | grep -qF "continues a deploy-vps.sh reference as a bare ':1156'" || {
             echo "::error::the gate failed without naming the bare reference"
             printf '%s\n' "$out"
             exit 1

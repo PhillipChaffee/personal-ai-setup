@@ -12,6 +12,12 @@ wizard's agent screen (OpenCode ★ and Pi ★ first-class; Claude Code, Codex a
 Grok Build in the catalog). This runbook is the hand-run path for the same
 thing: `deploy-vps.sh --with herdr --coding-agents <list>`.
 
+**The floor**: a brain hosting herdr must be at least 4 vCPU / 8 GB (the
+default cpx32). `deploy-vps.sh` measures the machine's own `nproc` and
+MemTotal in its preflight and refuses to install herdr under the floor —
+shared-vCPU types that meet the numbers (cx33) pass, and hub-only brains carry
+no floor. Rescaling up permanently reprices a legacy-priced server.
+
 ## 1. What setup does
 
 One unit, `herdr`, does all of it (config/units/herdr.yaml):
