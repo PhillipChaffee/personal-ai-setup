@@ -64,6 +64,11 @@ GOOSE_BIN="${PAI_GOOSE_BIN:-/home/agent/.local/bin/goose}"
 # make the code-agents containment claim false on any Linux box that already
 # happens to carry an `agent:` line.
 SUBUID_FILE="${PAI_SUBUID_FILE:-/etc/subuid}"
+# /proc/meminfo is READ, never written — the file the herdr floor check (see
+# the preflight) measures. The path is a PAI seam for the same reason SUBUID_FILE
+# is: test-deploy-vps.sh points it at a fixture to script a small host, and a
+# root the containment gate cannot see is a root that is not contained.
+MEMINFO="${PAI_PROC_MEMINFO:-/proc/meminfo}"
 
 SECRETS_FILE="$DATA_ROOT/secrets.env"
 # GOOSE_PATH_ROOT: one absolute root holding goose's config/, data/ AND
@@ -138,7 +143,9 @@ credentials it was never asked for):
   herdr              the coding-agent runtime: a dedicated herdr user, the
                      digest-pinned herdr binary, the server config, and the
                      coding agents named by --coding-agents. The wizard turns
-                     this on; humans opt in with --with/--only.
+                     this on; humans opt in with --with/--only. Requires the
+                     machine to be ≥ 4 vCPU / 8 GB (the #165 floor): the
+                     preflight measures nproc and MemTotal and refuses under it.
 
   --with ID       select ID. Required to install herdr on a hand run:
                   `deploy-vps.sh --with herdr --coding-agents opencode,pi`.
@@ -298,7 +305,7 @@ fi
 # reads $SECRETS_FILE, so a gate placed after it would have let a half-set
 # environment touch the real host before refusing.
 if [[ -n "$PAI_FAKE_ROOT" ]]; then
-  for pai_root in "$REPO_DIR" "$DATA_ROOT" "$SYSTEMD_DIR" "$GOOSE_BIN" "$SUBUID_FILE" "$PINS_FILE" "$HOME"; do
+  for pai_root in "$REPO_DIR" "$DATA_ROOT" "$SYSTEMD_DIR" "$GOOSE_BIN" "$SUBUID_FILE" "$PINS_FILE" "$MEMINFO" "$HOME"; do
     case "$pai_root" in
       "$PAI_FAKE_ROOT"/*) ;;
       *) fail "PAI_FAKE_ROOT is set but '$pai_root' is not under it.
@@ -306,7 +313,7 @@ if [[ -n "$PAI_FAKE_ROOT" ]]; then
     esac
   done
   unset pai_root
-elif [[ -n "${PAI_REPO_DIR:-}${PAI_DATA_ROOT:-}${PAI_SYSTEMD_DIR:-}${PAI_GOOSE_BIN:-}${PAI_SUBUID_FILE:-}${PAI_PINS_FILE:-}" ]]; then
+elif [[ -n "${PAI_REPO_DIR:-}${PAI_DATA_ROOT:-}${PAI_SYSTEMD_DIR:-}${PAI_GOOSE_BIN:-}${PAI_SUBUID_FILE:-}${PAI_PINS_FILE:-}${PAI_PROC_MEMINFO:-}" ]]; then
   fail "a PAI_* root is set without PAI_FAKE_ROOT.
        These variables exist only for scripts/verify/test-deploy-vps.sh, and
        they are refused unless the whole tree is contained under one root."
@@ -438,6 +445,54 @@ fi
 [[ -x "$GOOSE_BIN" ]] || command -v goose >/dev/null || \
   fail "goose CLI not found at $GOOSE_BIN — cloud-init should have installed it (infra/terraform/templates/cloud-init.yaml.tftpl). Reinstall with the pinned installer from that file."
 command -v tailscale >/dev/null || fail "tailscale CLI not found — cloud-init should have installed and joined the tailnet."
+
+# ------------------------------------------------------- the herdr floor --
+# #165: whenever herdr is selected, this machine must be ≥ 4 vCPU / 8 GB.
+# Enforced on the MACHINE'S OWN numbers — nproc and MemTotal — not on a
+# server-type name, because the wizard's picker can only warn about a type
+# while this reads the machine the type actually became. Kept numeric on
+# purpose: shared-vCPU types (cx33: 4 vCPU / 8 GB) pass, and the wizard's
+# menu carries the shared-vs-dedicated tradeoff where it is visible. Two
+# parsing notes. MemTotal floors at 7.5 GiB rather than a nominal 8.0 GB —
+# kernel and firmware reservations leave an 8 GB server reporting ~7.9 GB,
+# and an exact-8.0 threshold would fail the very tier it admits. And a
+# MemTotal line that cannot be parsed fails CLOSED (exit 1), the same
+# direction every other preflight probe takes: a machine this script cannot
+# measure is not a machine it should install herdr on.
+case " $SELECTED " in
+  *" herdr "*)
+    FLOOR_NPROC=4
+    FLOOR_MEMTOTAL_KB=7864320   # 7.5 GiB — see the comment above
+    NPROC="$(nproc 2>/dev/null || true)"
+    case "$NPROC" in ''|*[!0-9]*) NPROC=0 ;; esac
+    MEMTOTAL_KB=""
+    while IFS= read -r meminfo_line; do
+      case "$meminfo_line" in
+        MemTotal:*)
+          candidate="${meminfo_line#MemTotal:}"
+          candidate="${candidate//[!0-9]/}"
+          case "$candidate" in
+            ''|*[!0-9]*) ;;    # a malformed line is not a value; keep reading
+            *) MEMTOTAL_KB="$candidate"; break ;;
+          esac
+          ;;
+      esac
+    done < "$MEMINFO"
+    if [ -z "$MEMTOTAL_KB" ]; then
+      fail "herdr needs a machine of at least $FLOOR_NPROC vCPU / 8 GB (the #165 floor),
+       but MemTotal could not be read from $MEMINFO. Measured numbers only —
+       refusing to install herdr on a machine this script cannot size."
+    fi
+    MEMTOTAL_MIB=$((MEMTOTAL_KB / 1024))
+    if [ "$NPROC" -lt "$FLOOR_NPROC" ] || [ "$MEMTOTAL_KB" -lt "$FLOOR_MEMTOTAL_KB" ]; then
+      fail "herdr needs at least $FLOOR_NPROC vCPU / 8 GB (the #165 floor); this machine
+       reports $NPROC vCPU and ${MEMTOTAL_MIB} MiB. Rescale to a cpx32-class server
+       or larger (Hetzner console — note rescaling permanently reprices a
+       legacy-priced server), or drop --with herdr."
+    fi
+    echo "==> herdr floor met: $NPROC vCPU, ${MEMTOTAL_MIB} MiB (need ≥ $FLOOR_NPROC / 8 GB)"
+    ;;
+esac
 
 # ---------------------------------------------------------- repo clone/pull
 if [[ -d "$REPO_DIR/.git" ]]; then

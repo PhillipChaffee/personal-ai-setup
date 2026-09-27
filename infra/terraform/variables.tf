@@ -21,16 +21,22 @@ variable "tailscale_authkey" {
   sensitive   = true
 }
 
+# Defaults hel1/cpx32 (#165, settled 2026-09-26): Helsinki is the least-Eyes-
+# exposure region (Finland is in no 5/9/14-Eyes alliance — Germany is in the
+# 14th), EU pricing runs ~2:1 under the US line for this tier, and cpx32 (4
+# vCPU AMD / 8 GB RAM / 160 GB NVMe) is the herdr floor — the wizard warns and
+# deploy-vps.sh refuses a smaller server when herdr is selected. Both defaults
+# are also what the wizard's picker (stage 4) offers on Enter.
 variable "server_type" {
-  description = "Hetzner server type. Default cpx21 (2 vCPU AMD / 4 GB / 80 GB) is enough for goose serve + MCP servers and is offered in the US locations that the default location targets. The cheaper cx line (e.g. cx22) is Intel and typically EU-only — switch to it if you pick fsn1/nbg1/hel1."
+  description = "Hetzner server type. Default cpx32 (4 vCPU AMD / 8 GB / 160 GB) fits goose serve, MCP servers and herdr panes. The cheaper cx line (cx23/cx33/cx43) is shared-vCPU and EU-only (NBG1/HEL1); the US locations (ash/hil) carry their own lineup (cpx11/21/31/41) at roughly twice the price; sin carries a reduced CPX set. Availability drifts per location and Hetzner guarantees nothing — re-check hetzner.com and let 'terraform plan' be the validator: it fails loudly when a type is not orderable in the picked location."
   type        = string
-  default     = "cpx21"
+  default     = "cpx32"
 }
 
 variable "location" {
-  description = "Hetzner location. Options: fsn1 (Falkenstein, DE), nbg1 (Nuremberg, DE), hel1 (Helsinki, FI), ash (Ashburn, VA, US), hil (Hillsboro, OR, US), sin (Singapore). Default ash keeps latency low from the US East Coast; see the server_type note about type availability per location."
+  description = "Hetzner location. Options: fsn1 (Falkenstein, DE), nbg1 (Nuremberg, DE), hel1 (Helsinki, FI), ash (Ashburn, VA, US), hil (Hillsboro, OR, US), sin (Singapore). Default hel1 keeps the server out of every Eyes alliance at the EU price; expect ~90–120 ms RTT from the US East Coast. Availability drifts per location — see the server_type note."
   type        = string
-  default     = "ash"
+  default     = "hel1"
 }
 
 variable "timezone" {

@@ -13,7 +13,7 @@ reaches zero-data-retention inference endpoints.
 
 **Everything lives in the GitHub repository — start there:**
 
-- **[The repository & README](https://github.com/PhillipChaffee/personal-ai-setup)** — what you get, prerequisites, costs (~$15–35/mo), and the quickstart
+- **[The repository & README](https://github.com/PhillipChaffee/personal-ai-setup)** — what you get, prerequisites, costs (~$50–75/mo), and the quickstart
 - [Setup runbooks](setup/00-overview.md) — from an empty Mac to a deployed brain
 - [Model routing](model-routing.md) & [data-classification rules](privacy.md) — which model handles which job, and the hard privacy rules that bound it
 - [Privacy policy](app-privacy-policy.md) — for the self-created Google OAuth app each instance uses

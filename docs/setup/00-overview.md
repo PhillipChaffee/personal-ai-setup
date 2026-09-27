@@ -44,16 +44,19 @@ visibility, open ports).
 
 ## Monthly budget
 
-Plan for up to ~$50/mo of headroom; expected spend sits well under it. Figures
-verified as of 2026-08-20 — re-verify at signup, and run
-`scripts/verify/pin-models.sh` monthly to catch price/model drift.
+Plan for ~$75/mo at the top of the range; a frugal month sits well under it.
+Figures verified as of 2026-09-26 — re-verify at signup, and run
+`scripts/verify/pin-models.sh` monthly to catch price/model drift. Hetzner
+repriced on 2026-06-15 ([official table](https://docs.hetzner.com/general/infrastructure-and-availability/price-adjustment/));
+the VPS row is the brain's default (hel1 + cpx32) — a US location runs roughly
+twice the price for the same tier.
 
 | Item | ~Cost/mo |
 |---|---|
-| Hetzner cpx21-class VPS + LUKS-encrypted volume | ~€6–9 |
+| Hetzner cpx32 VPS (4 vCPU / 8 GB) + LUKS-encrypted volume | ~$43 |
 | Inference at expected usage (Zen + Together combined) | ~$10–30 |
 | Tailscale personal plan | $0 |
-| **Total** | **~$15–35/mo** |
+| **Total** | **~$50–75/mo** |
 
 The inference range is wide because it tracks your usage directly — that's the
 point of PAYG. What keeps it near the bottom of the range:

@@ -4,8 +4,8 @@
 # and the always-on `goose serve` that Desktop talks to.
 #
 # DESCRIBES TODAY. This is the largest single region of deploy-vps.sh —
-# deploy-vps.sh:311-486 (preflight + migration), deploy-vps.sh:549-551
-# (systemd) and deploy-vps.sh:616-642 (the start and the /status gate) — and it
+# deploy-vps.sh:407-630 (preflight + migration), deploy-vps.sh:694-696
+# (systemd) and deploy-vps.sh:1145-1175 (the start and the /status gate) — and it
 # STILL has no unit_brain() function, so installer.status is `planned`, an
 # assertion that the function does NOT exist. Four of its neighbours now do
 # have one; see the blocker below for why this one does not, and why writing
@@ -24,8 +24,8 @@ summary: Hetzner VPS, LUKS /data, goose's path root on it, and goose-serve over 
 host: vps
 tier: opt_in
 # tailnet before base-secrets on purpose: cloud-init joins the tailnet at
-# first boot, and deploy-vps.sh:350 refuses to run without the tailscale CLI,
-# then deploy-vps.sh:624 needs a tailnet IPv4 before it can probe /status at
+# first boot, and deploy-vps.sh:447 refuses to run without the tailscale CLI,
+# then deploy-vps.sh:1156 needs a tailnet IPv4 before it can probe /status at
 # all. Both refs name the file: a bare continuation is invisible to the
 # `grep -rn 'deploy-vps.sh:[0-9]'` sweep that re-anchors these after a carve,
 # which is how the second one here spent a whole PR pointing at unrelated code.
@@ -42,8 +42,8 @@ requires: [tailnet, base-secrets]
 # below it. Three citations in this directory were already wrong before those
 # regions existed.
 cost:
-  - line: Hetzner cpx21-class VPS + encrypted volume
-    amount: ~€6–9/mo
+  - line: Hetzner cpx32 VPS (4 vCPU / 8 GB) + encrypted volume
+    amount: ~$43/mo
     source: README.md
 
 installer:
@@ -70,7 +70,7 @@ runbook: docs/setup/50-vps-brain.md
 secrets:
   # goose-serve.service:29 injects the whole of /data/secrets.env, but this is
   # the one key the SERVER itself consumes - it is the shared secret every
-  # client presents, and deploy-vps.sh:634 uses it for the /status gate.
+  # client presents, and deploy-vps.sh:1165 uses it for the /status gate.
   # base-secrets claims the same key as part of the roster it stores; this
   # entry records who READS it. Duplicate claims are legal and deliberate.
   - key: GOOSE_SERVER__SECRET_KEY
@@ -114,7 +114,7 @@ owns:
   - {kind: repo_file, target: scripts/vps/luks-setup.sh}
   - {kind: repo_file, target: scripts/vps/luks-unlock.sh}
   - {kind: data_path, target: /data}
-  # GOOSE_PATH_ROOT. deploy-vps.sh:383-486 moves config/, data/ AND state/
+  # GOOSE_PATH_ROOT. deploy-vps.sh:511-630 moves config/, data/ AND state/
   # here (0700) and leaves the three legacy paths as symlinks so the CLI over
   # SSH and the systemd unit read the same files.
   - {kind: data_path, target: /data/goose}
@@ -186,7 +186,7 @@ blockers:
       remain the only evidence about the real host."
   - id: config-install-is-no-clobber
     severity: note
-    detail: install_template at deploy-vps.sh:497-506 never overwrites an
+    detail: install_template at deploy-vps.sh:642-651 never overwrites an
       existing config.yaml, so on a brain deployed before a hardening change
       every "differs from repo template" NOTE is hardening that has not landed
       there. check-security.sh --local asserts the LIVE file, which is why
@@ -201,11 +201,11 @@ uninstall:
     intend to keep."
 
 notes: >-
-  The migration at deploy-vps.sh:383-486 is the part of this unit that is
+  The migration at deploy-vps.sh:511-630 is the part of this unit that is
   easiest to under-read. Before it existed only goose's data/ was on the
   encrypted volume; config/ (config.yaml, memory/, secrets.yaml) and state/
   (logs/llm_request.*.jsonl - the RAW request and response bodies exchanged
   with providers, i.e. whole emails) sat on the unencrypted root disk. The
-  script says so itself at deploy-vps.sh:483-485, and it says the freed blocks
+  script says so itself at deploy-vps.sh:628-630, and it says the freed blocks
   are not wiped: a brain deployed before that block ran may still have
   recoverable plaintext on the root disk.

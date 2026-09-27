@@ -2,12 +2,13 @@
 #
 # The repo's front door: one wizard that sets up the whole personal-ai stack.
 #
-# Run it once from a clone of this repo, on the Mac. It asks seven questions in
-# a fixed order (the #137 flow, amended by #138, #149, and #163) and then drives the two
-# installers: scripts/mac/bootstrap-mac.sh locally, and scripts/vps/deploy-vps.sh
-# over SSH on the brain. It stores what it captured in the local .env (this file
-# is gitignored), writes exactly the keys it captured or generated into
-# /data/secrets.env over SSH, and prints everything a human must do by hand.
+# Run it once from a clone of this repo, on the Mac. It asks a fixed order of
+# questions (the #137 flow, amended by #138, #149, #163, and #165) and then
+# drives the two installers: scripts/mac/bootstrap-mac.sh locally, and
+# scripts/vps/deploy-vps.sh over SSH on the brain. It stores what it captured
+# in the local .env (this file is gitignored), writes exactly the keys it
+# captured or generated into /data/secrets.env over SSH, and prints everything
+# a human must do by hand.
 #
 # THE FLOW IS FIXED. #137 agreed the six questions and their order; #138 fixed
 # the per-agent semantics (the matrix, the vendor-first biller question, the
@@ -29,12 +30,19 @@
 #      to Zen (#138); the default biller is Together AI.
 #   3. Mac extras — connectors (a hand edit; nothing to install, nothing to
 #      flag). The phone checklist died with the phone story (2026-09-22, #140).
-#   4. Provisioning / teardown — fresh: the human-only gauntlet (Tailscale
-#      account and toggles, terraform apply, luks-setup.sh, the /data/secrets.env
-#      fill), each behind a confirm the wizard never performs; the wizard
-#      scaffolds the secrets.env SKELETON over SSH (names only, no values) and
-#      prints which rows remain hand-fill. Existing: the one-time teardown
-#      checklist prints as hand steps and the deploy waits behind a confirm.
+#   4. Provisioning / teardown — fresh: the brain's region and server type
+#      first (#165: pickable, defaults hel1 + cpx32, every menu line showing
+#      what the price buys), then the human-only gauntlet (Tailscale account
+#      and toggles, terraform apply, luks-setup.sh, the /data/secrets.env
+#      fill), each behind a confirm the wizard never performs. The picker
+#      only records and points: the picks land in the local .env and the
+#      exact terraform apply line prints — availability is terraform plan's
+#      to validate, never the wizard's (the wizard never touches the Hetzner
+#      token, and Hetzner guarantees nothing about per-location stock). The
+#      wizard scaffolds the secrets.env SKELETON over SSH (names only, no
+#      values) and prints which rows remain hand-fill. Existing: the
+#      one-time teardown checklist prints as hand steps and the deploy waits
+#      behind a confirm.
 #   5. Capture — the flow's only ask_secrets: the keys the picks demand
 #      (Together whenever >=1 agent; the Zen key only when a Zen-billed pick
 #      chose Zen; the vendor key of a vendor-billed pick; the scoped GitHub
@@ -253,6 +261,8 @@ FIRST_CLASS="opencode pi"
 SCOPE=""
 HERDR=0          # 1 = the herdr plane is deployed (the wizard's y/N, default No)
 AGENTS_PICK=""
+BRAIN_LOCATION="hel1"     # the picker's default — the #165 settled default
+BRAIN_SERVER_TYPE="cpx32" # ...and the type that IS the herdr floor (4 vCPU / 8 GB)
 BILLER_CLAUDE="vendor"   # vendor | zen — vendor displayed first, nothing defaults to Zen
 BILLER_CODEX="vendor"
 CONNECTORS=0
@@ -308,6 +318,160 @@ ask_agents() {
     AGENTS_PICK="${out# }"
     break
   done
+}
+
+# ── the #165 brain-shape picker ────────────────────────────────────────────
+# One truth for the menu: the type lines are generated from spec_vcpu /
+# spec_ram / type_disk / type_price below, and price is the only figure the
+# repo types itself — everything else is read off Hetzner's own pages.
+# Verified 2026-09-26 against docs.hetzner.com/general/infrastructure-and-
+# availability/price-adjustment/ (monthly $, excl. IPv4 and VAT; volumes were
+# not repriced). Availability drifts per location and Hetzner guarantees
+# nothing about it, so NOTHING here validates availability — 'terraform plan'
+# is the validator (the wizard never touches the Hetzner token), and the
+# picker's note says so out loud. No cax line: the pinned binaries are amd64.
+# Shared-vCPU types are marked, because the herdr floor is numeric and a
+# shared 4 vCPU / 8 GB (cx33) passes it — the tradeoff lives in the menu line,
+# visible at pick time.
+REGION_CODES="fsn1 nbg1 hel1 ash hil sin"
+EU_TYPES="cx23 cx33 cpx22 cpx32 cpx42"
+US_TYPES="cpx11 cpx21 cpx31 cpx41"
+SIN_TYPES="cpx12 cpx22 cpx32 cpx42"
+
+region_group() {
+  case "$1" in
+    fsn1|nbg1|hel1) echo eu ;;
+    ash|hil)        echo us ;;
+    sin)            echo sin ;;
+  esac
+}
+
+spec_vcpu() {
+  case "$1" in
+    cx23|cpx22|cpx11|cpx12) echo 2 ;;
+    cpx21)                  echo 3 ;;
+    cx33|cpx32|cpx31)       echo 4 ;;
+    cpx41|cpx42)            echo 8 ;;
+    *) echo 0 ;;
+  esac
+}
+
+spec_ram() {
+  case "$1" in
+    cpx11|cpx12)            echo 2 ;;
+    cx23|cpx22|cpx21)       echo 4 ;;
+    cx33|cpx32|cpx31)       echo 8 ;;
+    cpx41|cpx42)            echo 16 ;;
+    *) echo 0 ;;
+  esac
+}
+
+type_disk() {
+  case "$1" in
+    cx23|cpx11|cpx12)       echo 40 ;;
+    cx33|cpx22|cpx21)       echo 80 ;;
+    cpx32|cpx31)            echo 160 ;;
+    cpx41|cpx42)            echo 320 ;;
+    *) echo 0 ;;
+  esac
+}
+
+type_price() {
+  case "$1 $2" in
+    "cx23 eu")   echo 6.49 ;;
+    "cx33 eu")   echo 9.99 ;;
+    "cpx22 eu")  echo 22.99 ;;
+    "cpx32 eu")  echo 41.99 ;;
+    "cpx42 eu")  echo 81.99 ;;
+    "cpx11 us")  echo 20.49 ;;
+    "cpx21 us")  echo 37.49 ;;
+    "cpx31 us")  echo 73.49 ;;
+    "cpx41 us")  echo 141.49 ;;
+    "cpx12 sin") echo 17.99 ;;
+    "cpx22 sin") echo 30.99 ;;
+    "cpx32 sin") echo 57.99 ;;
+    "cpx42 sin") echo 109.99 ;;
+    *) echo "?" ;;
+  esac
+}
+
+in_list() {
+  # in_list WORD LIST — membership without a subprocess (in_catalog's pattern).
+  case " $2 " in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
+type_menu() {
+  # type_menu GROUP — one line per type: the spec the price buys, then the
+  # price. cpx32 is marked in every group: it is the wizard's default and the
+  # floor the deploy enforces.
+  local t line
+  for t in $(case "$1" in
+               eu)  echo "$EU_TYPES" ;;
+               us)  echo "$US_TYPES" ;;
+               sin) echo "$SIN_TYPES" ;;
+             esac); do
+    line="  $t — $(spec_vcpu "$t") vCPU / $(spec_ram "$t") GB RAM / $(type_disk "$t") GB disk"
+    case "$t" in cx*) line="$line (shared vCPU)" ;; esac
+    line="$line — ~\$$(type_price "$t" "$1")/mo"
+    [ "$t" = "cpx32" ] && line="$line   ← default; the herdr floor"
+    note "$line"
+  done
+}
+
+below_floor() {
+  # below_floor TYPE — true when the type misses the herdr floor (4 vCPU /
+  # 8 GB, numeric). deploy-vps.sh's preflight measures the real machine and
+  # is the enforcement; this is the same floor seen from the picker's side,
+  # where only the type's spec is known.
+  [ "$(spec_vcpu "$1")" -lt 4 ] || [ "$(spec_ram "$1")" -lt 8 ]
+}
+
+pick_brain_shape() {
+  # The picker records and points; it never runs terraform and never touches
+  # the Hetzner token (both live in the gauntlet below, forever human).
+  local candidate
+  while :; do
+    ask BRAIN_LOCATION "Brain region [Enter = hel1 (Helsinki)]:"
+    case "${BRAIN_LOCATION:-hel1}" in
+      fsn1|nbg1|hel1|ash|hil|sin) BRAIN_LOCATION="${BRAIN_LOCATION:-hel1}"; break ;;
+      *) warn "region is one of: $REGION_CODES" ;;
+    esac
+  done
+  say ""
+  say "Hetzner server type in $BRAIN_LOCATION — every line shows what the price buys (excl. IPv4):"
+  case "$(region_group "$BRAIN_LOCATION")" in
+    eu)  TYPE_SET="$EU_TYPES"; note "  EU line: expect ~90–120 ms RTT from the US East Coast (approximate)" ;;
+    us)  TYPE_SET="$US_TYPES" ;;
+    sin) TYPE_SET="$SIN_TYPES" ;;
+  esac
+  while :; do
+    say ""
+    type_menu "$(region_group "$BRAIN_LOCATION")"
+    ask BRAIN_SERVER_TYPE "Server type [Enter = cpx32]:"
+    candidate="${BRAIN_SERVER_TYPE:-cpx32}"
+    if in_list "$candidate" "$TYPE_SET"; then
+      BRAIN_SERVER_TYPE="$candidate"
+      break
+    fi
+    warn "type is one of: $TYPE_SET"
+  done
+  if [ "$HERDR" -eq 1 ] && below_floor "$BRAIN_SERVER_TYPE"; then
+    warn "$BRAIN_SERVER_TYPE is below the herdr floor (4 vCPU / 8 GB) — panes need the"
+    warn "room, and deploy-vps.sh will refuse it. Pick cpx32-class or larger."
+  fi
+  note "Availability drifts per location and Hetzner guarantees nothing — if"
+  note "'terraform plan' errors with a not-available message, re-run the wizard"
+  note "and pick another type. Prices verified 2026-09-26; re-check hetzner.com."
+  write_env BRAIN_LOCATION "$BRAIN_LOCATION"
+  write_env BRAIN_SERVER_TYPE "$BRAIN_SERVER_TYPE"
+  say ""
+  if [ "$BRAIN_LOCATION" = "hel1" ] && [ "$BRAIN_SERVER_TYPE" = "cpx32" ]; then
+    say "The picks are terraform's defaults — a plain 'terraform apply' runs them."
+  else
+    say "Run terraform apply with:"
+    note "    terraform apply -var location=$BRAIN_LOCATION -var server_type=$BRAIN_SERVER_TYPE"
+  fi
 }
 
 # keychain_put KEY VALUE — store under the same service keychain-secrets.sh
@@ -441,10 +605,15 @@ if [ "$SCOPE" = "fresh" ]; then
       *) break ;;
     esac
   done
+  pick_brain_shape
   say ""
   say "The gauntlet, in order — each behind a confirm; the wizard performs none of it:"
   pause "1/4 — Tailscale: account ready, Mac signed in, MagicDNS + HTTPS Certificates ON?"
-  confirm "2/4 — terraform apply has run from infra/terraform (you typed the tagged auth key at the prompt)?" || {
+  if [ "$HERDR" -eq 1 ] && below_floor "$BRAIN_SERVER_TYPE"; then
+    warn "$BRAIN_SERVER_TYPE is below the herdr floor (4 vCPU / 8 GB); with herdr"
+    warn "selected, deploy-vps.sh will refuse it. Rescale or re-pick before applying."
+  fi
+  confirm "2/4 — terraform apply has run from infra/terraform (location $BRAIN_LOCATION, type $BRAIN_SERVER_TYPE; you typed the tagged auth key at the prompt)?" || {
     warn "The gauntlet runs before any deploy. Do the steps, then re-run this wizard."
     exit 1
   }
