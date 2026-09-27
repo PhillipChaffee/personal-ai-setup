@@ -59,9 +59,12 @@
 #      PAT whenever >=1 agent) and the GENERATED goose secret. Mac-scoped
 #      values land in the macOS Keychain under the same service
 #      keychain-secrets.sh uses, so its roster stays the single source.
-#   6. Verify + finish — the verify commands print as steps, the hand-steps
-#      list closes the run, and the guarantee is stated: nothing schedules
-#      anything. No scheduler flag, no timers, no recipes — the stages write
+#   6. Verify + finish — the brain-side verify checks run from the wizard
+#      behind a confirm (#190, read-only over SSH; the Mac-side ones stay
+#      hand-run — they need a new terminal for the Keychain exports), the
+#      hand-steps list closes the run, and the guarantee is stated: nothing
+#      schedules anything. No scheduler flag, no timers, no recipes — the
+#      stages write
 #      only the local .env and drive the two installers, and this script
 #      carries none of the strings a scheduler would need (asserted by
 #      scripts/verify/test-verify-checks.sh).
@@ -991,15 +994,36 @@ fi
 BRAIN_HOST="${BRAIN_SSH#*@}"
 [ -n "$BRAIN_HOST" ] || BRAIN_HOST="<your-brain>.<your-tailnet>.ts.net"
 stage "Verify + finish"
-say "The wizard points; a human types. Run these (Mac first, then the brain):"
+say "Mac checks run in a NEW terminal so the Keychain exports go live; the"
+say "brain checks the wizard can run for you right here (#190 — read-only):"
 step "Mac, new terminal so the Keychain exports are live:"
 note "    scripts/verify/check-providers.sh   # raw HTTPS per endpoint"
 note "    scripts/verify/check-goose.sh       # goose through all providers"
-step "Brain (over the tailnet):"
+step "Brain (over the tailnet) — printed so you can re-run them by hand:"
 note "    ssh $BRAIN_SSH '~/personal-ai-setup/scripts/verify/check-brain.sh'"
 note "    ssh $BRAIN_SSH '~/personal-ai-setup/scripts/verify/check-security.sh --local'"
 if [ "$HERDR" -eq 1 ]; then
   note "    ssh $BRAIN_SSH '~/personal-ai-setup/scripts/verify/check-herdr.sh'"
+fi
+# #190: the brain-side checks are readers over SSH — run them now, stream the
+# output, and keep going on a FAIL (the run is done; the human digs in). The
+# Mac-side checks stay hand-run: a new shell is the only way the Keychain
+# exports go live, and the wizard cannot conjure one.
+if confirm "Run the brain-side checks now from this terminal? (read-only over SSH)"; then
+  say "check-brain.sh…"
+  ssh "$BRAIN_SSH" '$HOME/personal-ai-setup/scripts/verify/check-brain.sh' || {
+    warn "check-brain reported failures — re-run it by hand to dig in"
+  }
+  say "check-security.sh --local…"
+  ssh "$BRAIN_SSH" '$HOME/personal-ai-setup/scripts/verify/check-security.sh --local' || {
+    warn "check-security reported failures — re-run it by hand to dig in"
+  }
+  if [ "$HERDR" -eq 1 ]; then
+    say "check-herdr.sh…"
+    ssh "$BRAIN_SSH" '$HOME/personal-ai-setup/scripts/verify/check-herdr.sh' || {
+      warn "check-herdr reported failures — re-run it by hand to dig in"
+    }
+  fi
 fi
 if [ "$CONNECTORS" -eq 1 ]; then
   step "Connectors (opt-in, adoption stays a hand edit): flip enabled: true in the"
@@ -1007,7 +1031,7 @@ if [ "$CONNECTORS" -eq 1 ]; then
   note "    --write), copy it to both hosts, and store the token in goose's own"
   note "    per-extension secret store. docs/connecting.md is the path."
 fi
-add_hand_step "Open a NEW terminal so the Keychain exports are live, then run the verify checks above"
+add_hand_step "Open a NEW terminal so the Keychain exports are live, then run the Mac verify checks above"
 add_hand_step "After any brain reboot: sudo scripts/vps/luks-unlock.sh — the passphrase is never stored"
 add_hand_step "Goose Desktop: turn OFF auto-update; connect to https://$BRAIN_HOST:3284 with GOOSE_SERVER__SECRET_KEY and the pinned TLS fingerprint (sudo journalctl -u goose-serve | grep -iE 'listen|fingerprint')"
 if printf '%s' " $AGENTS_PICK " | grep -qE " (claude-code|codex) "; then
