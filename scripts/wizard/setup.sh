@@ -37,9 +37,10 @@
 #      apply (#178) in the foreground — the Hetzner token and the tagged
 #      Tailscale auth key are typed at terraform's own interactive prompts,
 #      which the wizard inherits and never reads. The Tailscale web toggles
-#      stay hand-only; luks-setup.sh is driven over SSH (#179 — FORMAT and
-#      the passphrase typed at the remote prompt, never read) and the
-#      /data/secrets.env fill follows behind a confirm. Before the SSH
+#      stay hand-run — the wizard opens their admin page and checks the
+#      Mac's accept-DNS (#191); luks-setup.sh is driven over SSH (#179 —
+#      FORMAT and the passphrase typed at the remote prompt, never read) and
+#      the /data/secrets.env fill follows behind a confirm. Before the SSH
 #      target the wizard checks the Mac's
 #      Tailscale state (#184 — hand-guides install and sign-in when it is
 #      off, since the Mac installer runs later) and pre-fills the fresh-path
@@ -713,7 +714,25 @@ if [ "$SCOPE" = "fresh" ]; then
   say "the wizard (#178, #179); the Tailscale toggles stay hand-run; every"
   say "secret is typed at the prompt of the tool that asks for it, never read"
   say "by this wizard:"
-  pause "1/4 — Tailscale: account ready, Mac signed in, MagicDNS + HTTPS Certificates ON?"
+  # #191: two halves to the 1/4 check. Device half (CLI-verifiable): this
+  # Mac must USE Tailscale DNS, or MagicDNS names never resolve locally no
+  # matter what the tailnet says. Tailnet half (browser-only): MagicDNS +
+  # HTTPS Certificates live on one admin page — the wizard opens it and the
+  # pause points at it, instead of a memory test.
+  if command -v tailscale >/dev/null 2>&1 && tailscale dns status 2>/dev/null | grep -q "Tailscale DNS: disabled"; then
+    warn "this Mac is not using Tailscale DNS (accept-dns off) — MagicDNS names"
+    warn "will not resolve locally even with the tailnet toggle ON. Re-enable:"
+    note "    tailscale set --accept-dns=true"
+    confirm "Fixed — re-check?" || {
+      warn "Fix DNS, then re-run this wizard."
+      exit 1
+    }
+  fi
+  open_url "https://login.tailscale.com/admin/settings/dns"
+  note "  → both tailnet toggles are on this page: MagicDNS ON is what makes"
+  note "    ai-brain.${TS_SUFFIX:-<your-tailnet>} resolvable, HTTPS Certificates"
+  note "    ON is what gives goose-serve its pinned TLS cert."
+  pause "1/4 — Tailscale: account ready, Mac signed in, both toggles ON (the page just opened)?"
   if [ "$HERDR" -eq 1 ] && below_floor "$BRAIN_SERVER_TYPE"; then
     warn "$BRAIN_SERVER_TYPE is below the herdr floor (4 vCPU / 8 GB); with herdr"
     warn "selected, deploy-vps.sh will refuse it. Rescale or re-pick before applying."
