@@ -40,19 +40,25 @@ providers:
     configured: true
     model: zai-org/GLM-5.3-Flash
 
-  # Premium alternative for non-sensitive work when you want Claude.
-  # Anthropic-billed via Zen => 30-day retention, so NON-SENSITIVE work only
-  # (docs/model-routing.md, hard rule 2).
+  # Premium alternative when you want Claude — this provider routes through
+  # Zen's Anthropic /messages engine, which does NOT serve glm-5.3-flash
+  # (that model lives on the /chat/completions engine only), so its default
+  # stays Claude: Anthropic-billed via Zen => 30-day retention, meaning
+  # NON-SENSITIVE work only (docs/model-routing.md, rule 2). The GLM
+  # fallback for this tier is zen-openai's glm-5.3-flash.
   zen-anthropic:
     enabled: true
     configured: true
     model: claude-sonnet-5
 
-  # Cost-saver tier (Zen zero-retention open models).
+  # Cost-saver tier (Zen zero-retention open models). Default is the same
+  # GLM-5.3-Flash (#200) — Zen prices it identically to Together; the cheap
+  # alternates (minimax-m3 $0.30/$1.20, deepseek-v4.1-flash $0.30/$1.20) are
+  # picker picks.
   zen-openai:
     enabled: true
     configured: true
-    model: kimi-k2.6
+    model: glm-5.3-flash
 
   # Zen's FREE models — $0, but they TRAIN ON YOUR DATA (docs/privacy.md).
   # Tier-1 throwaway, non-personal work only; the provider name keeps the
