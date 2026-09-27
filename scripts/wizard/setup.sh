@@ -625,6 +625,28 @@ note "    every reboot (crypttab is noauto on purpose)"
 note "  • the coding-agent pane logins (subscription OAuth) — typed inside panes"
 note "  • Goose Desktop connect + settings"
 note "  • every /data/secrets.env row this wizard did not capture"
+# #188: the wizard RUNS terraform in this stage (#178) — the binary must
+# exist first. Same readiness pattern as the Tailscale check below: detect,
+# hand-guide the install, loop until ready or an explicit opt-out.
+TF_OK=0
+if command -v terraform >/dev/null 2>&1; then TF_OK=1; fi
+if [ "$TF_OK" -eq 0 ]; then
+  while :; do
+    warn "terraform is not installed on this Mac — this stage runs 'terraform apply':"
+    note "    brew install terraform"
+    note "(or https://developer.hashicorp.com/terraform/install)"
+    if confirm "terraform ready now — re-check?"; then
+      if command -v terraform >/dev/null 2>&1; then TF_OK=1; break; fi
+      warn "Still not found."
+    else
+      confirm "Continue anyway without terraform? (the driven apply, 2/4, will fail)" || {
+        warn "Install terraform, then re-run this wizard."
+        exit 1
+      }
+      break
+    fi
+  done
+fi
 # #184: the gauntlet and the SSH target both need the Mac on the tailnet, but
 # the Mac installer (stage 6) is the thing that installs the Tailscale cask —
 # too late for this stage. Detect the state now; hand-guide when it is off.
