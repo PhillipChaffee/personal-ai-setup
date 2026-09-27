@@ -3,7 +3,7 @@
   "private": true,
   "description": "Dev tooling only. This repo ships no JavaScript; package-lock.json exists so the npm devtools' ENTIRE dependency trees (markdownlint-cli2, jscpd) are pinned, not just their top-level versions. `npm install -g markdownlint-cli2@0.23.2` pins one package and lets everything under it float, which is the supply-chain gap zizmor's adhoc-packages audit is about -- the same reasoning that made every GitHub Action here hash-pinned.",
   "devDependencies": {
-    "jscpd": "5.2.0",
+    "jscpd": "5.3.0",
     "markdownlint-cli2": "0.23.2"
   }
 }
