@@ -33,17 +33,19 @@
 #      flag). The phone checklist died with the phone story (2026-09-22, #140).
 #   4. Provisioning / teardown — fresh: the brain's region and server type
 #      first (#165: pickable, defaults hel1 + cpx32, every menu line showing
-#      what the price buys), then the human-only gauntlet (Tailscale account
-#      and toggles, terraform apply, luks-setup.sh, the /data/secrets.env
-#      fill), each behind a confirm the wizard never performs. The picker
-#      only records and points: the picks land in the local .env and the
-#      exact terraform apply line prints — availability is terraform plan's
-#      to validate, never the wizard's (the wizard never touches the Hetzner
-#      token, and Hetzner guarantees nothing about per-location stock). The
-#      wizard scaffolds the secrets.env SKELETON over SSH (names only, no
-#      values) and prints which rows remain hand-fill. Existing: the
-#      one-time teardown checklist prints as hand steps and the deploy waits
-#      behind a confirm.
+#      what the price buys), then the gauntlet: the wizard RUNS terraform
+#      apply (#178) in the foreground — the Hetzner token and the tagged
+#      Tailscale auth key are typed at terraform's own interactive prompts,
+#      which the wizard inherits and never reads. The Tailscale web toggles
+#      stay hand-only; luks-setup.sh and the /data/secrets.env fill follow
+#      behind confirms. The picker only records: the picks land in the local
+#      .env and ride terraform's -var flags — availability is terraform
+#      plan's to validate, never the wizard's (the wizard never touches the
+#      Hetzner token, and Hetzner guarantees nothing about per-location
+#      stock). The wizard scaffolds the secrets.env SKELETON over SSH (names
+#      only, no values) and prints which rows remain hand-fill. Existing:
+#      the one-time teardown checklist prints as hand steps and the deploy
+#      waits behind a confirm.
 #   5. Capture — the flow's only ask_secrets: the keys the picks demand
 #      (Together whenever >=1 agent; the Zen key only when a Zen-billed pick
 #      chose Zen; the vendor key of a vendor-billed pick; the scoped GitHub
@@ -270,7 +272,9 @@ CONNECTORS=0
 BRAIN_SSH=""
 REPO_URL=""
 
-# Hand-steps finish prints; things this wizard points at, never performs.
+# Hand-steps finish prints; things this wizard points at, never performs —
+# with one driven step (#178): terraform apply runs in the foreground with
+# its own prompts inherited, so the secrets stay terraform's, not ours.
 # The secret vars are pre-declared because ask_secret assigns through
 # `printf -v "$key"`, which shellcheck cannot see; declaring them here is the
 # honest way to satisfy SC2154, and ask_secret overwrites each one when its
@@ -429,8 +433,9 @@ below_floor() {
 }
 
 pick_brain_shape() {
-  # The picker records and points; it never runs terraform and never touches
-  # the Hetzner token (both live in the gauntlet below, forever human).
+  # The picker records and points; it never touches the Hetzner token. The
+  # gauntlet below runs terraform (#178) — the token is typed at terraform's
+  # own interactive prompt, never seen by this script.
   local candidate
   while :; do
     ask BRAIN_LOCATION "Brain region [Enter = hel1 (Helsinki)]:"
@@ -468,9 +473,9 @@ pick_brain_shape() {
   write_env BRAIN_SERVER_TYPE "$BRAIN_SERVER_TYPE"
   say ""
   if [ "$BRAIN_LOCATION" = "hel1" ] && [ "$BRAIN_SERVER_TYPE" = "cpx32" ]; then
-    say "The picks are terraform's defaults — a plain 'terraform apply' runs them."
+    say "The picks are terraform's defaults — the wizard runs a plain 'terraform apply'."
   else
-    say "Run terraform apply with:"
+    say "The wizard runs terraform apply with:"
     note "    terraform apply -var location=$BRAIN_LOCATION -var server_type=$BRAIN_SERVER_TYPE"
   fi
 }
@@ -502,8 +507,9 @@ while :; do
 done
 if [ "$SCOPE" = "fresh" ]; then
   say "Fresh end-to-end: new Mac + new brain. The provisioning gauntlet"
-  say "(terraform, LUKS, the secrets.env fill) prints behind confirms —"
-  say "the wizard points at each step and waits; it never performs one."
+  say "(Tailscale toggles, terraform, LUKS, the secrets.env fill) prints behind"
+  say "confirms — terraform apply is driven by the wizard (#178, secrets typed"
+  say "at terraform's own prompt); the rest you run and it waits."
 else
   say "Configure the existing ai-brain: both installers, the upgrade path,"
   say "and the one-time teardown checklist printed as hand steps before the"
@@ -580,8 +586,8 @@ if confirm "Print the connectors adoption path as a hand-step? (adoption stays t
 fi
 pause "Press Enter to continue"
 
-# ── Stage 4 · provisioning / teardown confirm ───────────────────────────────
-stage "Provisioning and teardown — the human-only gauntlet"
+# ── Stage 4 · provisioning / teardown — the wizard drives, secrets stay human ─
+stage "Provisioning and teardown — the wizard drives, secrets stay human"
 say "Values the wizard never touches, on any path:"
 note "  • the Hetzner token and the Tailscale auth key — typed at terraform's"
 note "    interactive prompts, stored nowhere"
@@ -607,16 +613,35 @@ if [ "$SCOPE" = "fresh" ]; then
   done
   pick_brain_shape
   say ""
-  say "The gauntlet, in order — each behind a confirm; the wizard performs none of it:"
+  say "The gauntlet, in order — terraform apply is run BY the wizard (#178); the"
+  say "Tailscale toggles and LUKS stay hand-run; every secret is typed at the"
+  say "prompt of the tool that asks for it, never read by this wizard:"
   pause "1/4 — Tailscale: account ready, Mac signed in, MagicDNS + HTTPS Certificates ON?"
   if [ "$HERDR" -eq 1 ] && below_floor "$BRAIN_SERVER_TYPE"; then
     warn "$BRAIN_SERVER_TYPE is below the herdr floor (4 vCPU / 8 GB); with herdr"
     warn "selected, deploy-vps.sh will refuse it. Rescale or re-pick before applying."
   fi
-  confirm "2/4 — terraform apply has run from infra/terraform (location $BRAIN_LOCATION, type $BRAIN_SERVER_TYPE; you typed the tagged auth key at the prompt)?" || {
-    warn "The gauntlet runs before any deploy. Do the steps, then re-run this wizard."
+  # #178: the wizard launches terraform in the foreground, inheriting the TTY,
+  # so terraform itself prompts for the two secrets. Forbidden here, by design:
+  # -auto-approve (terraform's plan confirm IS the validator), TF_VAR_* exports
+  # and var-file flags for the secrets (the wizard never sees them), and
+  # -input=false (the prompts must stay interactive).
+  if confirm "2/4 — run terraform apply now from infra/terraform (location $BRAIN_LOCATION, type $BRAIN_SERVER_TYPE; you will type the Hetzner token and the tagged auth key at TERRAFORM's prompts)?"; then
+    say "Running terraform apply — its prompts are yours to answer…"
+    if [ "$BRAIN_LOCATION" = "hel1" ] && [ "$BRAIN_SERVER_TYPE" = "cpx32" ]; then
+      (cd "$REPO_ROOT/infra/terraform" && terraform apply)
+    else
+      (cd "$REPO_ROOT/infra/terraform" && terraform apply \
+        -var "location=$BRAIN_LOCATION" -var "server_type=$BRAIN_SERVER_TYPE")
+    fi || {
+      warn "terraform apply failed — its output is above. Fix it, then re-run this wizard."
+      exit 1
+    }
+  else
+    warn "The gauntlet runs before any deploy. Run terraform apply yourself from"
+    warn "infra/terraform, then re-run this wizard."
     exit 1
-  }
+  fi
   confirm "3/4 — LUKS: luks-setup.sh --device <path> has run and /data is mounted (passphrase typed twice, FORMAT typed)?" || {
     warn "Run luks-setup.sh first (docs/setup/50-vps-brain.md §3), then re-run this wizard."
     exit 1
