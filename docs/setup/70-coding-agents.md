@@ -114,8 +114,11 @@ installed locally):
 herdr machine add herdr@<your-brain>.<your-tailnet>.ts.net
 ```
 
-The brain's panes appear next to your local ones. Nothing installs on the Mac
-and nothing pins the client — client/server version drift is safe by the
+The brain's panes appear next to your local ones. Those local panes are the
+Mac's own — herdr works there too, but they are not this plane: the repo
+ships no coding agent for the Mac (see the intro), so every agent you wire
+here runs on the brain and nowhere else. Nothing installs on the Mac and
+nothing pins the client — client/server version drift is safe by the
 endpoint-generation contract (0.9.x advertises generation 1). Plain
 `ssh herdr@<brain>` reaches the same server as a TUI.
 
