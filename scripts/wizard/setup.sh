@@ -953,6 +953,11 @@ else
 fi
 
 # ── Stage 8 · verify + finish ───────────────────────────────────────────────
+# #189: stage 4 knows the brain's real tailnet host — print it, not a
+# placeholder, in the hand-steps below. Empty BRAIN_SSH cannot happen (the
+# ask loop requires it), but the fallback keeps the template honest anyway.
+BRAIN_HOST="${BRAIN_SSH#*@}"
+[ -n "$BRAIN_HOST" ] || BRAIN_HOST="<your-brain>.<your-tailnet>.ts.net"
 stage "Verify + finish"
 say "The wizard points; a human types. Run these (Mac first, then the brain):"
 step "Mac, new terminal so the Keychain exports are live:"
@@ -972,12 +977,12 @@ if [ "$CONNECTORS" -eq 1 ]; then
 fi
 add_hand_step "Open a NEW terminal so the Keychain exports are live, then run the verify checks above"
 add_hand_step "After any brain reboot: sudo scripts/vps/luks-unlock.sh — the passphrase is never stored"
-add_hand_step "Goose Desktop: turn OFF auto-update; connect to https://<brain>.<tailnet>.ts.net:3284 with GOOSE_SERVER__SECRET_KEY and the pinned TLS fingerprint (sudo journalctl -u goose-serve | grep -iE 'listen|fingerprint')"
+add_hand_step "Goose Desktop: turn OFF auto-update; connect to https://$BRAIN_HOST:3284 with GOOSE_SERVER__SECRET_KEY and the pinned TLS fingerprint (sudo journalctl -u goose-serve | grep -iE 'listen|fingerprint')"
 if printf '%s' " $AGENTS_PICK " | grep -qE " (claude-code|codex) "; then
   add_hand_step "Subscription logins (Claude / ChatGPT OAuth) happen inside their herdr panes, by hand"
 fi
 if [ "$HERDR" -eq 1 ]; then
-  add_hand_step "Authorize the Mac for herdr: add your Mac's public key to /data/herdr/.ssh/authorized_keys on the brain (docs/setup/70-coding-agents.md §4), then run: herdr machine add herdr@<your-brain>.<your-tailnet>.ts.net"
+  add_hand_step "Authorize the Mac for herdr: add your Mac's public key to /data/herdr/.ssh/authorized_keys on the brain (docs/setup/70-coding-agents.md §4), then run: herdr machine add herdr@$BRAIN_HOST"
   if [ "$BILLER_CODEX" = "zen" ]; then
     add_hand_step "Codex on Zen bills PAID ids only (free ids are OpenCode-client-gated upstream) — pick a model in the pane"
   fi
