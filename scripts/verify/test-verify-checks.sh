@@ -563,4 +563,21 @@ else
   fail "the front-door wizard mentions:$SCHED_HITS — nothing schedules anything"
 fi
 
+# 6. THE CODING-AGENT PLANE IS OPT-IN FROM THE FRONT DOOR. #163's settled
+# shape: the wizard asks a y/N whose default is No, and the manifest tier
+# agrees — update both sides together, which is exactly what this section
+# pins. The installer's own default (bare run selects nothing) belongs to
+# test-deploy-vps.sh's territory (V5) and is not re-asserted here.
+HERDR_Q="Install the coding-agent plane (herdr) on the brain?"
+if grep -qF -- "confirm \"$HERDR_Q\"" "$WIZARD"; then
+  pass "the wizard asks the herdr y/N through confirm (default No)"
+else
+  fail "the herdr y/N is gone or bypassed confirm — the plane is opt-in by the settled shape (#163)"
+fi
+if grep -qE '^tier: opt_in$' "$REPO_ROOT/config/units/herdr.yaml"; then
+  pass "herdr.yaml tier is opt_in — the manifest agrees with the wizard's default"
+else
+  fail "herdr.yaml tier is not opt_in — the wizard y/N (default No) and the manifest disagree"
+fi
+
 finish --skips
