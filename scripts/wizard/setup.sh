@@ -10,9 +10,10 @@
 # captured or generated into /data/secrets.env over SSH, and prints everything
 # a human must do by hand.
 #
-# THE FLOW IS FIXED. #137 agreed the six questions and their order; #138 fixed
-# the per-agent semantics (the matrix, the vendor-first biller question, the
-# capture set); #149 landed the herdr plane this wizard drives:
+# THE FLOW IS FIXED. #137 agreed the questions and their order (seven since
+# #163 made the coding-agent plane opt-in); #138 fixed the per-agent
+# semantics (the matrix, the vendor-first biller question, the capture set);
+# #149 landed the herdr plane this wizard drives:
 #
 #   1. Scope        fresh end-to-end, or configure the existing ai-brain.
 #                   The one fork. Both answers run both installers; existing
