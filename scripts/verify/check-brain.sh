@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check-brain.sh — Phase 3 verification of the VPS brain: goose-serve service,
+# check-brain.sh — Phase 2 verification of the VPS brain: goose-serve service,
 # /status over TLS, and the manual cross-device checklist. Run it on the brain
 # itself (over SSH) or from the Mac across the tailnet — it detects which side
 # it's on.

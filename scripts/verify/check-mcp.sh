@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check-mcp.sh — Phase 2 verification: exercise the MCP extensions this machine
+# check-mcp.sh — connector verification: exercise the MCP extensions this machine
 # ACTUALLY HAS ENABLED with one real goose run each. Run it on the Mac after
 # enabling a connector (docs/connecting.md); it also works on the brain once
 # the extension is enabled there.
