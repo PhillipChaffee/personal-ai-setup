@@ -2,8 +2,8 @@
 #
 # The repo's front door: one wizard that sets up the whole personal-ai stack.
 #
-# Run it once from a clone of this repo, on the Mac. It asks six questions in a
-# fixed order (the #137 flow, amended by #138 and #149) and then drives the two
+# Run it once from a clone of this repo, on the Mac. It asks seven questions in
+# a fixed order (the #137 flow, amended by #138, #149, and #163) and then drives the two
 # installers: scripts/mac/bootstrap-mac.sh locally, and scripts/vps/deploy-vps.sh
 # over SSH on the brain. It stores what it captured in the local .env (this file
 # is gitignored), writes exactly the keys it captured or generated into
@@ -16,7 +16,11 @@
 #   1. Scope        fresh end-to-end, or configure the existing ai-brain.
 #                   The one fork. Both answers run both installers; existing
 #                   adds the one-time teardown checklist before the deploy.
-#   2. Coding agents — one multi-pick screen. OpenCode + Pi first-class
+#   2. Coding-agent plane — one y/N first, default No (#163): install herdr on
+#      the brain? No skips the rest of the stage and every agent-only capture;
+#      the deploy then runs bare (brain core + goose-serve only — the
+#      installer's own default, and on an existing brain nothing is removed).
+#      Yes runs the one multi-pick screen. OpenCode + Pi first-class
 #      (pre-checked), Claude Code / Codex / Grok Build in the catalog. Gemini
 #      CLI was cut by #138 (Google-only auth, no herdr integration). Drives
 #      the brain's `deploy-vps.sh --with herdr --coding-agents <picked>`.
@@ -247,6 +251,7 @@ FIRST_CLASS="opencode pi"
 # The wizard's answers. AGENTS_PICK is a space-separated id list, matched with
 # the installers' own `case " $set " in *" $id "*)` membership — bash-3.2-clean.
 SCOPE=""
+HERDR=0          # 1 = the herdr plane is deployed (the wizard's y/N, default No)
 AGENTS_PICK=""
 BILLER_CLAUDE="vendor"   # vendor | zen — vendor displayed first, nothing defaults to Zen
 BILLER_CODEX="vendor"
@@ -341,46 +346,60 @@ else
 fi
 pause "Press Enter to continue"
 
-# ── Stage 2 · coding agents ────────────────────────────────────────────────
-stage "Coding agents — which live in herdr panes on the brain?"
-say "OpenCode ★ and Pi ★ are first-class and pre-checked: herdr owns their"
-say "lifecycle (official integrations). The catalog adds Claude Code, Codex"
-say "and Grok Build (session-identity integration, credential at pick time)."
-note "Gemini CLI is cut: Google-only auth, no Zen/Together billing, no herdr integration."
-ask_agents
-# Per-pick biller questions, vendor displayed FIRST (#138) — nothing defaults
-# to Zen, and a Zen choice is explicit.
-if printf '%s' " $AGENTS_PICK " | grep -q " claude-code "; then
-  say "Claude Code's credential — vendor key first, Zen only by explicit choice:"
-  ask BILLER_CLAUDE "Claude Code bills through [Enter = Anthropic vendor key; type zen for OpenCode Zen]:"
-  case "$BILLER_CLAUDE" in
-    zen|z|Z) BILLER_CLAUDE="zen" ;;
-    *) BILLER_CLAUDE="vendor" ;;
-  esac
-fi
-if printf '%s' " $AGENTS_PICK " | grep -q " codex "; then
-  say "Codex's credential — same rule (its Zen wire is the #146-verified Responses shape):"
-  ask BILLER_CODEX "Codex bills through [Enter = OpenAI vendor key; type zen for OpenCode Zen]:"
-  case "$BILLER_CODEX" in
-    zen|z|Z) BILLER_CODEX="zen" ;;
-    *) BILLER_CODEX="vendor" ;;
-  esac
-fi
-note "Picked: $AGENTS_PICK"
-for a in $AGENTS_PICK; do
-  if is_first_class "$a"; then
-    note "  $a — herdr owns its lifecycle (official integration, config dir pre-created)"
-  else
-    note "  $a — session-identity integration; login and model pick are pane hand-steps"
+# ── Stage 2 · coding-agent plane ───────────────────────────────────────────
+stage "Coding-agent plane — herdr on the brain?"
+say "herdr is the coding-agent runtime on the brain: real terminal panes the"
+say "Mac attaches to over SSH. It is opt-in (#163): without it the brain runs"
+say "brain core + goose-serve only, and no coding-agent key is captured."
+if confirm "Install the coding-agent plane (herdr) on the brain?"; then
+  HERDR=1
+  say "OpenCode ★ and Pi ★ are first-class and pre-checked: herdr owns their"
+  say "lifecycle (official integrations). The catalog adds Claude Code, Codex"
+  say "and Grok Build (session-identity integration, credential at pick time)."
+  note "Gemini CLI is cut: Google-only auth, no Zen/Together billing, no herdr integration."
+  ask_agents
+  # Per-pick biller questions, vendor displayed FIRST (#138) — nothing defaults
+  # to Zen, and a Zen choice is explicit.
+  if printf '%s' " $AGENTS_PICK " | grep -q " claude-code "; then
+    say "Claude Code's credential — vendor key first, Zen only by explicit choice:"
+    ask BILLER_CLAUDE "Claude Code bills through [Enter = Anthropic vendor key; type zen for OpenCode Zen]:"
+    case "$BILLER_CLAUDE" in
+      zen|z|Z) BILLER_CLAUDE="zen" ;;
+      *) BILLER_CLAUDE="vendor" ;;
+    esac
   fi
-done
-if printf '%s' " $AGENTS_PICK " | grep -q " grok-build "; then
-  note "  Grok Build rides Together's model catalog (Kimi, GLM, DeepSeek, …) by default;"
-  note "  Grok's own models need an XAI_API_KEY (new account, paid-only) — documented"
-  note "  opt-in, never wired by the wizard."
-fi
-if [ -z "$AGENTS_PICK" ]; then
-  note "  (none picked — herdr still installs, server-only: no CLIs, no credentials copied)"
+  if printf '%s' " $AGENTS_PICK " | grep -q " codex "; then
+    say "Codex's credential — same rule (its Zen wire is the #146-verified Responses shape):"
+    ask BILLER_CODEX "Codex bills through [Enter = OpenAI vendor key; type zen for OpenCode Zen]:"
+    case "$BILLER_CODEX" in
+      zen|z|Z) BILLER_CODEX="zen" ;;
+      *) BILLER_CODEX="vendor" ;;
+    esac
+  fi
+  note "Picked: $AGENTS_PICK"
+  for a in $AGENTS_PICK; do
+    if is_first_class "$a"; then
+      note "  $a — herdr owns its lifecycle (official integration, config dir pre-created)"
+    else
+      note "  $a — session-identity integration; login and model pick are pane hand-steps"
+    fi
+  done
+  if printf '%s' " $AGENTS_PICK " | grep -q " grok-build "; then
+    note "  Grok Build rides Together's model catalog (Kimi, GLM, DeepSeek, …) by default;"
+    note "  Grok's own models need an XAI_API_KEY (new account, paid-only) — documented"
+    note "  opt-in, never wired by the wizard."
+  fi
+  if [ -z "$AGENTS_PICK" ]; then
+    note "  (none picked — herdr still installs, server-only: no CLIs, no credentials copied)"
+  fi
+else
+  say "No — the brain runs brain core + goose-serve only: no panes, no coding"
+  say "agents, and none of the coding-agent keys are captured."
+  if [ "$SCOPE" = "existing" ]; then
+    warn "If herdr was ever installed on this brain it stays installed — the"
+    warn "wizard removes nothing. The manual teardown path prints with the"
+    warn "hand-steps at the end."
+  fi
 fi
 pause "Press Enter to continue"
 
@@ -388,7 +407,10 @@ pause "Press Enter to continue"
 stage "Mac extras"
 say "The Mac base is not a question: toolchain, goose CLI + Desktop, and the"
 say "coding pack (eleven ported skills, read by goose) install as the thin"
-say "client. No coding agent installs on the Mac — they live in herdr panes."
+say "client. No coding agent installs on the Mac."
+if [ "$HERDR" -eq 1 ]; then
+  say "They live in herdr panes on the brain."
+fi
 if confirm "Print the connectors adoption path as a hand-step? (adoption stays the documented hand edit — a fragment flip, a config re-render, a credential in goose's own store)"; then
   CONNECTORS=1
 fi
@@ -617,13 +639,19 @@ PAIRS
 echo "    wrote:\$wrote"
 REMOTE
 unset UPSERT_BLOCK
-warn "This deploy restarts herdr.service and goose-serve — pane processes die."
-warn "herdr restores layout and resumes sessions, but a MID-TURN pane does not"
-warn "come back mid-turn. Deploy when nothing is mid-turn."
 agents_ids="${AGENTS_PICK// /,}"
 agents_flag=""
 if [ -n "$AGENTS_PICK" ]; then agents_flag=" --coding-agents '$agents_ids'"; fi
-remote_cmd="if [ -d \"\$HOME/personal-ai-setup/.git\" ]; then echo '==> repo already at ~/personal-ai-setup'; else git clone '$REPO_URL' \"\$HOME/personal-ai-setup\"; fi && cd \"\$HOME/personal-ai-setup\" && scripts/vps/deploy-vps.sh --with herdr$agents_flag"
+if [ "$HERDR" -eq 1 ]; then
+  warn "This deploy restarts herdr.service and goose-serve — pane processes die."
+  warn "herdr restores layout and resumes sessions, but a MID-TURN pane does not"
+  warn "come back mid-turn. Deploy when nothing is mid-turn."
+  herdr_flag=" --with herdr$agents_flag"
+else
+  warn "This deploy restarts goose-serve."
+  herdr_flag=""
+fi
+remote_cmd="if [ -d \"\$HOME/personal-ai-setup/.git\" ]; then echo '==> repo already at ~/personal-ai-setup'; else git clone '$REPO_URL' \"\$HOME/personal-ai-setup\"; fi && cd \"\$HOME/personal-ai-setup\" && scripts/vps/deploy-vps.sh$herdr_flag"
 if confirm "Run the deploy over SSH now?"; then
   ssh -t "$BRAIN_SSH" "$remote_cmd"
 else
@@ -640,7 +668,7 @@ note "    scripts/verify/check-goose.sh       # goose through all providers"
 step "Brain (over the tailnet):"
 note "    ssh $BRAIN_SSH '~/personal-ai-setup/scripts/verify/check-brain.sh'"
 note "    ssh $BRAIN_SSH '~/personal-ai-setup/scripts/verify/check-security.sh --local'"
-if [ -n "$AGENTS_PICK" ]; then
+if [ "$HERDR" -eq 1 ]; then
   note "    ssh $BRAIN_SSH '~/personal-ai-setup/scripts/verify/check-herdr.sh'"
 fi
 if [ "$CONNECTORS" -eq 1 ]; then
@@ -655,12 +683,18 @@ add_hand_step "Goose Desktop: turn OFF auto-update; connect to https://<brain>.<
 if printf '%s' " $AGENTS_PICK " | grep -qE " (claude-code|codex) "; then
   add_hand_step "Subscription logins (Claude / ChatGPT OAuth) happen inside their herdr panes, by hand"
 fi
-if [ -n "$AGENTS_PICK" ]; then
+if [ "$HERDR" -eq 1 ]; then
   add_hand_step "Authorize the Mac for herdr: add your Mac's public key to /data/herdr/.ssh/authorized_keys on the brain (docs/setup/70-coding-agents.md §4), then run: herdr machine add herdr@<your-brain>.<your-tailnet>.ts.net"
   if [ "$BILLER_CODEX" = "zen" ]; then
     add_hand_step "Codex on Zen bills PAID ids only (free ids are OpenCode-client-gated upstream) — pick a model in the pane"
   fi
-  add_hand_step "Pick models inside each agent pane; opencode stats in a pane reports actual spend"
+  if [ -n "$AGENTS_PICK" ]; then
+    add_hand_step "Pick models inside each agent pane; opencode stats in a pane reports actual spend"
+  fi
+fi
+if [ "$SCOPE" = "existing" ] && [ "$HERDR" -eq 0 ]; then
+  add_hand_step "If herdr was ever installed on this brain and you want it gone: nothing removes it automatically — sudo systemctl disable --now herdr.service stops new panes, while the herdr user, /data/herdr (worktrees, repos, state) and its env rows survive (docs/setup/70-coding-agents.md §9)"
+  add_hand_step "If the plane is going away: revoke the coding agents' GitHub PAT at github.com/settings/personal-access-tokens — the token works wherever it is copied until revoked"
 fi
 printf '\n%s%sStill to do by hand:%s\n' "$BOLD" "$RED" "$RESET"
 for h in "${HAND_STEPS[@]}"; do note "  - $h"; done

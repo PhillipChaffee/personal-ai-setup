@@ -154,3 +154,24 @@ Everything is pinned in `config/pins.yaml` (`herdr:` and `coding_agents:`).
 Bump a pin, re-run `deploy-vps.sh --with herdr --coding-agents <list>`, and
 the version guards reinstall exactly the moved piece. `herdr update` is never
 run — the binary must not update itself (`update.*` checks are off).
+
+## 9. Tearing the plane down (manual)
+
+Nothing removes the plane automatically — teardown is fully manual by
+decision (the herdr epic §8): the deploy script carries no deletion logic
+anywhere, and neither does the wizard. When the wizard's coding-agent plane
+question is answered No on a brain where herdr was already installed, it
+stays installed and the wizard prints these steps as hand-steps:
+
+1. Stop new panes: `sudo systemctl disable --now herdr.service`. The 0600
+   socket dies with the unit, so nothing can attach any more.
+2. Revoke the coding agents' GitHub PAT at
+   [github.com/settings/personal-access-tokens](https://github.com/settings/personal-access-tokens)
+   — the token works wherever it is copied until GitHub revokes it.
+3. What survives by design: the `herdr` user, `/data/herdr` (worktrees,
+   repos, state) and the rows in `/data/secrets.env` it read. Delete them by
+   hand if you want them gone; `check-herdr.sh` reports SKIP once the unit
+   and `/data/herdr` are gone.
+
+To bring the plane back, re-run `deploy-vps.sh --with herdr --coding-agents
+<picked>` (§8's version guards still apply).

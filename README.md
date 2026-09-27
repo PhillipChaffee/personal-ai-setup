@@ -26,7 +26,7 @@ A self-owned personal AI: one hub, one shared history, on a brain you control.
 The complete, reproducible blueprint: Terraform for the brain, config templates for every component, a verify script for every piece that has one, and a runbook for every manual step. Running cost, all in: **~$15–35/month**.
 
 - **One AI, one history.** A [Goose](https://github.com/aaif-goose/goose) hub runs 24/7 on the brain and your Mac is a thin client — start a conversation on the laptop, continue it on the brain.
-- **A serious coding agent.** [OpenCode](https://github.com/anomalyco/opencode) and Pi first-class under [herdr](https://github.com/herdrdev/herdr) on the brain — real terminal panes, with Claude Code, Codex, and Grok Build in the setup-time catalog. See [`docs/coding-agents.md`](docs/coding-agents.md).
+- **A serious coding agent.** [OpenCode](https://github.com/anomalyco/opencode) and Pi first-class under [herdr](https://github.com/herdrdev/herdr) on the brain (opt-in at setup) — real terminal panes, with Claude Code, Codex, and Grok Build in the setup-time catalog. See [`docs/coding-agents.md`](docs/coding-agents.md).
 - **A private tier for life admin.** Email, calendar, and todos via MCP, behind a vetted-connector registry. Sensitive data reaches only [Together AI](https://docs.together.ai) — zero-data-retention default, SOC 2, HIPAA posture. Never free models, never providers that retain.
 - **Cheap, flexible inference.** [OpenCode Zen](https://opencode.ai/docs/zen) (at-cost gateway: Kimi, GLM, MiniMax, DeepSeek…) plus Together AI's 200+ open models. `scripts/sync-models.sh` refreshes both catalogs from the live sources. Swap any of it — that's the point.
 
@@ -42,7 +42,7 @@ cd personal-ai-setup
 ./scripts/wizard/setup.sh
 ```
 
-The wizard is the front door: six questions, then it drives both installers, `bootstrap-mac.sh` locally and `deploy-vps.sh` over SSH on the brain. It writes exactly the keys it captures or generates into `/data/secrets.env` over SSH, stores the Mac's copies in the Keychain, and prints everything a human must do by hand. Nothing it does is scheduled; stop it any time and re-run — it remembers saved values.
+The wizard is the front door: seven questions — including whether to install the coding-agent plane (herdr), which stays off unless you say yes — then it drives both installers, `bootstrap-mac.sh` locally and `deploy-vps.sh` over SSH on the brain. It writes exactly the keys it captures or generates into `/data/secrets.env` over SSH, stores the Mac's copies in the Keychain, and prints everything a human must do by hand. Nothing it does is scheduled; stop it any time and re-run — it remembers saved values.
 
 Prefer to drive the installers yourself? `bootstrap-mac.sh` is the same base install: it runs start to finish without asking you anything, installs at the versions pinned in `config/pins.yaml`, never overwrites a file you already have, and is safe to re-run. Want a subset? The flags resolve against the same `config/units/*.yaml` catalog the menu below is rendered from:
 
@@ -92,9 +92,9 @@ Everything past the base is a **unit** in `config/units/`; the table is rendered
 | [base-toolchain](docs/setup/20-mac-setup.md) | base | mac | macOS guard, Homebrew presence check, and the uv/node/jq formulae. | `bootstrap-mac.sh` | — |
 | [coding-pack](docs/cursor-port.md) | default_on | mac | Eleven ported Cursor skills; the ported OpenCode agents and AGENTS.md stay in the repo as paste-in material. | `bootstrap-mac.sh` | — |
 | [goose-desktop](docs/setup/20-mac-setup.md) | default_on | mac | Human-only, turn OFF Desktop auto-update and pick the custom providers on first run. | by hand | — |
-| [herdr](docs/setup/70-coding-agents.md) | default_on | vps | The herdr server, its dedicated user and namespace, the pinned binary, and the coding-agent catalog. | `deploy-vps.sh` | `check-herdr.sh` |
 | [brain](docs/setup/50-vps-brain.md) | opt_in | vps | Hetzner VPS, LUKS /data, goose's path root on it, and goose-serve over tailnet TLS. | `deploy-vps.sh` (planned) | `check-brain.sh`, `check-security.sh --local` |
 | [connectors](docs/connecting.md) | opt_in | both | The connector vetting registry and the three disabled extension fragments. | by hand | `check-connectors.sh`, `check-mcp.sh` |
+| [herdr](docs/setup/70-coding-agents.md) | opt_in | vps | The herdr server, its dedicated user and namespace, the pinned binary, and the coding-agent catalog. | `deploy-vps.sh` | `check-herdr.sh` |
 | [tailnet](docs/setup/10-accounts.md) | opt_in | both | Human-only, the Tailscale account, the client sign-ins, and the MagicDNS + HTTPS-cert toggles. | by hand | — |
 
 <!-- pai-docs:end units-menu -->
@@ -124,7 +124,7 @@ Tailscale tailnet — the ONLY path to the brain; zero public inbound ports
 | **Hub** (Goose, on the brain) | The general-purpose agent — research, writing, personal admin. MCP-native extensions, built-in memory, custom providers for Zen and Together. Pinned to stable 1.x (2.0 is in RC churn). |
 | **Goose Desktop** (Mac) | Full desktop UI, attached to the brain as a remote client over goose's Agent Client Protocol ("remote ACP" in the diagram). |
 | **goose CLI** (Mac) | Local offline fallback hub when the brain is unreachable. |
-| **Coding agents** (brain, herdr) | herdr manages the agent panes (OpenCode, Pi, and the setup-time catalog); the wizard wires the picked set; the Mac attaches over SSH. No coding agent installs on the Mac. See [`docs/coding-agents.md`](docs/coding-agents.md). |
+| **Coding agents** (brain, herdr) | herdr manages the agent panes (OpenCode, Pi, and the setup-time catalog); the wizard offers the plane opt-in and wires the picked set; the Mac attaches over SSH. No coding agent installs on the Mac. See [`docs/coding-agents.md`](docs/coding-agents.md). |
 | **Tailscale** | WireGuard mesh — the only network path to the brain. |
 | **OpenCode Zen** | At-cost pay-as-you-go inference gateway, one key, per-family wire formats. Zero-retention/no-training on its hosted open models; per-tier caveats in [`docs/privacy.md`](docs/privacy.md). |
 | **Together AI** | OpenAI-compatible inference over 200+ open models. ZDR by default, no training without opt-in, SOC 2, HIPAA/BAA posture — the sensitive tier lives here exclusively. |
